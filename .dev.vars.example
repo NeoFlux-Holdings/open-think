@@ -1,0 +1,16 @@
+# Copy to .dev.vars for local development
+# Use either CLOUDFLARE_API_TOKEN (preferred) OR CLOUDFLARE_AGENT_TOKEN
+CLOUDFLARE_API_TOKEN=replace_me
+# CLOUDFLARE_AGENT_TOKEN=replace_me
+
+# Optional: only needed if enabling the `mpp` plugin
+# MPP_API_KEY=replace_me
+
+# Start Cloudflare-only by default; add ,mpp when you're ready
+ENABLED_PLUGINS=cloudflare-api-mcp
+ALLOWED_HOSTS=api.cloudflare.com,mcp.cloudflare.com
+MODEL_DEFAULT=gpt-4.1-mini
+
+# Optional observability alert settings
+# ALERT_WEBHOOK_URL=https://hooks.example/agent-alerts
+# ALERT_ERROR_RATE_PCT=5

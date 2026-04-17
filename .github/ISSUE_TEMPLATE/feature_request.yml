@@ -1,0 +1,31 @@
+name: Feature request
+description: Propose new runtime capability or plugin integration
+title: "[Feature] "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What user/operator pain does this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe APIs, behavior, and rollout expectations.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: List options and tradeoffs.
+  - type: checkboxes
+    id: quality
+    attributes:
+      label: Quality checklist
+      options:
+        - label: I can help add tests/docs for this feature.
+        - label: I considered security and configuration implications.
