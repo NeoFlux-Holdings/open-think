@@ -1,0 +1,29 @@
+name: Bug report
+description: Report broken behavior in runtime/plugins
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is failing, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      description: Provide exact steps and sample payloads if relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Security/operational impact
+      description: Does this affect secrets, auth, or production stability?
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: Cloudflare/Wrangler versions and config context.

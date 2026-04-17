@@ -1,0 +1,22 @@
+{
+  "name": "open-think",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "cf:bootstrap": "./scripts_setup.sh",
+    "cf:smoke": "node ./scripts/cf_smoke.mjs",
+    "cf:mcp:config": "node ./scripts/cf_mcp_config.mjs",
+    "plugin:new": "node ./scripts/create_plugin.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260403.0",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.9",
+    "wrangler": "^4.11.1"
+  }
+}

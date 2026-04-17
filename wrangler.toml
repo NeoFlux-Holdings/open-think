@@ -1,0 +1,11 @@
+name = "open-think"
+main = "src/index.ts"
+compatibility_date = "2026-04-16"
+
+[observability]
+enabled = true
+
+[vars]
+MODEL_DEFAULT = "gpt-4.1-mini"
+ENABLED_PLUGINS = "cloudflare-api-mcp"
+ALLOWED_HOSTS = "api.cloudflare.com,mcp.cloudflare.com"
