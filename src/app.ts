@@ -1692,7 +1692,7 @@ async function renderProviders() {
       title: 'Cloudflare AI Gateway',
       subtitle: '23+ providers behind one binding — BYOK via Secrets Store, cached, observed, metered.',
       statusSkill: 'cf-gateway-status',
-      setup: 'Create a gateway at dash → AI → AI Gateway.\nSet AI_GATEWAY_ID and CLOUDFLARE_ACCOUNT_ID.\nAdd provider keys to Secrets Store.\nCall with model "provider/model-name".'
+      setup: 'Create a gateway at dash → AI → AI Gateway.\\nSet AI_GATEWAY_ID and CLOUDFLARE_ACCOUNT_ID.\\nAdd provider keys to Secrets Store.\\nCall with model "provider/model-name".'
     },
     {
       id: 'workers-ai',
@@ -1700,21 +1700,21 @@ async function renderProviders() {
       title: 'Workers AI (direct)',
       subtitle: 'Cloudflare-hosted models through env.AI. Free tier available.',
       statusSkill: 'ai-status',
-      setup: 'Add [ai] binding = "AI" in wrangler.toml.\nNo secrets required for baseline models.'
+      setup: 'Add [ai] binding = "AI" in wrangler.toml.\\nNo secrets required for baseline models.'
     },
     {
       id: 'anthropic',
       ref: '§07.3',
       title: 'Anthropic (direct)',
       subtitle: 'Claude Messages API — bypasses CF AI Gateway. Use when you need the raw path.',
-      setup: 'wrangler secret put ANTHROPIC_API_KEY\nAdd api.anthropic.com to ALLOWED_HOSTS.'
+      setup: 'wrangler secret put ANTHROPIC_API_KEY\\nAdd api.anthropic.com to ALLOWED_HOSTS.'
     },
     {
       id: 'openai-compatible',
       ref: '§07.4',
       title: 'OpenAI-compatible (direct)',
       subtitle: 'Groq, Together, Ollama, any endpoint speaking OpenAI chat/completions.',
-      setup: 'wrangler secret put OPENAI_COMPATIBLE_URL (and ...KEY if needed).\nAdd hostname to ALLOWED_HOSTS.'
+      setup: 'wrangler secret put OPENAI_COMPATIBLE_URL (and ...KEY if needed).\\nAdd hostname to ALLOWED_HOSTS.'
     },
     {
       id: 'codex',
@@ -1722,7 +1722,7 @@ async function renderProviders() {
       title: 'Codex / ChatGPT',
       subtitle: 'OpenAI API key OR ChatGPT subscription via pasted tokens. OAuth device-code flow scaffolded.',
       statusSkill: 'codex-status',
-      setup: "Option A — wrangler secret put OPENAI_API_KEY (classic).\nOption B — run codex login locally, paste CODEX_ACCESS_TOKEN + CODEX_ID_TOKEN from ~/.codex/auth.json.\nOption C (roadmap) — POST /oauth/codex/device/start."
+      setup: "Option A — wrangler secret put OPENAI_API_KEY (classic).\\nOption B — run codex login locally, paste CODEX_ACCESS_TOKEN + CODEX_ID_TOKEN from ~/.codex/auth.json.\\nOption C (roadmap) — POST /oauth/codex/device/start."
     }
   ];
 
