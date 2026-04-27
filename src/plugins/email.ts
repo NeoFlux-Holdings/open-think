@@ -14,7 +14,11 @@
  */
 
 import { EmailMessage } from "cloudflare:email";
-import { createMimeMessage } from "mimetext";
+// Use the browser build — the default "mimetext" entry resolves to
+// dist/mimetext.node.es.js which imports `node:os` for `EOL`. Workers
+// can't load `node:os` even with nodejs_compat_v2, so the deploy fails
+// validation. The browser build hardcodes EOL = "\r\n" instead.
+import { createMimeMessage } from "mimetext/browser";
 import type { AgentPlugin, PluginContext, PluginResult } from "../core/plugin";
 import type { Env } from "../types";
 

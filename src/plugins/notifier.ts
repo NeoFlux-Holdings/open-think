@@ -14,7 +14,8 @@
  */
 
 import { EmailMessage } from "cloudflare:email";
-import { createMimeMessage } from "mimetext";
+// Browser build avoids `import { EOL } from "node:os"` — see email.ts for context.
+import { createMimeMessage } from "mimetext/browser";
 import type { AgentPlugin, PluginContext, PluginResult } from "../core/plugin";
 import type { Env } from "../types";
 import { buildPushPayload, sendWebPushNotification } from "../webpush";
