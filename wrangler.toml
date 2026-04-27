@@ -19,10 +19,17 @@ enabled = true
 
 [vars]
 MODEL_DEFAULT = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
-ENABLED_PLUGINS = "admin,workers-ai,memory,email,notifier"
-ALLOWED_HOSTS = ""
-AGENT_NAME = "Tom-Tom"
-AGENT_OWNER = "Tom"
+# Plugins enabled on first deploy. Workers AI is the only one needing zero
+# external secrets, so it's the safe default for "deploy + chat immediately".
+# Add memory, email, notifier, anthropic, etc. once their bindings/secrets
+# are configured (see docs/PA_STACK.md).
+ENABLED_PLUGINS = "admin,workers-ai"
+# Outbound host allowlist enforced by the plugin bus. Defaults cover the
+# most common providers; extend with comma-separated hosts as you enable
+# plugins (e.g. add api.groq.com for openai-compatible against Groq).
+ALLOWED_HOSTS = "api.cloudflare.com,mcp.cloudflare.com,api.anthropic.com,api.openai.com"
+AGENT_NAME = "Helm"
+AGENT_OWNER = "you"
 
 # --- Auth: Cloudflare Access (recommended before exposing publicly) ---
 # Create an Access app at dash → Zero Trust → Access → Applications.
