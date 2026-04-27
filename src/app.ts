@@ -1508,7 +1508,12 @@ async function sendStreaming(body, content) {
 function renderConductorBody(body) {
   body.innerHTML = '';
   if (state.conductorHistory.length === 0) return;
-  for (const m of state.conductorHistory) appendMessageToBody(body, m);
+  // Snapshot + clear before iterating: appendMessageToBody pushes back to
+  // state.conductorHistory, which would create an infinite for-of loop if
+  // we iterated the live array. After this loop, history is restored.
+  const snapshot = state.conductorHistory.slice();
+  state.conductorHistory.length = 0;
+  for (const m of snapshot) appendMessageToBody(body, m);
 }
 
 function appendMessageToBody(body, msg) {
