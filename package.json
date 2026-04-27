@@ -8,6 +8,7 @@
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "check:app": "node ./scripts/check-app-html.mjs",
     "cf:bootstrap": "node ./scripts/cf_bootstrap.mjs",
     "tomtom:deploy": "node ./scripts/deploy_tomtom.mjs",
     "cf:bootstrap:sh": "./scripts_setup.sh",
@@ -22,11 +23,12 @@
   },
   "dependencies": {
     "jose": "^5.9.6",
-    "postal-mime": "^2.4.3",
-    "mimetext": "^3.0.27"
+    "mimetext": "^3.0.27",
+    "postal-mime": "^2.4.3"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260403.0",
+    "esbuild": "^0.24.2",
     "typescript": "^5.7.3",
     "vitest": "^2.1.9",
     "wrangler": "^4.11.1"

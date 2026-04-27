@@ -51,6 +51,11 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Render /app + syntax-check inline JS
+        # Catches the "TS template literal interprets \n in JS string" class
+        # of bug — see scripts/check-app-html.mjs.
+        run: node scripts/check-app-html.mjs
+
       - name: Resolve version
         id: ver
         run: |

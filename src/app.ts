@@ -1882,7 +1882,7 @@ async function renderSettings() {
     if (!data) return;
     $('#snippet-wrangler').textContent = data.wrangler || '';
     $('#snippet-envvars').textContent = data.devVars || '';
-    $('#snippet-notes').textContent = (data.notes || []).map((n) => '• ' + n).join('\n');
+    $('#snippet-notes').textContent = (data.notes || []).map((n) => '• ' + n).join('\\n');
   }
 
   picker.addEventListener('change', updateSnippet);
