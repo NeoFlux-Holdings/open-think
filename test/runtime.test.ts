@@ -1,13 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { AgentRuntime } from "../src/core/runtime";
-import type { AgentPlugin } from "../src/core/plugin";
+import type { AgentPlugin, PluginCapability } from "../src/core/plugin";
+import type { SecretKey } from "../src/core/config";
 
 class TestPlugin implements AgentPlugin {
-  readonly id = "test-plugin";
+  readonly id: string = "test-plugin";
   readonly version = "1.0.0";
   readonly description = "test";
-  readonly capabilities = ["tools"] as const;
-  readonly requiredSecrets = [] as const;
+  readonly capabilities: readonly PluginCapability[] = ["tools"];
+  readonly requiredSecrets: readonly SecretKey[] = [];
 
   fetchFn?: typeof globalThis.fetch;
 
@@ -21,13 +22,13 @@ class TestPlugin implements AgentPlugin {
 }
 
 class SecretPlugin extends TestPlugin {
-  override readonly id = "secret-plugin";
-  override readonly requiredSecrets = ["mppApiKey"] as const;
+  override readonly id: string = "secret-plugin";
+  override readonly requiredSecrets: readonly SecretKey[] = ["mppApiKey"];
 }
 
 class EmptyCapabilityPlugin extends TestPlugin {
-  override readonly id = "empty-capability-plugin";
-  override readonly capabilities = [] as const;
+  override readonly id: string = "empty-capability-plugin";
+  override readonly capabilities: readonly PluginCapability[] = [];
 }
 
 describe("AgentRuntime", () => {

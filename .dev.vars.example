@@ -1,15 +1,45 @@
-# Copy to .dev.vars for local development
-# Use either CLOUDFLARE_API_TOKEN (preferred) OR CLOUDFLARE_AGENT_TOKEN
+# Copy to .dev.vars for local development. Also drives the "Deploy to Cloudflare"
+# button secret prompts — any key present here will be requested during deploy.
+
+# Required for the `cloudflare-api-mcp` plugin (either token works; API token preferred)
 CLOUDFLARE_API_TOKEN=replace_me
 # CLOUDFLARE_AGENT_TOKEN=replace_me
 
-# Optional: only needed if enabling the `mpp` plugin
+# Runtime config (can also live in wrangler.toml [vars])
+ENABLED_PLUGINS=cloudflare-api-mcp,workers-ai
+ALLOWED_HOSTS=api.cloudflare.com,mcp.cloudflare.com
+MODEL_DEFAULT=@cf/meta/llama-3.3-70b-instruct-fp8-fast
+
+# Optional: Cloudflare AI Gateway — unlocks 23+ providers via BYOK Secrets Store
+# AI_GATEWAY_ID=my-gateway-id
+# CLOUDFLARE_ACCOUNT_ID=replace_me
+# AI_GATEWAY_AUTH_TOKEN=replace_me        # optional, if gateway requires auth
+# CF_AI_GATEWAY_DEFAULT_MODEL=anthropic/claude-haiku-4-5
+
+# Optional: MCP client plugin (outbound MCP server calls)
+# MCP_DEFAULT_URL=https://mcp.cloudflare.com/mcp
+# MCP_BEARER_TOKEN=replace_me
+
+# Optional provider plugins
+# ANTHROPIC_API_KEY=sk-ant-replace_me
+# OPENAI_API_KEY=sk-replace_me              # classic Codex auth
+# OPENAI_COMPATIBLE_URL=https://api.groq.com/openai/v1
+# OPENAI_COMPATIBLE_KEY=replace_me
 # MPP_API_KEY=replace_me
 
-# Start Cloudflare-only by default; add ,mpp when you're ready
-ENABLED_PLUGINS=cloudflare-api-mcp
-ALLOWED_HOSTS=api.cloudflare.com,mcp.cloudflare.com
-MODEL_DEFAULT=gpt-4.1-mini
+# Optional: Codex via ChatGPT subscription — run `codex login` locally first,
+# then paste values from ~/.codex/auth.json here
+# CODEX_ACCESS_TOKEN=replace_me
+# CODEX_ID_TOKEN=replace_me
+# CODEX_BACKEND_URL=https://chatgpt.com/backend-api/codex
+# CODEX_OAUTH_CLIENT_ID=replace_me          # roadmap: enables /oauth/codex/device/*
+
+# Optional: Codex app-server bridge (recommended for ChatGPT subscriptions)
+# Run `codex app-server --listen ws://127.0.0.1:4500` locally + cloudflared tunnel,
+# OR deploy a companion Sandbox Worker. See docs/CODEX_APPSERVER.md.
+# CODEX_APP_SERVER_URL=wss://codex.example.com
+# CODEX_APP_SERVER_TOKEN=replace_me         # bearer sent as Authorization on every RPC
+# CODEX_APP_SERVER_TIMEOUT_MS=30000
 
 # Optional observability alert settings
 # ALERT_WEBHOOK_URL=https://hooks.example/agent-alerts

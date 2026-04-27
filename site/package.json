@@ -1,0 +1,26 @@
+{
+  "name": "open-think-site",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "open-think.app — marketing + docs + payments for the Open Think community runtime.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "marketplace:validate": "node scripts/validate_marketplace.mjs",
+    "db:create": "wrangler d1 create open-think-site",
+    "db:migrate": "wrangler d1 execute open-think-site --file=./migrations/0001_init.sql --remote"
+  },
+  "dependencies": {
+    "marked": "^14.1.4"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260403.0",
+    "@types/marked": "^6.0.0",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.9",
+    "wrangler": "^4.11.1"
+  }
+}

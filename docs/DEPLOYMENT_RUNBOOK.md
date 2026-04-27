@@ -2,11 +2,13 @@
 
 This runbook is the production path for deploying and validating this agent runtime.
 
+> **For a personal-assistant deploy (auth + memory + email + push + scheduling)**, run `npm run pa:setup` instead — it walks the full stack end-to-end (D1 create, VAPID key gen, secret upload, Access reminders, Email Routing reminders, deploy + workflow seed) on Windows / macOS / Linux.
+
 ## 0) Prerequisites
 
 - Cloudflare account + least-privilege API token (or Agent token).
 - Wrangler authenticated (`npx wrangler login`).
-- Secrets configured with `npm run cf:bootstrap`.
+- Secrets configured with `npm run cf:bootstrap` (bare runtime) or `npm run pa:setup` (full PA stack).
 
 ## 1) Pre-deploy checks
 

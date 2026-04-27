@@ -61,8 +61,7 @@ export class ${className} implements AgentPlugin {
       };
     }
 
-    return { ok: false, error: \
-\`Unknown action: \${action}\` };
+    return { ok: false, error: \`Unknown action: \${action}\` };
   }
 }
 `;
@@ -78,7 +77,7 @@ describe("${className}", () => {
       config: {
         enabledPlugins: new Set(["${id}"]),
         allowedHosts: new Set(["api.cloudflare.com"]),
-        modelDefault: "gpt-4.1-mini",
+        modelDefault: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
         alertErrorRatePct: 5
       },
       fetch: globalThis.fetch,
@@ -95,5 +94,7 @@ describe("${className}", () => {
 writeFileSync(pluginPath, pluginSource, "utf8");
 writeFileSync(testPath, testSource, "utf8");
 
-console.log(`Created plugin scaffold:\n- ${pluginPath}\n- ${testPath}`);
+console.log(`Created plugin scaffold:
+- ${pluginPath}
+- ${testPath}`);
 console.log("Next: export your plugin from src/plugins/registry.ts and enable it in config.");

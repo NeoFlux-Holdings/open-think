@@ -1,0 +1,19 @@
+{
+  "name": "open-think-codex-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Tiny HTTP + SSE shim around `codex app-server` (stdio) for use with Open Think's codex plugin.",
+  "main": "server.mjs",
+  "bin": {
+    "open-think-codex-bridge": "./server.mjs"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "docker:build": "docker build -t open-think-codex-bridge .",
+    "docker:run": "docker run --rm -p 8787:8787 -v $HOME/.codex:/root/.codex open-think-codex-bridge"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

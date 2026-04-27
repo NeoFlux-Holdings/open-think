@@ -1,5 +1,12 @@
 import type { AgentRuntime } from "./runtime";
 
+export interface JsonSchema {
+  type: "object";
+  properties?: Record<string, unknown>;
+  required?: readonly string[];
+  additionalProperties?: boolean;
+}
+
 export interface SkillDefinition {
   id: string;
   name: string;
@@ -7,20 +14,87 @@ export interface SkillDefinition {
   pluginId: string;
   action: string;
   tags: string[];
+  inputSchema?: JsonSchema;
+  /** If true, skill is skipped by selective-mode auto execution and surfaced as a proposal. */
+  dangerous?: boolean;
 }
 
 export interface SkillInvocationRequest {
   input?: unknown;
 }
 
+const EMPTY_SCHEMA: JsonSchema = { type: "object", additionalProperties: false };
+
+const CHAT_SCHEMA: JsonSchema = {
+  type: "object",
+  properties: {
+    model: { type: "string" },
+    messages: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          role: { type: "string", enum: ["system", "user", "assistant", "tool"] },
+          content: { type: "string" }
+        },
+        required: ["role", "content"]
+      }
+    },
+    maxTokens: { type: "number" },
+    temperature: { type: "number" }
+  },
+  required: ["messages"]
+};
+
 const SKILL_CATALOG: SkillDefinition[] = [
+  {
+    id: "admin-introspect",
+    name: "Admin Introspect",
+    description: "Snapshot of enabled plugins + redacted config",
+    pluginId: "admin",
+    action: "introspect",
+    tags: ["admin", "health"],
+    inputSchema: EMPTY_SCHEMA
+  },
+  {
+    id: "admin-health-check",
+    name: "Admin Health Check",
+    description: "Deep check of enabled plugins for missing secrets/bindings",
+    pluginId: "admin",
+    action: "health-check",
+    tags: ["admin", "health"],
+    inputSchema: EMPTY_SCHEMA
+  },
+  {
+    id: "admin-suggest-plugins",
+    name: "Admin Suggest Plugins",
+    description: "Given a goal, propose which plugins + env vars to enable",
+    pluginId: "admin",
+    action: "suggest-plugins",
+    tags: ["admin", "setup"],
+    inputSchema: {
+      type: "object",
+      properties: { goal: { type: "string", description: "Plain-English description of what the user wants to do" } },
+      required: ["goal"]
+    }
+  },
+  {
+    id: "admin-env-template",
+    name: "Admin Env Template",
+    description: "Emit a .dev.vars template based on currently enabled plugins",
+    pluginId: "admin",
+    action: "env-template",
+    tags: ["admin", "setup"],
+    inputSchema: EMPTY_SCHEMA
+  },
   {
     id: "cf-introspect",
     name: "Cloudflare Introspect",
     description: "Check Cloudflare MCP plugin readiness and runtime metadata",
     pluginId: "cloudflare-api-mcp",
     action: "introspect",
-    tags: ["cloudflare", "health", "mcp"]
+    tags: ["cloudflare", "health", "mcp"],
+    inputSchema: EMPTY_SCHEMA
   },
   {
     id: "cf-list-zones",
@@ -28,7 +102,8 @@ const SKILL_CATALOG: SkillDefinition[] = [
     description: "List Cloudflare zones (requires API/Agent token)",
     pluginId: "cloudflare-api-mcp",
     action: "list-zones",
-    tags: ["cloudflare", "dns", "ops"]
+    tags: ["cloudflare", "dns", "ops"],
+    inputSchema: EMPTY_SCHEMA
   },
   {
     id: "cf-list-dns-records",
@@ -36,31 +111,309 @@ const SKILL_CATALOG: SkillDefinition[] = [
     description: "List DNS records for a zone (input.zoneId required)",
     pluginId: "cloudflare-api-mcp",
     action: "list-dns-records",
-    tags: ["cloudflare", "dns", "records"]
+    tags: ["cloudflare", "dns", "records"],
+    inputSchema: {
+      type: "object",
+      properties: { zoneId: { type: "string", description: "Cloudflare zone id" } },
+      required: ["zoneId"]
+    }
+  },
+  {
+    id: "ai-chat",
+    name: "Workers AI Chat",
+    description: "Chat with Workers AI models (input.messages array required)",
+    pluginId: "workers-ai",
+    action: "chat",
+    tags: ["ai", "chat", "workers-ai"],
+    inputSchema: CHAT_SCHEMA
+  },
+  {
+    id: "ai-status",
+    name: "Workers AI Status",
+    description: "Confirm Workers AI binding and effective default model",
+    pluginId: "workers-ai",
+    action: "status",
+    tags: ["ai", "health"],
+    inputSchema: EMPTY_SCHEMA
+  },
+  {
+    id: "cf-gateway-chat",
+    name: "CF AI Gateway Chat",
+    description:
+      "Universal chat via Cloudflare AI Gateway — model must be 'provider/model-name' (e.g. 'anthropic/claude-opus-4-6'). BYOK via Secrets Store.",
+    pluginId: "cf-ai-gateway",
+    action: "chat",
+    tags: ["ai", "cf-ai-gateway", "byok"],
+    inputSchema: {
+      type: "object",
+      properties: {
+        model: { type: "string", description: "provider/model-name" },
+        messages: CHAT_SCHEMA.properties!.messages,
+        maxTokens: { type: "number" },
+        temperature: { type: "number" },
+        providerKeyRef: { type: "string", description: "Secrets Store key reference" },
+        forceCompat: { type: "boolean" }
+      },
+      required: ["messages"]
+    }
+  },
+  {
+    id: "cf-gateway-list-providers",
+    name: "CF AI Gateway List Providers",
+    description: "List the 23+ providers supported by Cloudflare AI Gateway",
+    pluginId: "cf-ai-gateway",
+    action: "list-providers",
+    tags: ["cf-ai-gateway", "catalog"],
+    inputSchema: EMPTY_SCHEMA
+  },
+  {
+    id: "cf-gateway-chat-fallbacks",
+    name: "CF AI Gateway Chat (with fallbacks)",
+    description:
+      "Call a list of models in priority order; return the first success. Each entry must be 'provider/model-name'.",
+    pluginId: "cf-ai-gateway",
+    action: "chat-with-fallbacks",
+    tags: ["ai", "cf-ai-gateway", "fallback"],
+    inputSchema: {
+      type: "object",
+      properties: {
+        models: {
+          type: "array",
+          items: { type: "string", description: "provider/model-name" }
+        },
+        messages: CHAT_SCHEMA.properties!.messages,
+        maxTokens: { type: "number" },
+        temperature: { type: "number" },
+        perModelTimeoutMs: { type: "number" }
+      },
+      required: ["models", "messages"]
+    }
+  },
+  {
+    id: "cf-gateway-status",
+    name: "CF AI Gateway Status",
+    description: "Check gateway id, binding presence, and default model",
+    pluginId: "cf-ai-gateway",
+    action: "status",
+    tags: ["cf-ai-gateway", "health"],
+    inputSchema: EMPTY_SCHEMA
+  },
+  {
+    id: "codex-chat",
+    name: "Codex Chat",
+    description:
+      "Chat with OpenAI Codex. Uses OPENAI_API_KEY (classic) or CODEX_ACCESS_TOKEN (ChatGPT subscription).",
+    pluginId: "codex",
+    action: "chat",
+    tags: ["ai", "codex", "openai"],
+    inputSchema: CHAT_SCHEMA
+  },
+  {
+    id: "codex-status",
+    name: "Codex Status",
+    description: "Report which Codex auth mode is active",
+    pluginId: "codex",
+    action: "status",
+    tags: ["codex", "health"],
+    inputSchema: EMPTY_SCHEMA
+  },
+  {
+    id: "codex-setup-instructions",
+    name: "Codex Setup Instructions",
+    description: "Describe how to connect Codex via api-key, ChatGPT tokens, app-server, or OAuth",
+    pluginId: "codex",
+    action: "setup-instructions",
+    tags: ["codex", "setup"],
+    inputSchema: EMPTY_SCHEMA
+  },
+  {
+    id: "codex-thread-start",
+    name: "Codex Thread Start",
+    description: "Start a new thread via the app-server (requires CODEX_APP_SERVER_URL)",
+    pluginId: "codex",
+    action: "thread-start",
+    tags: ["codex", "app-server", "thread"],
+    inputSchema: {
+      type: "object",
+      properties: { title: { type: "string" } }
+    }
+  },
+  {
+    id: "codex-thread-list",
+    name: "Codex Thread List",
+    description: "List threads via the app-server",
+    pluginId: "codex",
+    action: "thread-list",
+    tags: ["codex", "app-server", "thread"],
+    inputSchema: EMPTY_SCHEMA
+  },
+  {
+    id: "codex-models",
+    name: "Codex Models",
+    description: "List models advertised by the app-server",
+    pluginId: "codex",
+    action: "models",
+    tags: ["codex", "app-server", "models"],
+    inputSchema: EMPTY_SCHEMA
+  },
+  {
+    id: "codex-rpc",
+    name: "Codex RPC",
+    description: "Low-level passthrough to any app-server JSON-RPC method (input.method required). Dangerous.",
+    pluginId: "codex",
+    action: "rpc",
+    tags: ["codex", "app-server", "rpc"],
+    dangerous: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        method: { type: "string", description: "JSON-RPC method, e.g. turn/start" },
+        params: { type: "object", additionalProperties: true }
+      },
+      required: ["method"]
+    }
+  },
+  {
+    id: "anthropic-chat",
+    name: "Anthropic Chat (direct)",
+    description: "Call Anthropic Messages API directly (bypasses CF AI Gateway). Requires ANTHROPIC_API_KEY.",
+    pluginId: "anthropic",
+    action: "chat",
+    tags: ["ai", "anthropic", "claude"],
+    inputSchema: CHAT_SCHEMA
+  },
+  {
+    id: "openai-compat-chat",
+    name: "OpenAI-compatible Chat",
+    description: "Call any OpenAI-compatible /chat/completions endpoint (Groq, Together, Ollama…)",
+    pluginId: "openai-compatible",
+    action: "chat",
+    tags: ["ai", "openai-compatible"],
+    inputSchema: CHAT_SCHEMA
+  },
+  {
+    id: "openai-compat-list-models",
+    name: "OpenAI-compatible List Models",
+    description: "GET /v1/models against the configured OpenAI-compatible endpoint",
+    pluginId: "openai-compatible",
+    action: "list-models",
+    tags: ["ai", "openai-compatible"],
+    inputSchema: EMPTY_SCHEMA
+  },
+  {
+    id: "mcp-list-tools",
+    name: "MCP List Tools",
+    description: "List tools from a configured MCP server (input.serverUrl optional)",
+    pluginId: "mcp-client",
+    action: "list-tools",
+    tags: ["mcp", "tools"],
+    inputSchema: {
+      type: "object",
+      properties: { serverUrl: { type: "string" } }
+    }
+  },
+  {
+    id: "mcp-call-tool",
+    name: "MCP Call Tool",
+    description: "Call a named MCP tool (input.name + input.arguments required). Dangerous — MCP tools may mutate external state.",
+    pluginId: "mcp-client",
+    action: "call-tool",
+    tags: ["mcp", "tools"],
+    dangerous: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string" },
+        arguments: { type: "object", additionalProperties: true },
+        serverUrl: { type: "string" }
+      },
+      required: ["name"]
+    }
+  },
+  {
+    id: "browser-fetch",
+    name: "Browser Fetch",
+    description: "Fetch a URL via Cloudflare Browser Rendering (input.url required)",
+    pluginId: "browser",
+    action: "fetch",
+    tags: ["browser", "tier-3"],
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string" },
+        method: { type: "string" }
+      },
+      required: ["url"]
+    }
+  },
+  {
+    id: "sandbox-exec",
+    name: "Sandbox Exec",
+    description: "Run a shell command in the Cloudflare Sandbox. Dangerous — tier-4 execution.",
+    pluginId: "sandbox",
+    action: "exec",
+    tags: ["sandbox", "tier-4"],
+    dangerous: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        command: { type: "string" },
+        args: { type: "array", items: { type: "string" } },
+        stdin: { type: "string" },
+        timeoutMs: { type: "number" }
+      },
+      required: ["command"]
+    }
   },
   {
     id: "artifacts-create-repo",
     name: "Artifacts Create Repo",
-    description: "Create a Cloudflare Artifacts repository (input.name required)",
+    description: "Create a Cloudflare Artifacts repository. Dangerous — mutates account state.",
     pluginId: "artifacts",
     action: "create-repo",
-    tags: ["artifacts", "git", "storage"]
+    tags: ["artifacts", "git", "storage"],
+    dangerous: true,
+    inputSchema: {
+      type: "object",
+      properties: { name: { type: "string" } },
+      required: ["name"]
+    }
   },
   {
     id: "artifacts-import-repo",
     name: "Artifacts Import Repo",
-    description: "Import an existing repo into Artifacts (sourceUrl + targetName)",
+    description: "Import an existing repo into Artifacts. Dangerous — mutates account state.",
     pluginId: "artifacts",
     action: "import-repo",
-    tags: ["artifacts", "git", "import"]
+    tags: ["artifacts", "git", "import"],
+    dangerous: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        sourceUrl: { type: "string" },
+        targetName: { type: "string" },
+        branch: { type: "string" }
+      },
+      required: ["sourceUrl", "targetName"]
+    }
   },
   {
     id: "artifacts-fork-repo",
     name: "Artifacts Fork Repo",
-    description: "Fork an Artifacts repo (name + forkName)",
+    description: "Fork an Artifacts repo. Dangerous — mutates account state.",
     pluginId: "artifacts",
     action: "fork-repo",
-    tags: ["artifacts", "git", "fork"]
+    tags: ["artifacts", "git", "fork"],
+    dangerous: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string" },
+        forkName: { type: "string" },
+        readOnly: { type: "boolean" }
+      },
+      required: ["name", "forkName"]
+    }
   },
   {
     id: "mpp-status",
@@ -68,7 +421,8 @@ const SKILL_CATALOG: SkillDefinition[] = [
     description: "Check mpp provider connectivity and effective default model",
     pluginId: "mpp",
     action: "status",
-    tags: ["mpp", "model", "provider"]
+    tags: ["mpp", "model", "provider"],
+    inputSchema: EMPTY_SCHEMA
   },
   {
     id: "mpp-list-models",
@@ -76,7 +430,253 @@ const SKILL_CATALOG: SkillDefinition[] = [
     description: "List available models from mpp.dev",
     pluginId: "mpp",
     action: "list-models",
-    tags: ["mpp", "models", "catalog"]
+    tags: ["mpp", "models", "catalog"],
+    inputSchema: EMPTY_SCHEMA
+  },
+  /* ---------------- Memory (Cloudflare Agent Memory / D1 fallback) ---------------- */
+  {
+    id: "memory-save",
+    name: "Memory — save a fact",
+    description: "Persist a fact to long-term memory. Use for preferences, project facts, names, decisions.",
+    pluginId: "memory",
+    action: "memory-save",
+    tags: ["memory", "write"],
+    inputSchema: {
+      type: "object",
+      properties: {
+        content: { type: "string", description: "Free-text fact to remember" },
+        sessionId: { type: "string", description: "Optional session to associate" },
+        profile: { type: "string", description: "Memory profile (default: agent name)" },
+        metadata: { type: "object", additionalProperties: true }
+      },
+      required: ["content"]
+    }
+  },
+  {
+    id: "memory-recall",
+    name: "Memory — recall by query",
+    description: "Retrieve matching memories (synthesized answer via managed backend, substring search via D1)",
+    pluginId: "memory",
+    action: "memory-recall",
+    tags: ["memory", "read"],
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string" },
+        profile: { type: "string" },
+        limit: { type: "number" }
+      },
+      required: ["query"]
+    }
+  },
+  {
+    id: "memory-list",
+    name: "Memory — list",
+    description: "List recent memories for a profile (for UI + admin)",
+    pluginId: "memory",
+    action: "memory-list",
+    tags: ["memory", "read", "admin"],
+    inputSchema: {
+      type: "object",
+      properties: { profile: { type: "string" }, limit: { type: "number" } }
+    }
+  },
+  {
+    id: "memory-ingest",
+    name: "Memory — ingest a conversation",
+    description: "Extract memories from a series of messages (uses Agent Memory LLM extraction when bound)",
+    pluginId: "memory",
+    action: "memory-ingest",
+    tags: ["memory", "write", "compact"],
+    inputSchema: {
+      type: "object",
+      properties: {
+        messages: { type: "array", items: { type: "object", additionalProperties: true } },
+        sessionId: { type: "string" },
+        profile: { type: "string" }
+      },
+      required: ["messages"]
+    }
+  },
+  {
+    id: "memory-forget",
+    name: "Memory — forget",
+    description: "Delete a memory (by id) or an entire profile",
+    pluginId: "memory",
+    action: "memory-forget",
+    tags: ["memory", "write", "destructive"],
+    dangerous: true,
+    inputSchema: {
+      type: "object",
+      properties: { id: { type: "string" }, profile: { type: "string" } }
+    }
+  },
+  /* ---------------- Email ---------------- */
+  {
+    id: "email-draft",
+    name: "Email — draft (dry run)",
+    description: "Build a MIME envelope without sending. Returns the preview for approval before send.",
+    pluginId: "email",
+    action: "email-draft",
+    tags: ["email", "read"],
+    inputSchema: {
+      type: "object",
+      properties: {
+        to: { type: "string" },
+        subject: { type: "string" },
+        text: { type: "string" },
+        html: { type: "string" },
+        from: { type: "string" },
+        replyTo: { type: "string" }
+      },
+      required: ["to", "subject"]
+    }
+  },
+  {
+    id: "email-send",
+    name: "Email — send",
+    description: "Actually send the email via Cloudflare Email Workers. DANGEROUS: outbound, user must approve.",
+    pluginId: "email",
+    action: "email-send",
+    tags: ["email", "write", "outbound"],
+    dangerous: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        to: { type: "string" },
+        subject: { type: "string" },
+        text: { type: "string" },
+        html: { type: "string" },
+        from: { type: "string" },
+        replyTo: { type: "string" }
+      },
+      required: ["to", "subject"]
+    }
+  },
+  {
+    id: "email-inbox",
+    name: "Email — list inbox",
+    description: "List recent inbound emails received via Email Routing (persisted in D1).",
+    pluginId: "email",
+    action: "email-inbox",
+    tags: ["email", "read"],
+    inputSchema: {
+      type: "object",
+      properties: {
+        since: { type: "string", description: "ISO timestamp lower bound" },
+        limit: { type: "number" }
+      }
+    }
+  },
+  {
+    id: "email-thread",
+    name: "Email — read one message",
+    description: "Fetch a single inbound message by id",
+    pluginId: "email",
+    action: "email-thread",
+    tags: ["email", "read"],
+    inputSchema: {
+      type: "object",
+      properties: { id: { type: "string" } },
+      required: ["id"]
+    }
+  },
+  /* ---------------- Notifier ---------------- */
+  {
+    id: "notify-user",
+    name: "Notify — reach the owner",
+    description: "Send a notification (email or Web Push) to the PA's owner",
+    pluginId: "notifier",
+    action: "notify-user",
+    tags: ["notifier", "write"],
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: { type: "string" },
+        body: { type: "string" },
+        url: { type: "string" },
+        channel: { type: "string", enum: ["email", "web-push", "log"] }
+      },
+      required: ["body"]
+    }
+  },
+  {
+    id: "notifier-list",
+    name: "Notifier — list sent",
+    description: "List notifications the PA has sent (audit log)",
+    pluginId: "notifier",
+    action: "notifier-list",
+    tags: ["notifier", "read", "admin"],
+    inputSchema: {
+      type: "object",
+      properties: { limit: { type: "number" } }
+    }
+  },
+  /* ---------------- Calendar (MCP-delegated) ---------------- */
+  {
+    id: "calendar-today",
+    name: "Calendar — today",
+    description: "Get today's calendar via the configured CALENDAR_MCP_URL",
+    pluginId: "calendar",
+    action: "calendar-today",
+    tags: ["calendar", "read"],
+    inputSchema: EMPTY_SCHEMA
+  },
+  {
+    id: "calendar-upcoming",
+    name: "Calendar — upcoming",
+    description: "Get upcoming events in the next N days (default 7)",
+    pluginId: "calendar",
+    action: "calendar-upcoming",
+    tags: ["calendar", "read"],
+    inputSchema: {
+      type: "object",
+      properties: { days: { type: "number" } }
+    }
+  },
+  /* ---------------- Cost tracking (admin plugin) ---------------- */
+  {
+    id: "cost-today",
+    name: "Cost — today",
+    description: "Per-provider token + USD spend for today (UTC)",
+    pluginId: "admin",
+    action: "cost-today",
+    tags: ["cost", "read", "admin"],
+    inputSchema: EMPTY_SCHEMA
+  },
+  {
+    id: "cost-range",
+    name: "Cost — range",
+    description: "Per-day per-provider spend for an inclusive UTC date range",
+    pluginId: "admin",
+    action: "cost-range",
+    tags: ["cost", "read", "admin"],
+    inputSchema: {
+      type: "object",
+      properties: {
+        start: { type: "string", description: "YYYY-MM-DD (UTC)" },
+        end: { type: "string", description: "YYYY-MM-DD (UTC)" }
+      },
+      required: ["start", "end"]
+    }
+  },
+  {
+    id: "cost-cap",
+    name: "Cost — check spending cap",
+    description: "Returns whether today's spend has hit DAILY_SPEND_CAP_USD",
+    pluginId: "admin",
+    action: "cost-cap",
+    tags: ["cost", "read", "admin"],
+    inputSchema: EMPTY_SCHEMA
+  },
+  {
+    id: "cost-rollup-now",
+    name: "Cost — roll up yesterday",
+    description: "Immediately fetch + aggregate yesterday's AI Gateway logs (normally runs on cron)",
+    pluginId: "admin",
+    action: "cost-rollup",
+    tags: ["cost", "write", "admin"],
+    inputSchema: EMPTY_SCHEMA
   }
 ];
 

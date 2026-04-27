@@ -1,0 +1,81 @@
+name: Release bundle
+
+# Triggers:
+#   - On any tag push starting with v* (e.g. v0.4.0, v0.4.0-rc1)
+#   - Manually from the Actions UI ("Run workflow")
+#
+# Outputs:
+#   - GitHub Release with two assets:
+#       helm.mjs       — minified runtime bundle
+#       manifest.json  — what the marketing-site cron fetches
+#   - The "latest" alias auto-tracks tagged releases, so the cron's
+#     HELM_BUNDLE_MANIFEST_URL can point at /releases/latest/download/manifest.json
+#     and never need updating.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag (e.g. v0.4.0). Required for manual runs."
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # need history so build-bundle.mjs can run `git rev-parse HEAD`
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build bundle + manifest
+        run: node scripts/build-bundle.mjs
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RELEASE_VERSION: ${{ steps.ver.outputs.version }}
+          MODULE_URL: https://github.com/${{ github.repository }}/releases/download/${{ steps.ver.outputs.version }}/helm.mjs
+
+      - name: Show manifest
+        run: cat dist/manifest.json
+
+      - name: Create or update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.version }}
+          name: ${{ steps.ver.outputs.version }}
+          generate_release_notes: true
+          files: |
+            dist/helm.mjs
+            dist/manifest.json

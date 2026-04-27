@@ -1,0 +1,29 @@
+name = "codex-bridge-worker"
+main = "src/index.ts"
+compatibility_date = "2026-04-16"
+compatibility_flags = ["nodejs_compat_v2"]
+
+[observability]
+enabled = true
+
+# Tokens + config (set via `wrangler secret put`, never in this file):
+#   BRIDGE_TOKEN            → bearer token the main Worker sends on every call
+#   CODEX_ACCESS_TOKEN      → from ~/.codex/auth.json after `codex login` on any machine
+#   CODEX_ID_TOKEN          → optional paired token (x-codex-id-token header)
+#   CODEX_BACKEND_URL       → optional override (default https://chatgpt.com/backend-api/codex)
+#   ROTATE_ALERT_URL        → where the rotation-watch cron POSTs when tokens are stale
+#   ROTATE_MAX_AGE_DAYS     → days before tokens are considered stale (default 30)
+
+# Rotation-watch: once a day, nag the configured ROTATE_ALERT_URL if the
+# stored Codex token is older than ROTATE_MAX_AGE_DAYS (default 30).
+[triggers]
+crons = [ "0 13 * * *" ]  # 13:00 UTC daily
+
+# Persistent storage for rotating tokens and recording refresh events.
+[[durable_objects.bindings]]
+name = "CODEX_AUTH"
+class_name = "CodexAuthDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["CodexAuthDO"]

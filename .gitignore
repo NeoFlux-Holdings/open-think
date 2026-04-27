@@ -1,7 +1,21 @@
 node_modules/
+
+# Local-only secrets (NEVER commit these)
 .dev.vars
 .dev.vars.*
 .env
 .env.*
+
+# Wrangler scratch + build artifacts
 .wrangler/
 dist/
+dist-bundle/
+*.tsbuildinfo
+
+# Editor / OS clutter
+.claude/
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/settings.json

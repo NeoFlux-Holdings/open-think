@@ -16,10 +16,9 @@ describe("SkillManager", () => {
     const mgr = new SkillManager(createRuntimeStub(["cloudflare-api-mcp"]) as never);
     const result = await mgr.invoke("cf-introspect", { input: { smoke: true } });
 
-    expect(result.ok).toBe(true);
-    expect(result.data).toMatchObject({
-      pluginId: "cloudflare-api-mcp",
-      action: "introspect"
+    expect(result).toMatchObject({
+      ok: true,
+      data: { pluginId: "cloudflare-api-mcp", action: "introspect" }
     });
   });
 

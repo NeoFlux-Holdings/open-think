@@ -1,11 +1,121 @@
-name = "open-think"
+name = "tom-tom"
 main = "src/index.ts"
 compatibility_date = "2026-04-16"
+compatibility_flags = ["nodejs_compat_v2"]
 
 [observability]
 enabled = true
 
+# ─────────────────────────────────────────────────────────────────────────────
+# ZERO-CONFIG DEFAULT
+# `wrangler deploy` from a fresh fork yields a working chat agent — Workers
+# AI as the model, Helm in propose mode, no secrets required. Auth runs in
+# "first-run permissive" mode (everyone is treated as a guest) until you
+# set CF_ACCESS_TEAM_DOMAIN + CF_ACCESS_AUD; the /app UI shows a yellow
+# banner the whole time so you don't forget to lock it down.
+#
+# Add features by uncommenting bindings below + extending ENABLED_PLUGINS.
+# ─────────────────────────────────────────────────────────────────────────────
+
 [vars]
-MODEL_DEFAULT = "gpt-4.1-mini"
-ENABLED_PLUGINS = "cloudflare-api-mcp"
-ALLOWED_HOSTS = "api.cloudflare.com,mcp.cloudflare.com"
+MODEL_DEFAULT = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+ENABLED_PLUGINS = "admin,workers-ai,memory,email,notifier"
+ALLOWED_HOSTS = ""
+AGENT_NAME = "Tom-Tom"
+AGENT_OWNER = "Tom"
+
+# --- Auth: Cloudflare Access (recommended before exposing publicly) ---
+# Create an Access app at dash → Zero Trust → Access → Applications.
+# CF_ACCESS_TEAM_DOMAIN = "https://<your-team>.cloudflareaccess.com"
+# CF_ACCESS_AUD = "<your-app-aud-tag>"
+# CF_ACCESS_ALLOWED_EMAILS = "you@example.com"
+# AGENT_OWNER_EMAIL = "you@example.com"
+
+# Local dev only — bypass Access so `wrangler dev` works without a tunnel.
+# Set this in `.dev.vars`, not here. NEVER set in production.
+# DEV_AUTH_BYPASS = "1"
+
+# Workers AI binding — powers the `workers-ai` plugin out of the box. Free.
+[ai]
+binding = "AI"
+
+# Per-agent identity + tree-structured session storage. Auto-provisions.
+[[durable_objects.bindings]]
+name = "AGENT_SESSIONS"
+class_name = "AgentSessionDO"
+
+# Ephemeral multi-subscriber hub for streaming turns.
+[[durable_objects.bindings]]
+name = "STREAM_HUBS"
+class_name = "StreamHubDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["AgentSessionDO"]
+
+[[migrations]]
+tag = "v2"
+new_classes = ["StreamHubDO"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OPTIONAL: PA stack bindings
+# Uncomment ONE block at a time as you wire each feature up. Each block has
+# a "do this first" line — follow it before redeploying or the deploy will
+# fail validation.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# --- Memory + email-inbox + notifications + scheduler + cost rollup ---
+# DO THIS FIRST: `npx wrangler d1 create tom-tom-pa`, then paste the
+# database_id below. The memory plugin auto-creates its tables on first
+# write; same for email_inbox / notifications / cost_daily / pa_workflows.
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "tom-tom-pa"
+# database_id = "<paste-from-wrangler-d1-create>"
+
+# --- Outbound email via Cloudflare Email Workers ---
+# DO THIS FIRST: dash → Email → Email Routing → enable on your sender domain
+# and verify a destination. Then uncomment + redeploy.
+# [[send_email]]
+# name = "SEB"
+# destination_address = "you@example.com"  # optional; omit for any-verified
+
+# --- Morning briefing as a durable Workflow ---
+# DO THIS FIRST: enable [[d1_databases]] above (the briefing reads/writes D1).
+# [[workflows]]
+# name = "morning-briefing"
+# binding = "BRIEFING_WORKFLOW"
+# class_name = "MorningBriefingWorkflow"
+
+# --- Scheduled triggers ---
+# DO THIS FIRST: enable [[d1_databases]] AND [[workflows]] above. The
+# scheduled() handler is a no-op without DB; with both wired the cron fires
+# the morning-briefing workflow + nightly cost-rollup.
+# [triggers]
+# crons = [ "55 12 * * *", "15 1 * * *" ]
+
+# --- PA env vars (set whichever apply) ---
+# OWNER_EMAIL           = "you@example.com"   # where PA notifications go
+# FROM_EMAIL            = "helm@your-domain"  # outbound sender
+# DEFAULT_TIMEZONE      = "America/New_York"
+# INBOUND_FORWARD_TO    = "you@example.com"   # forward inbound mail after indexing
+# CALENDAR_MCP_URL      = "https://your-cal-mcp.example.com"
+# DAILY_SPEND_CAP_USD   = "5"                 # hard daily ceiling on LLM spend
+# VAPID_PUBLIC_KEY      = "set via wrangler secret put"
+# VAPID_PRIVATE_KEY     = "set via wrangler secret put"
+# VAPID_SUBJECT         = "mailto:you@example.com"
+
+# --- Optional integrations ---
+# Browser Rendering — Tier-3 execution.
+# [browser]
+# binding = "BROWSER"
+
+# Cloudflare Sandbox — Tier-4 execution (compile / shell).
+# [[services]]
+# binding = "SANDBOX"
+# service = "my-sandbox-worker"
+
+# R2 — workspace filesystem.
+# [[r2_buckets]]
+# binding = "WORKSPACE"
+# bucket_name = "open-think-workspace"

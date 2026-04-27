@@ -1,5 +1,5 @@
 import { parseConfig, type RuntimeConfig } from "./config";
-import type { AgentPlugin, PluginCapability } from "./plugin";
+import type { AgentPlugin, PluginCapability, RuntimeIntrospection } from "./plugin";
 import type { Env, InvokeRequest } from "../types";
 import { AppError } from "./errors";
 
@@ -9,7 +9,8 @@ const CAPABILITY_SET: Set<PluginCapability> = new Set([
   "mcp",
   "connectors",
   "cloudflare-api",
-  "artifacts"
+  "artifacts",
+  "admin"
 ]);
 
 function createRestrictedFetch(config: RuntimeConfig): typeof globalThis.fetch {
@@ -97,9 +98,30 @@ export class AgentRuntime {
     const active = allPlugins.filter((plugin) => config.enabledPlugins.has(plugin.id));
     const restrictedFetch = createRestrictedFetch(config);
 
+    const introspection: RuntimeIntrospection = {
+      listPlugins: () =>
+        active.map((p) => ({
+          id: p.id,
+          version: p.version,
+          description: p.description,
+          capabilities: p.capabilities
+        })),
+      getConfigSnapshot: () => ({
+        enabledPlugins: Array.from(config.enabledPlugins),
+        allowedHosts: Array.from(config.allowedHosts),
+        modelDefault: config.modelDefault,
+        alertErrorRatePct: config.alertErrorRatePct,
+        hasCloudflareToken: Boolean(config.cloudflareApiToken ?? config.cloudflareAgentToken),
+        hasAnthropicKey: Boolean(env.ANTHROPIC_API_KEY),
+        hasOpenAICompatible: Boolean(env.OPENAI_COMPATIBLE_URL),
+        hasMcpDefault: Boolean(env.MCP_DEFAULT_URL),
+        hasAiGateway: Boolean(env.AI_GATEWAY_ID)
+      })
+    };
+
     for (const plugin of active) {
       requirePluginSecrets(plugin, config);
-      await plugin.initialize({ config, fetch: restrictedFetch, env });
+      await plugin.initialize({ config, fetch: restrictedFetch, env, runtime: introspection });
     }
 
     return new AgentRuntime(config, active);

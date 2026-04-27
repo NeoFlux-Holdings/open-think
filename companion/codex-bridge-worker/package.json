@@ -1,0 +1,21 @@
+{
+  "name": "codex-bridge-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Cloudflare-native codex-bridge: a Worker that proxies paste-in Codex subscription tokens to the ChatGPT backend and exposes JSON-RPC + SSE for Open Think's `codex` plugin.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.5.0",
+    "@cloudflare/workers-types": "^4.20260403.0",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.9",
+    "wrangler": "^4.11.1"
+  }
+}

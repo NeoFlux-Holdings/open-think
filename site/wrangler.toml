@@ -1,0 +1,60 @@
+name = "open-think-site"
+main = "src/index.ts"
+compatibility_date = "2026-04-16"
+compatibility_flags = ["nodejs_compat_v2"]
+
+[observability]
+enabled = true
+
+[vars]
+SITE_URL = "https://beta.open-think.app"
+SUPPORT_EMAIL = "hello@open-think.app"
+# Public manifest URL the cron pushes from. Auto-tracks the latest tagged
+# release published by .github/workflows/release-bundle.yml. Override with a
+# pinned tag URL to roll back, or with a pre-release URL for staged rollout:
+#   .../releases/download/v0.4.1/manifest.json
+HELM_BUNDLE_MANIFEST_URL = "https://github.com/NeoFlux-Holdings/open-think/releases/latest/download/manifest.json"
+# Set when you enable Web Analytics in the dashboard (Analytics → Web Analytics → Add a site).
+# Public token, safe to include in client HTML.
+# CF_ANALYTICS_TOKEN = "paste-your-token-here"
+
+# Bundle repo markdown into the Worker at build time. Imports become strings.
+[[rules]]
+type = "Text"
+globs = ["**/*.md"]
+fallthrough = true
+# Set via `wrangler secret put` — not in wrangler.toml:
+#   STRIPE_SECRET_KEY
+#   STRIPE_WEBHOOK_SECRET
+#   STRIPE_PRICE_PRO_MONTHLY
+#   STRIPE_PRICE_PRO_ANNUAL
+#   STRIPE_PRICE_CONCIERGE_ONESHOT
+#   STRIPE_PRICE_HELM_CLOUD       — recurring price for the managed-deploy tier
+#   CLOUD_MASTER_KEY              — 32+ char secret; encrypts CF tokens at rest
+#                                    `openssl rand -hex 32` is a fine source
+
+# Cloud-deploy update push: hourly cron pulls the manifest at HELM_BUNDLE_MANIFEST_URL,
+# fans out to every active subscriber's Worker. Skips deployments where paused = 1.
+[triggers]
+crons = [ "0 * * * *" ]
+
+# Customer + subscription state. D1 auto-provisions on first deploy via this binding.
+[[d1_databases]]
+binding = "DB"
+database_name = "open-think-site"
+database_id = "2fcf58f6-311e-4630-b140-f82ca6a61913"
+
+# Beta lane — matches the route added via the Cloudflare dashboard so local
+# `wrangler dev` + `wrangler deploy` stay in sync.
+[[routes]]
+pattern = "beta.open-think.app/*"
+zone_name = "open-think.app"
+
+# Cut the apex + www over when the site is ready for prime time.
+# [[routes]]
+# pattern = "open-think.app/*"
+# zone_name = "open-think.app"
+
+# [[routes]]
+# pattern = "www.open-think.app/*"
+# zone_name = "open-think.app"
