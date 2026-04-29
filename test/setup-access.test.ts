@@ -55,6 +55,12 @@ describe("preflightToken", () => {
     if (!r.ok) expect(r.code).toBe("shape");
   });
 
+  it("rejects empty string (catches the no-env-fallback case)", async () => {
+    const r = await preflightToken("");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe("shape");
+  });
+
   it("returns accounts when the token verifies", async () => {
     const f = routedFetch({
       [`${CF}/user/tokens/verify`]: () => ok({ id: "tok-1", status: "active" }),

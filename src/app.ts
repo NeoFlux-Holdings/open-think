@@ -656,6 +656,87 @@ h1.section-title {
 .lockdown-scopes li { padding: 2px 0; }
 .lockdown-scopes li::before { content: '→ '; color: var(--accent); }
 
+/* "Token already configured" banner — replaces the token field when prefilled */
+.lockdown-prefilled {
+  display: flex; gap: 14px; align-items: flex-start;
+  padding: 14px 16px;
+  background: rgba(45, 92, 62, 0.08);
+  border: 1px solid var(--ok, #2d5c3e);
+  border-radius: 3px;
+}
+.lockdown-prefilled-mark {
+  width: 28px; height: 28px; flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--ok, #2d5c3e); color: var(--paper);
+  display: flex; align-items: center; justify-content: center;
+  font-weight: bold; font-size: 14px;
+}
+.lockdown-prefilled-text { font-size: 14px; color: var(--ink); line-height: 1.5; }
+.lockdown-prefilled-text strong { display: block; margin-bottom: 2px; }
+.lockdown-prefilled-text span { color: var(--muted); font-size: 13px; }
+.lockdown-prefilled-text a { color: var(--accent); }
+
+/* Numbered "how to create token" instructions panel */
+.lockdown-instructions {
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 16px 20px;
+}
+.lockdown-instructions-header {
+  display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+.lockdown-instructions-header .mono {
+  font-size: 11px; letter-spacing: 0.14em; color: var(--muted);
+  text-transform: uppercase;
+}
+.lockdown-copy-btn {
+  background: transparent;
+  border: 1px solid var(--muted-2);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  padding: 5px 10px;
+  cursor: pointer;
+  color: var(--muted);
+  border-radius: 3px;
+  transition: all 0.12s;
+}
+.lockdown-copy-btn:hover { border-color: var(--accent); color: var(--accent); }
+.lockdown-copy-btn.is-copied { border-color: var(--ok, #2d5c3e); color: var(--ok, #2d5c3e); }
+.lockdown-instructions-list {
+  margin: 0; padding: 0 0 0 22px;
+  font-size: 14px; color: var(--ink);
+  line-height: 1.7;
+}
+.lockdown-instructions-list li { padding: 2px 0; }
+.lockdown-instructions-list li .mono {
+  background: rgba(0,0,0,0.05);
+  padding: 1px 6px;
+  border-radius: 2px;
+  font-size: 12.5px;
+}
+@media (prefers-color-scheme: dark) {
+  .lockdown-instructions-list li .mono { background: rgba(255,255,255,0.06); }
+}
+.lockdown-instructions-list a { color: var(--accent); }
+.lockdown-instructions-scopes {
+  list-style: none; padding: 8px 0 4px; margin: 6px 0 0;
+  font-family: 'JetBrains Mono', monospace; font-size: 12px;
+  color: var(--muted);
+}
+.lockdown-instructions-scopes li {
+  padding: 3px 0 3px 16px;
+  position: relative;
+}
+.lockdown-instructions-scopes li::before {
+  content: '→';
+  position: absolute; left: 0;
+  color: var(--accent);
+}
+
 .lockdown-actions { display: flex; gap: 12px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
 .lockdown-btn {
   display: inline-flex; align-items: center; gap: 8px;
@@ -1239,15 +1320,22 @@ input[type="text"]:focus, select:focus, textarea:focus { border-bottom-color: va
       flips into strict mode automatically.
     </p>
 
-    <!-- Step 1: form -->
+    <!-- Step 1: form. Three live states based on what's pre-configured:
+         (a) BOTH token + email pre-set  → one-click banner, no fields
+         (b) Token pre-set, no email      → just the email field
+         (c) Neither pre-set              → full form (default visible) -->
     <div id="lockdown-form" class="lockdown-form">
-      <div class="lockdown-row">
-        <label for="ld-email" class="lockdown-label">Email allowed in</label>
-        <input id="ld-email" type="email" class="lockdown-input" placeholder="you@example.com" autocomplete="email" />
-        <div class="lockdown-hint">Comma-separate to allow multiple addresses.</div>
+
+      <!-- Prefilled-token badge: replaces the token field when present -->
+      <div id="ld-token-prefilled" class="lockdown-prefilled" hidden>
+        <div class="lockdown-prefilled-mark">✓</div>
+        <div class="lockdown-prefilled-text">
+          <strong>Token already configured</strong>
+          <span>Reusing <span class="mono">env.CLOUDFLARE_API_TOKEN</span> set at deploy time. <a href="#" id="ld-use-different">Paste a different one instead ↻</a></span>
+        </div>
       </div>
 
-      <div class="lockdown-row">
+      <div class="lockdown-row" id="ld-token-row">
         <label for="ld-token" class="lockdown-label">Cloudflare API token</label>
         <input id="ld-token" type="password" class="lockdown-input" placeholder="paste — abcdef…" autocomplete="off" spellcheck="false" />
         <div class="lockdown-hint">
@@ -1257,10 +1345,29 @@ input[type="text"]:focus, select:focus, textarea:focus { border-bottom-color: va
         </div>
       </div>
 
-      <details class="lockdown-scopes-details">
-        <summary class="mono">Required scopes (4)</summary>
-        <ul class="lockdown-scopes" id="ld-scopes"></ul>
-      </details>
+      <!-- Inline numbered steps so users don't have to hunt the CF dash -->
+      <div class="lockdown-instructions" id="ld-instructions">
+        <div class="lockdown-instructions-header">
+          <span class="mono">How to create the token (3 minutes)</span>
+          <button type="button" id="ld-copy-scopes" class="lockdown-copy-btn">Copy scope names</button>
+        </div>
+        <ol class="lockdown-instructions-list">
+          <li>Click <a href="#" id="ld-step-link" target="_blank" rel="noopener">Create scoped token ↗</a> — opens dash → API Tokens.</li>
+          <li>Click <span class="mono">Create Token</span> → <span class="mono">Get started</span> (Custom token).</li>
+          <li>Under <span class="mono">Permissions</span>, add these <strong>4</strong> rows (paste the names from the copy button above):
+            <ul class="lockdown-instructions-scopes" id="ld-scopes"></ul>
+          </li>
+          <li>Set <span class="mono">Account Resources</span> → <span class="mono">Include</span> → <span class="mono">All accounts</span>.</li>
+          <li>Click <span class="mono">Continue to summary</span> → <span class="mono">Create Token</span> → <span class="mono">Copy</span>.</li>
+          <li>Paste it in the field above.</li>
+        </ol>
+      </div>
+
+      <div class="lockdown-row">
+        <label for="ld-email" class="lockdown-label">Email allowed in</label>
+        <input id="ld-email" type="email" class="lockdown-input" placeholder="you@example.com" autocomplete="email" />
+        <div class="lockdown-hint" id="ld-email-hint">Comma-separate to allow multiple addresses.</div>
+      </div>
 
       <!-- Account picker (hidden unless multi-account) -->
       <div class="lockdown-row" id="ld-account-row" style="display: none;">
@@ -2223,13 +2330,21 @@ async function mountLockdownWizard() {
 
   const els = {
     email: document.getElementById('ld-email'),
+    emailHint: document.getElementById('ld-email-hint'),
     token: document.getElementById('ld-token'),
+    tokenRow: document.getElementById('ld-token-row'),
+    tokenPrefilled: document.getElementById('ld-token-prefilled'),
     tokenLink: document.getElementById('ld-token-link'),
+    instructions: document.getElementById('ld-instructions'),
+    stepLink: document.getElementById('ld-step-link'),
+    copyScopes: document.getElementById('ld-copy-scopes'),
+    useDifferent: document.getElementById('ld-use-different'),
     accountRow: document.getElementById('ld-account-row'),
     account: document.getElementById('ld-account'),
     hostDisplay: document.getElementById('ld-host-display'),
     scriptDisplay: document.getElementById('ld-script-display'),
     submit: document.getElementById('ld-submit'),
+    submitText: document.querySelector('#ld-submit .lockdown-btn-text'),
     dismiss: document.getElementById('ld-dismiss'),
     error: document.getElementById('ld-error'),
     form: document.getElementById('lockdown-form'),
@@ -2245,20 +2360,75 @@ async function mountLockdownWizard() {
   };
 
   els.tokenLink.href = discover.tokenUrl;
+  if (els.stepLink) els.stepLink.href = discover.tokenUrl;
   els.hostDisplay.textContent = discover.workerHost || '—';
   els.scriptDisplay.textContent = discover.scriptName || 'helm';
   els.scopes.innerHTML = (discover.scopes || [])
     .map((s) => '<li>' + escapeHtml(s.resource) + ' · ' + escapeHtml(s.permission) + '</li>')
     .join('');
 
+  // Adapt to prefill state.
+  // hasExistingToken=true: hide token field + instructions, show prefilled banner.
+  // prefilledOwnerEmail set: pre-fill the email field.
+  // Both true: button is enabled immediately, label changes to "Lock it down · 1 click".
+  let usingExistingToken = Boolean(discover.hasExistingToken);
+  if (usingExistingToken) {
+    els.tokenRow.style.display = 'none';
+    els.instructions.style.display = 'none';
+    els.tokenPrefilled.removeAttribute('hidden');
+  }
+  if (discover.prefilledOwnerEmail) {
+    els.email.value = discover.prefilledOwnerEmail;
+    els.emailHint.innerHTML = 'Pre-filled from <span class="mono">env.OWNER_EMAIL</span>. Edit if you want a different address.';
+  }
+  if (usingExistingToken && discover.prefilledOwnerEmail) {
+    els.submitText.textContent = 'Lock it down · 1 click';
+  }
+
+  // "Paste a different one instead" — flip back to manual mode.
+  if (els.useDifferent) {
+    els.useDifferent.addEventListener('click', (e) => {
+      e.preventDefault();
+      usingExistingToken = false;
+      els.tokenPrefilled.setAttribute('hidden', '');
+      els.tokenRow.style.display = '';
+      els.instructions.style.display = '';
+      els.token.focus();
+      refreshSubmitState();
+    });
+  }
+
+  // Copy scope names button — pasteable into CF dash's permission search.
+  if (els.copyScopes) {
+    els.copyScopes.addEventListener('click', async () => {
+      const scopeNames = (discover.scopes || [])
+        .map((s) => s.permission)
+        .join('\\n');
+      try {
+        await navigator.clipboard.writeText(scopeNames);
+        const orig = els.copyScopes.textContent;
+        els.copyScopes.textContent = 'Copied ✓';
+        els.copyScopes.classList.add('is-copied');
+        setTimeout(() => {
+          els.copyScopes.textContent = orig;
+          els.copyScopes.classList.remove('is-copied');
+        }, 2000);
+      } catch {
+        els.copyScopes.textContent = 'Copy failed';
+      }
+    });
+  }
+
   let preflightCache = null; // cached preflight result for current token
 
   // Validate inputs + cache preflight on token paste/blur.
   function valid() {
     const email = (els.email.value || '').trim();
-    const token = (els.token.value || '').trim();
-    if (!email || !token) return false;
-    if (!email.includes('@')) return false;
+    if (!email || !email.includes('@')) return false;
+    if (!usingExistingToken) {
+      const token = (els.token.value || '').trim();
+      if (!token) return false;
+    }
     return true;
   }
   function refreshSubmitState() { els.submit.disabled = !valid(); }
@@ -2267,29 +2437,32 @@ async function mountLockdownWizard() {
     preflightCache = null;
     refreshSubmitState();
   });
+  // Initial state — if both prefilled, button is live immediately.
+  refreshSubmitState();
 
-  // Preflight the token when it loses focus (or before submit) — populates
-  // the account picker if needed.
+  // Preflight the token. When usingExistingToken=true we send no token in
+  // the body — the server falls back to env.CLOUDFLARE_API_TOKEN.
   async function preflight() {
-    const token = (els.token.value || '').trim();
-    if (!token) return null;
-    if (preflightCache && preflightCache.token === token) return preflightCache.data;
+    const tokenVal = (els.token.value || '').trim();
+    if (!usingExistingToken && !tokenVal) return null;
+    const cacheKey = usingExistingToken ? '__env__' : tokenVal;
+    if (preflightCache && preflightCache.key === cacheKey) return preflightCache.data;
     els.submit.disabled = true;
     const r = await j('/setup/access/preflight', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ token })
+      body: JSON.stringify(usingExistingToken ? {} : { token: tokenVal })
     });
     refreshSubmitState();
     if (!r.data?.ok) {
       showError(r.data?.error || 'token check failed');
-      els.token.classList.add('is-invalid');
+      if (!usingExistingToken) els.token.classList.add('is-invalid');
       return null;
     }
-    els.token.classList.remove('is-invalid');
+    if (!usingExistingToken) els.token.classList.remove('is-invalid');
     hideError();
     const data = r.data.data;
-    preflightCache = { token, data };
+    preflightCache = { key: cacheKey, data };
     // Show account picker only when >1.
     els.account.innerHTML = '';
     for (const a of (data.accounts || [])) {
@@ -2337,15 +2510,19 @@ async function mountLockdownWizard() {
 
     let result;
     try {
+      // When usingExistingToken, omit token from body — server uses env.
+      const reqBody = {
+        accountId,
+        scriptName: discover.scriptName || undefined,
+        allowedEmails
+      };
+      if (!usingExistingToken) {
+        reqBody.token = els.token.value.trim();
+      }
       const r = await j('/setup/access/run', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          token: els.token.value.trim(),
-          accountId,
-          scriptName: discover.scriptName || undefined,
-          allowedEmails
-        })
+        body: JSON.stringify(reqBody)
       });
       result = r.data;
     } catch (err) {

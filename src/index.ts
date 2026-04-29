@@ -577,10 +577,14 @@ async function handler(request: Request, env: Env, requestId: string, startedAt:
           authConfigured: Boolean(auth?.configured),
           workerHost: host,
           scriptName: deriveScriptName(host),
-          // If the operator already pasted a CLOUDFLARE_API_TOKEN for the
-          // cf-api-mcp plugin, the wizard could reuse it — but we don't
-          // know if its scopes match. Surface the hint; let the user pick.
+          // True iff the operator pasted CLOUDFLARE_API_TOKEN at deploy time
+          // (or set it later via wrangler secret put). The wizard uses this
+          // as a fallback so the user doesn't have to paste again.
           hasExistingToken: Boolean(env.CLOUDFLARE_API_TOKEN),
+          // Pre-fill the email field. If both this AND hasExistingToken are
+          // true, the wizard's "Lock it down" button is one click — no
+          // form fill required.
+          prefilledOwnerEmail: env.OWNER_EMAIL ?? null,
           tokenUrl: ACCESS_WIZARD_TOKEN_URL,
           scopes: ACCESS_WIZARD_SCOPES
         }
@@ -591,12 +595,14 @@ async function handler(request: Request, env: Env, requestId: string, startedAt:
   }
 
   // POST /setup/access/preflight — verify token + return account picker rows.
+  // Token comes from the request body OR (if absent) from env.CLOUDFLARE_API_TOKEN.
   if (request.method === "POST" && url.pathname === "/setup/access/preflight") {
     const body = (await request.json().catch(() => ({}))) as { token?: string };
-    if (!body.token) {
+    const token = body.token || env.CLOUDFLARE_API_TOKEN || "";
+    if (!token) {
       return json({ ok: false, error: "token required" }, 400, requestId);
     }
-    const r = await preflightToken(body.token);
+    const r = await preflightToken(token);
     if (r.ok) {
       return json({ ok: true, data: r }, 200, requestId);
     }
@@ -605,7 +611,8 @@ async function handler(request: Request, env: Env, requestId: string, startedAt:
   }
 
   // POST /setup/access/run — orchestrate the lockdown.
-  // Body: { token, accountId, scriptName?, allowedEmails: [], appName? }
+  // Body: { token?, accountId, scriptName?, allowedEmails: [], appName? }
+  // Token falls back to env.CLOUDFLARE_API_TOKEN when omitted/empty.
   // Returns: full LockdownResult with per-step progress.
   if (request.method === "POST" && url.pathname === "/setup/access/run") {
     const body = (await request.json().catch(() => ({}))) as {
@@ -616,7 +623,8 @@ async function handler(request: Request, env: Env, requestId: string, startedAt:
       allowedEmails?: string[];
       sessionDuration?: string;
     };
-    if (!body.token || !body.accountId) {
+    const token = body.token || env.CLOUDFLARE_API_TOKEN || "";
+    if (!token || !body.accountId) {
       return json(
         { ok: false, error: "token and accountId required" },
         400,
@@ -626,7 +634,7 @@ async function handler(request: Request, env: Env, requestId: string, startedAt:
     const host = request.headers.get("host") ?? url.host;
     const scriptName = body.scriptName || deriveScriptName(host) || "helm";
     const result = await runLockdown({
-      token: body.token,
+      token,
       accountId: body.accountId,
       scriptName,
       appName: body.appName || `Helm — ${scriptName}`,

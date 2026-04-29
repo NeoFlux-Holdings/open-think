@@ -19,7 +19,15 @@
     "pa:setup": "node ./scripts/pa_setup.mjs"
   },
   "cloudflare": {
-    "_comment": "Intentionally empty so the Deploy to Cloudflare button shows a clean form. Optional secrets (ANTHROPIC_API_KEY, CLOUDFLARE_API_TOKEN, etc.) are documented in docs/PROVIDERS.md and added by the user post-deploy via dash → Worker → Settings → Variables, or via wrangler secret put. Workers AI is bound by default — the agent runs immediately without any secrets."
+    "_comment": "Two optional secrets prompted at deploy time. Both let the in-app `Lock it down` wizard at /app#/settings short-circuit to a one-click action. Skipping both still works — the wizard just asks for them later. Other optional secrets (ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.) are added post-deploy via dash → Worker → Settings → Variables.",
+    "bindings": {
+      "CLOUDFLARE_API_TOKEN": {
+        "description": "**Optional.** Pre-fills the in-app `Lock it down` wizard at /app#/settings so you don't have to paste a token there later. Create one with these four scopes — [Workers Scripts:Edit, Access: Apps and Policies:Edit, Account Settings:Read, User Details:Read] — at [dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens). Skip if you'd rather paste it in the wizard."
+      },
+      "OWNER_EMAIL": {
+        "description": "**Optional.** Your email address. The `Lock it down` wizard pre-fills this as the only email Cloudflare Access will let through. Leave blank to type it in the wizard later. Also used by the email plugin for outbound notifications."
+      }
+    }
   },
   "dependencies": {
     "jose": "^5.9.6",
