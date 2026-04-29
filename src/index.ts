@@ -21,6 +21,13 @@ import { listMcpRollbackSupport } from "./rollback";
 import type { ConductorInput } from "./conductor";
 import { startDeviceCode, pollDeviceCode } from "./oauth/codexOauth";
 import { collectStatus, generateSnippet, guidedStart } from "./setup";
+import {
+  ACCESS_WIZARD_SCOPES,
+  ACCESS_WIZARD_TOKEN_URL,
+  deriveScriptName,
+  preflightToken,
+  runLockdown
+} from "./setup-access";
 import { isPublicRoute, requireAuth, type AuthContext } from "./auth";
 import { welcomeHtml } from "./welcome";
 import type { Env, InvokeRequest } from "./types";
@@ -553,6 +560,85 @@ async function handler(request: Request, env: Env, requestId: string, startedAt:
     };
     const result = await guidedStart(env, runtime, skills, body);
     return json({ ok: true, data: result }, 200, requestId);
+  }
+
+  /* ---- Lock-it-down wizard for Cloudflare Access ---- */
+  // GET /setup/access/discover — populates the wizard form on Settings tab.
+  // Returns the worker's own host + best-guess script name + whether auth
+  // is already configured + the pre-filled token-creation URL.
+  if (request.method === "GET" && url.pathname === "/setup/access/discover") {
+    const host = request.headers.get("host") ?? url.host;
+    const status = collectStatus(env, runtime);
+    const auth = status.capabilities.find((c) => c.id === "auth");
+    return json(
+      {
+        ok: true,
+        data: {
+          authConfigured: Boolean(auth?.configured),
+          workerHost: host,
+          scriptName: deriveScriptName(host),
+          // If the operator already pasted a CLOUDFLARE_API_TOKEN for the
+          // cf-api-mcp plugin, the wizard could reuse it — but we don't
+          // know if its scopes match. Surface the hint; let the user pick.
+          hasExistingToken: Boolean(env.CLOUDFLARE_API_TOKEN),
+          tokenUrl: ACCESS_WIZARD_TOKEN_URL,
+          scopes: ACCESS_WIZARD_SCOPES
+        }
+      },
+      200,
+      requestId
+    );
+  }
+
+  // POST /setup/access/preflight — verify token + return account picker rows.
+  if (request.method === "POST" && url.pathname === "/setup/access/preflight") {
+    const body = (await request.json().catch(() => ({}))) as { token?: string };
+    if (!body.token) {
+      return json({ ok: false, error: "token required" }, 400, requestId);
+    }
+    const r = await preflightToken(body.token);
+    if (r.ok) {
+      return json({ ok: true, data: r }, 200, requestId);
+    }
+    // Already has ok:false + error fields; pass through.
+    return json(r, 400, requestId);
+  }
+
+  // POST /setup/access/run — orchestrate the lockdown.
+  // Body: { token, accountId, scriptName?, allowedEmails: [], appName? }
+  // Returns: full LockdownResult with per-step progress.
+  if (request.method === "POST" && url.pathname === "/setup/access/run") {
+    const body = (await request.json().catch(() => ({}))) as {
+      token?: string;
+      accountId?: string;
+      scriptName?: string;
+      appName?: string;
+      allowedEmails?: string[];
+      sessionDuration?: string;
+    };
+    if (!body.token || !body.accountId) {
+      return json(
+        { ok: false, error: "token and accountId required" },
+        400,
+        requestId
+      );
+    }
+    const host = request.headers.get("host") ?? url.host;
+    const scriptName = body.scriptName || deriveScriptName(host) || "helm";
+    const result = await runLockdown({
+      token: body.token,
+      accountId: body.accountId,
+      scriptName,
+      appName: body.appName || `Helm — ${scriptName}`,
+      workerHost: host,
+      allowedEmails: body.allowedEmails ?? [],
+      sessionDuration: body.sessionDuration
+    });
+    if (result.ok) {
+      return json({ ok: true, data: result }, 200, requestId);
+    }
+    // result already has ok:false + error/recovery/steps; pass through.
+    return json(result, 400, requestId);
   }
 
   if (request.method === "POST" && url.pathname === "/oauth/codex/device/start") {

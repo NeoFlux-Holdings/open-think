@@ -585,6 +585,264 @@ h1.section-title {
 }
 @media (prefers-color-scheme: dark) { .snippet-pre { background: rgba(255,255,255,0.03); } }
 
+/* ---- Lock-it-down wizard ---- */
+.lockdown-card {
+  border: 1px solid var(--rule);
+  background: linear-gradient(180deg, rgba(226, 88, 34, 0.04) 0%, transparent 60%);
+  padding: 28px 32px 32px;
+  border-radius: 4px;
+  position: relative;
+  overflow: hidden;
+}
+.lockdown-card::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0;
+  width: 4px; height: 100%;
+  background: var(--accent);
+}
+.lockdown-card .panel-header { margin-bottom: 8px; }
+.lockdown-card .panel-header .h { color: var(--accent); }
+.lockdown-card .meta.accent { color: var(--accent); font-weight: 500; }
+.lockdown-card.is-strict::before { background: var(--ok, #2d5c3e); }
+.lockdown-card.is-strict .panel-header .h { color: var(--ok, #2d5c3e); }
+
+.lockdown-form { display: flex; flex-direction: column; gap: 18px; }
+.lockdown-row { display: flex; flex-direction: column; gap: 6px; }
+.lockdown-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.lockdown-input {
+  width: 100%;
+  padding: 11px 14px;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 14px;
+  color: var(--ink);
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+.lockdown-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(226, 88, 34, 0.18);
+}
+.lockdown-input:disabled { opacity: 0.5; }
+.lockdown-input.is-invalid { border-color: var(--red, #8b1d1d); }
+.lockdown-hint {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--muted);
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+}
+.lockdown-hint a { color: var(--accent); }
+
+.lockdown-confirmrow {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 18px;
+  padding: 14px 16px; background: var(--paper);
+  border: 1px dashed var(--muted-2); border-radius: 3px;
+}
+@media (max-width: 700px) { .lockdown-confirmrow { grid-template-columns: 1fr; } }
+.lockdown-tinylabel { font-size: 10px; color: var(--muted); margin-bottom: 4px; }
+
+.lockdown-scopes-details summary { cursor: pointer; font-size: 11px; color: var(--muted); padding: 4px 0; }
+.lockdown-scopes-details summary:hover { color: var(--accent); }
+.lockdown-scopes { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--muted); list-style: none; padding: 8px 0 0; margin: 0; }
+.lockdown-scopes li { padding: 2px 0; }
+.lockdown-scopes li::before { content: '→ '; color: var(--accent); }
+
+.lockdown-actions { display: flex; gap: 12px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
+.lockdown-btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 12px 22px;
+  background: transparent;
+  border: 1px solid var(--rule);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+  border-radius: 3px;
+  color: var(--ink);
+  transition: all 0.12s;
+}
+.lockdown-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.lockdown-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.lockdown-btn-primary {
+  background: var(--accent); color: var(--paper); border-color: var(--accent);
+}
+.lockdown-btn-primary:hover:not(:disabled) {
+  background: var(--accent-deep, #b6590f);
+  border-color: var(--accent-deep, #b6590f);
+  color: var(--paper);
+}
+.lockdown-btn-arrow { transition: transform 0.12s; }
+.lockdown-btn:hover .lockdown-btn-arrow { transform: translateX(2px); }
+.lockdown-btn-dismiss { font-size: 11px; padding: 12px 14px; border: none; }
+
+.lockdown-error {
+  padding: 12px 14px;
+  background: rgba(139, 29, 29, 0.08);
+  border-left: 3px solid var(--red, #8b1d1d);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: var(--red, #8b1d1d);
+  border-radius: 2px;
+}
+
+/* progress steps */
+.lockdown-progress { padding: 8px 0; }
+.lockdown-steps {
+  list-style: none; padding: 0; margin: 0;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.lockdown-steps li {
+  display: flex; align-items: center; gap: 14px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  color: var(--muted);
+  padding: 8px 12px;
+  border-left: 2px solid var(--muted-2);
+  transition: all 0.18s;
+}
+.lockdown-steps li.is-running {
+  color: var(--accent);
+  border-left-color: var(--accent);
+}
+.lockdown-steps li.is-done {
+  color: var(--ok, #2d5c3e);
+  border-left-color: var(--ok, #2d5c3e);
+}
+.lockdown-steps li.is-failed {
+  color: var(--red, #8b1d1d);
+  border-left-color: var(--red, #8b1d1d);
+}
+.ld-bullet {
+  display: inline-block;
+  width: 16px; height: 16px; border-radius: 50%;
+  border: 1.5px solid currentColor;
+  flex-shrink: 0;
+  position: relative;
+}
+.is-running .ld-bullet {
+  border-color: var(--accent);
+  animation: ld-pulse 1.0s ease-in-out infinite;
+}
+.is-done .ld-bullet {
+  background: var(--ok, #2d5c3e);
+  border-color: var(--ok, #2d5c3e);
+}
+.is-done .ld-bullet::after {
+  content: '✓';
+  color: var(--paper);
+  position: absolute;
+  inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 10px; font-weight: bold;
+}
+.is-failed .ld-bullet {
+  background: var(--red, #8b1d1d);
+  border-color: var(--red, #8b1d1d);
+}
+.is-failed .ld-bullet::after {
+  content: '!';
+  color: var(--paper);
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: bold;
+}
+@keyframes ld-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(0.85); opacity: 0.6; }
+}
+
+/* success */
+.lockdown-success { text-align: center; padding: 24px 16px 16px; }
+.lockdown-success-mark {
+  width: 64px; height: 64px; line-height: 64px;
+  margin: 0 auto 16px;
+  border-radius: 50%;
+  background: var(--ok, #2d5c3e);
+  color: var(--paper);
+  font-size: 32px;
+  animation: ld-pop 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+.lockdown-success-title {
+  font-family: 'Fraunces', serif;
+  font-size: 32px;
+  margin: 0 0 8px;
+  color: var(--ok, #2d5c3e);
+}
+.lockdown-success-body {
+  color: var(--muted);
+  max-width: 52ch;
+  margin: 0 auto 20px;
+  font-size: 15px;
+}
+.lockdown-success-actions { margin-bottom: 18px; display: flex; justify-content: center; gap: 12px; flex-wrap: wrap; }
+.lockdown-cleanup { font-size: 13px; color: var(--muted); margin-top: 18px; max-width: 56ch; margin-left: auto; margin-right: auto; text-align: left; }
+.lockdown-cleanup summary { cursor: pointer; padding: 6px 0; }
+.lockdown-cleanup ul { list-style: none; padding-left: 0; margin-top: 8px; }
+.lockdown-cleanup li { padding: 4px 0; padding-left: 18px; position: relative; }
+.lockdown-cleanup li::before { content: '◇'; position: absolute; left: 0; color: var(--muted-2); }
+@keyframes ld-pop {
+  0% { transform: scale(0); opacity: 0; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+/* failure */
+.lockdown-failure { text-align: center; padding: 24px 16px 16px; }
+.lockdown-failure-mark {
+  width: 56px; height: 56px; line-height: 56px;
+  margin: 0 auto 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--paper);
+  font-size: 28px;
+  animation: ld-pop 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+.lockdown-failure-title {
+  font-family: 'Fraunces', serif;
+  font-size: 28px;
+  margin: 0 0 8px;
+  color: var(--accent);
+}
+.lockdown-failure-body {
+  color: var(--ink);
+  max-width: 56ch;
+  margin: 0 auto 16px;
+  font-size: 15px;
+}
+.lockdown-failure-recovery {
+  text-align: left;
+  font-size: 13px;
+  color: var(--muted);
+  margin-top: 8px;
+}
+
+/* strict-mode collapsed view (when auth is already configured) */
+.lockdown-strict-summary {
+  padding: 14px 18px;
+  border: 1px solid var(--ok, #2d5c3e);
+  border-radius: 3px;
+  display: flex; align-items: center; gap: 14px;
+  background: rgba(45, 92, 62, 0.05);
+}
+.lockdown-strict-mark {
+  width: 28px; height: 28px; border-radius: 50%;
+  background: var(--ok, #2d5c3e); color: var(--paper);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; font-weight: bold;
+  flex-shrink: 0;
+}
+.lockdown-strict-text { font-size: 14px; color: var(--ink); }
+.lockdown-strict-text .mono { color: var(--muted); font-size: 12px; display: block; margin-top: 2px; }
+
 .stream-controls {
   display: flex;
   gap: 8px;
@@ -962,6 +1220,123 @@ input[type="text"]:focus, select:focus, textarea:focus { border-bottom-color: va
     </div>
     <div class="readiness-bar-wrap"><div class="readiness-bar" id="readiness-bar"></div></div>
     <div id="recommended" class="recommended"></div>
+  </section>
+
+  <!-- Lock-it-down wizard. Only visible when auth.configured === false; the
+       JS in renderSettings() flips its display: none on load based on
+       /setup/access/discover. -->
+  <section class="reveal d3 lockdown-card" id="lockdown-card" style="display: none; margin-top: 36px;">
+    <div class="panel-header">
+      <span class="h display">⚠ Auth · first-run permissive</span>
+      <span class="meta accent" id="lockdown-status">unlocked</span>
+    </div>
+    <p style="font-size: 16px; color: var(--ink); margin-bottom: 18px; max-width: 64ch;">
+      Anyone with this URL can talk to your agent right now. Lock it down with
+      Cloudflare Access in 30 seconds — paste a scoped token, pick an email,
+      hit the button. We create the Access app, attach an email-only policy,
+      and persist the resulting <span class="mono">CF_ACCESS_TEAM_DOMAIN</span> +
+      <span class="mono">CF_ACCESS_AUD</span> as Worker secrets so the runtime
+      flips into strict mode automatically.
+    </p>
+
+    <!-- Step 1: form -->
+    <div id="lockdown-form" class="lockdown-form">
+      <div class="lockdown-row">
+        <label for="ld-email" class="lockdown-label">Email allowed in</label>
+        <input id="ld-email" type="email" class="lockdown-input" placeholder="you@example.com" autocomplete="email" />
+        <div class="lockdown-hint">Comma-separate to allow multiple addresses.</div>
+      </div>
+
+      <div class="lockdown-row">
+        <label for="ld-token" class="lockdown-label">Cloudflare API token</label>
+        <input id="ld-token" type="password" class="lockdown-input" placeholder="paste — abcdef…" autocomplete="off" spellcheck="false" />
+        <div class="lockdown-hint">
+          <a href="#" id="ld-token-link" target="_blank" rel="noopener">Create scoped token ↗</a>
+          <span style="color: var(--muted-2);">·</span>
+          <span class="mono">used once · never stored · revoke after</span>
+        </div>
+      </div>
+
+      <details class="lockdown-scopes-details">
+        <summary class="mono">Required scopes (4)</summary>
+        <ul class="lockdown-scopes" id="ld-scopes"></ul>
+      </details>
+
+      <!-- Account picker (hidden unless multi-account) -->
+      <div class="lockdown-row" id="ld-account-row" style="display: none;">
+        <label for="ld-account" class="lockdown-label">Cloudflare account</label>
+        <select id="ld-account" class="lockdown-input"></select>
+      </div>
+
+      <!-- Read-only confirmations -->
+      <div class="lockdown-confirmrow">
+        <div>
+          <div class="mono small-caps lockdown-tinylabel">Will gate</div>
+          <div class="mono" id="ld-host-display">—</div>
+        </div>
+        <div>
+          <div class="mono small-caps lockdown-tinylabel">Worker name</div>
+          <div class="mono" id="ld-script-display">—</div>
+        </div>
+      </div>
+
+      <div class="lockdown-actions">
+        <button id="ld-submit" class="lockdown-btn lockdown-btn-primary" disabled>
+          <span class="lockdown-btn-text">Lock it down</span>
+          <span class="lockdown-btn-arrow">→</span>
+        </button>
+        <button id="ld-dismiss" class="ghost lockdown-btn-dismiss" type="button">Skip for now</button>
+      </div>
+      <div id="ld-error" class="lockdown-error" hidden></div>
+    </div>
+
+    <!-- Step 2: progress -->
+    <div id="lockdown-progress" class="lockdown-progress" hidden>
+      <ol class="lockdown-steps" id="ld-steps">
+        <li data-step="preflight"><span class="ld-bullet"></span><span class="ld-label">Verifying token</span></li>
+        <li data-step="team-domain"><span class="ld-bullet"></span><span class="ld-label">Looking up team domain</span></li>
+        <li data-step="create-app"><span class="ld-bullet"></span><span class="ld-label">Creating Access app</span></li>
+        <li data-step="create-policy"><span class="ld-bullet"></span><span class="ld-label">Adding email policy</span></li>
+        <li data-step="set-secret-team-domain"><span class="ld-bullet"></span><span class="ld-label">Persisting CF_ACCESS_TEAM_DOMAIN</span></li>
+        <li data-step="set-secret-aud"><span class="ld-bullet"></span><span class="ld-label">Persisting CF_ACCESS_AUD</span></li>
+        <li data-step="set-secret-allowed-emails"><span class="ld-bullet"></span><span class="ld-label">Persisting CF_ACCESS_ALLOWED_EMAILS</span></li>
+        <li data-step="verify-strict"><span class="ld-bullet"></span><span class="ld-label">Waiting for redeploy + strict mode</span></li>
+      </ol>
+    </div>
+
+    <!-- Step 3: success -->
+    <div id="lockdown-success" class="lockdown-success" hidden>
+      <div class="lockdown-success-mark">✓</div>
+      <h2 class="lockdown-success-title">Locked down.</h2>
+      <p class="lockdown-success-body">
+        Auth is now strict. Refresh and Cloudflare Access will ask for your
+        email — click the link in the verification email and you're back in.
+      </p>
+      <div class="lockdown-success-actions">
+        <button id="ld-refresh" class="lockdown-btn lockdown-btn-primary">Refresh now →</button>
+      </div>
+      <details class="lockdown-cleanup">
+        <summary class="mono">Cleanup (optional)</summary>
+        <ul>
+          <li>Revoke the API token at <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noopener">dash → API Tokens</a> — its job is done.</li>
+          <li>Edit allow-list later at <a id="ld-app-link" href="https://dash.cloudflare.com/?to=/:account/access/apps" target="_blank" rel="noopener">dash → Zero Trust → Access → Apps</a>.</li>
+        </ul>
+      </details>
+    </div>
+
+    <!-- Step 4: failure with recovery copy -->
+    <div id="lockdown-failure" class="lockdown-failure" hidden>
+      <div class="lockdown-failure-mark">⚠</div>
+      <h2 class="lockdown-failure-title">Stopped before finishing.</h2>
+      <p class="lockdown-failure-body" id="ld-failure-reason">—</p>
+      <details class="lockdown-cleanup" open>
+        <summary class="mono">Recovery</summary>
+        <p id="ld-failure-recovery" class="lockdown-failure-recovery">—</p>
+      </details>
+      <div class="lockdown-success-actions">
+        <button id="ld-retry" class="lockdown-btn lockdown-btn-primary">Try again</button>
+      </div>
+    </div>
   </section>
 
   <section class="reveal d3" style="margin-top: 36px;">
@@ -1809,8 +2184,269 @@ async function renderProviders() {
 }
 
 /* ---------------- settings ---------------- */
+/* ---------------- lock-it-down wizard ---------------- */
+async function mountLockdownWizard() {
+  const card = document.getElementById('lockdown-card');
+  if (!card) return;
+
+  // Discover initial state — host, script name, whether auth is already on.
+  let discover;
+  try {
+    const r = await j('/setup/access/discover');
+    discover = r.data?.data;
+    if (!discover) return;
+  } catch {
+    return;
+  }
+
+  // If auth is already configured, render the slim "✓ strict mode" summary
+  // card and bail. The user doesn't need the wizard.
+  if (discover.authConfigured) {
+    card.classList.add('is-strict');
+    document.getElementById('lockdown-status').textContent = 'strict';
+    document.getElementById('lockdown-form').innerHTML = \`
+      <div class="lockdown-strict-summary">
+        <div class="lockdown-strict-mark">✓</div>
+        <div class="lockdown-strict-text">
+          Cloudflare Access is gating <span class="mono">\${escapeHtml(discover.workerHost)}</span>.
+          <span class="mono">CF_ACCESS_TEAM_DOMAIN + CF_ACCESS_AUD set · auth_mode = strict</span>
+        </div>
+      </div>
+    \`;
+    card.querySelector('.panel-header .h').textContent = '✓ Auth · locked down';
+    card.style.display = '';
+    return;
+  }
+
+  // Otherwise, show the wizard form.
+  card.style.display = '';
+
+  const els = {
+    email: document.getElementById('ld-email'),
+    token: document.getElementById('ld-token'),
+    tokenLink: document.getElementById('ld-token-link'),
+    accountRow: document.getElementById('ld-account-row'),
+    account: document.getElementById('ld-account'),
+    hostDisplay: document.getElementById('ld-host-display'),
+    scriptDisplay: document.getElementById('ld-script-display'),
+    submit: document.getElementById('ld-submit'),
+    dismiss: document.getElementById('ld-dismiss'),
+    error: document.getElementById('ld-error'),
+    form: document.getElementById('lockdown-form'),
+    progress: document.getElementById('lockdown-progress'),
+    success: document.getElementById('lockdown-success'),
+    failure: document.getElementById('lockdown-failure'),
+    failureReason: document.getElementById('ld-failure-reason'),
+    failureRecovery: document.getElementById('ld-failure-recovery'),
+    refresh: document.getElementById('ld-refresh'),
+    retry: document.getElementById('ld-retry'),
+    appLink: document.getElementById('ld-app-link'),
+    scopes: document.getElementById('ld-scopes')
+  };
+
+  els.tokenLink.href = discover.tokenUrl;
+  els.hostDisplay.textContent = discover.workerHost || '—';
+  els.scriptDisplay.textContent = discover.scriptName || 'helm';
+  els.scopes.innerHTML = (discover.scopes || [])
+    .map((s) => '<li>' + escapeHtml(s.resource) + ' · ' + escapeHtml(s.permission) + '</li>')
+    .join('');
+
+  let preflightCache = null; // cached preflight result for current token
+
+  // Validate inputs + cache preflight on token paste/blur.
+  function valid() {
+    const email = (els.email.value || '').trim();
+    const token = (els.token.value || '').trim();
+    if (!email || !token) return false;
+    if (!email.includes('@')) return false;
+    return true;
+  }
+  function refreshSubmitState() { els.submit.disabled = !valid(); }
+  els.email.addEventListener('input', refreshSubmitState);
+  els.token.addEventListener('input', () => {
+    preflightCache = null;
+    refreshSubmitState();
+  });
+
+  // Preflight the token when it loses focus (or before submit) — populates
+  // the account picker if needed.
+  async function preflight() {
+    const token = (els.token.value || '').trim();
+    if (!token) return null;
+    if (preflightCache && preflightCache.token === token) return preflightCache.data;
+    els.submit.disabled = true;
+    const r = await j('/setup/access/preflight', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token })
+    });
+    refreshSubmitState();
+    if (!r.data?.ok) {
+      showError(r.data?.error || 'token check failed');
+      els.token.classList.add('is-invalid');
+      return null;
+    }
+    els.token.classList.remove('is-invalid');
+    hideError();
+    const data = r.data.data;
+    preflightCache = { token, data };
+    // Show account picker only when >1.
+    els.account.innerHTML = '';
+    for (const a of (data.accounts || [])) {
+      const opt = document.createElement('option');
+      opt.value = a.id;
+      opt.textContent = a.name + '  (' + a.id.slice(0, 8) + '…)';
+      els.account.appendChild(opt);
+    }
+    els.accountRow.style.display = data.accounts.length > 1 ? '' : 'none';
+    return data;
+  }
+  els.token.addEventListener('blur', () => { preflight(); });
+
+  function showError(msg) {
+    els.error.textContent = msg;
+    els.error.removeAttribute('hidden');
+  }
+  function hideError() { els.error.setAttribute('hidden', ''); }
+
+  // Submit — preflight (if not already), then run lockdown, stream step results.
+  els.submit.addEventListener('click', async () => {
+    if (!valid()) return;
+    hideError();
+
+    // Make sure we have an account id.
+    const pre = await preflight();
+    if (!pre) return;
+    const accountId = els.account.value || pre.accounts[0]?.id;
+    if (!accountId) {
+      showError('no account selected');
+      return;
+    }
+
+    // Switch UI → progress.
+    els.form.setAttribute('hidden', '');
+    els.progress.removeAttribute('hidden');
+
+    setStepState('preflight', 'is-done');  // already done — token is verified
+    setStepState('team-domain', 'is-running');
+
+    const allowedEmails = (els.email.value || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    let result;
+    try {
+      const r = await j('/setup/access/run', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          token: els.token.value.trim(),
+          accountId,
+          scriptName: discover.scriptName || undefined,
+          allowedEmails
+        })
+      });
+      result = r.data;
+    } catch (err) {
+      showFailure('network error', String(err && err.message ? err.message : err));
+      return;
+    }
+
+    // Animate the steps in based on the response.
+    const steps = (result?.data?.steps || result?.steps || []);
+    for (const s of steps) {
+      setStepState(s.kind, s.ok ? 'is-done' : 'is-failed', s.error);
+    }
+
+    if (!result?.ok) {
+      showFailure(
+        result?.error || 'lockdown failed',
+        result?.recovery || 'See the steps above for which call failed.'
+      );
+      return;
+    }
+
+    // Now poll /health for auth_mode flip — Worker is auto-redeploying.
+    setStepState('verify-strict', 'is-running', 'Worker is redeploying…');
+    const ok = await pollForStrictMode();
+    setStepState('verify-strict', ok ? 'is-done' : 'is-failed',
+      ok ? null : 'still in progress — refresh in a moment');
+
+    // Show success regardless — even if poll timed out, the secrets are set.
+    showSuccess(result?.data || result);
+  });
+
+  function setStepState(kind, klass, errMsg) {
+    const li = document.querySelector('.lockdown-steps li[data-step="' + kind + '"]');
+    if (!li) return;
+    li.classList.remove('is-running', 'is-done', 'is-failed');
+    li.classList.add(klass);
+    if (errMsg) {
+      const labelEl = li.querySelector('.ld-label');
+      if (labelEl && !labelEl.dataset.original) labelEl.dataset.original = labelEl.textContent;
+      labelEl.textContent = (labelEl.dataset.original || labelEl.textContent) + ' · ' + errMsg;
+    }
+  }
+
+  async function pollForStrictMode() {
+    const deadline = Date.now() + 60_000; // 60s budget
+    while (Date.now() < deadline) {
+      try {
+        const r = await fetch('/health');
+        const d = await r.json();
+        // /setup/status is more accurate; check the auth capability there.
+        const s = await fetch('/setup/status');
+        const sd = await s.json();
+        const auth = sd?.data?.capabilities?.find((c) => c.id === 'auth');
+        if (auth?.configured) return true;
+        // Fallback: also accept presence of CF_ACCESS_AUD via the health response if exposed.
+      } catch { /* keep polling */ }
+      await new Promise((r) => setTimeout(r, 2500));
+    }
+    return false;
+  }
+
+  function showSuccess(result) {
+    els.progress.setAttribute('hidden', '');
+    els.success.removeAttribute('hidden');
+    card.classList.add('is-strict');
+    document.getElementById('lockdown-status').textContent = 'strict';
+    card.querySelector('.panel-header .h').textContent = '✓ Auth · locked down';
+  }
+
+  function showFailure(reason, recovery) {
+    els.progress.setAttribute('hidden', '');
+    els.failure.removeAttribute('hidden');
+    els.failureReason.textContent = reason;
+    els.failureRecovery.textContent = recovery;
+  }
+
+  els.refresh.addEventListener('click', () => location.reload());
+  els.retry.addEventListener('click', () => {
+    els.failure.setAttribute('hidden', '');
+    els.form.removeAttribute('hidden');
+    // Reset progress markers
+    document.querySelectorAll('.lockdown-steps li').forEach((li) => {
+      li.classList.remove('is-running', 'is-done', 'is-failed');
+      const labelEl = li.querySelector('.ld-label');
+      if (labelEl && labelEl.dataset.original) labelEl.textContent = labelEl.dataset.original;
+    });
+  });
+
+  els.dismiss.addEventListener('click', () => {
+    card.style.display = 'none';
+  });
+}
+
 async function renderSettings() {
   $('#view').appendChild($('#tpl-settings').content.cloneNode(true));
+
+  // ---- Lock-it-down wizard (top of Settings tab) ----
+  // Shows a card iff auth.configured === false. Walks the user through
+  // creating a Cloudflare Access app + policy + persisting CF_ACCESS_*
+  // secrets, all from a single token paste.
+  await mountLockdownWizard();
 
   async function loadStatus() {
     const r = await j('/setup/status');
