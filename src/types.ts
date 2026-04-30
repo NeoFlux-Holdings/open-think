@@ -64,6 +64,8 @@ export interface Env {
   AI?: Ai;
   AGENT_SESSIONS?: DurableObjectNamespace;
   STREAM_HUBS?: DurableObjectNamespace;
+  /** WebSocket-backed chat session DO. One instance per session name. */
+  CHAT_SESSIONS?: DurableObjectNamespace;
   BROWSER?: Fetcher;
   SANDBOX?: Fetcher;
   WORKSPACE?: R2Bucket;

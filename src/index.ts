@@ -34,6 +34,7 @@ import type { Env, InvokeRequest } from "./types";
 
 export { AgentSessionDO } from "./durable/agentSession";
 export { StreamHubDO } from "./durable/streamHub";
+export { ChatSessionDO } from "./durable/chatSession";
 export { MorningBriefingWorkflow } from "./workflows/morningBriefing";
 
 import {
@@ -340,6 +341,36 @@ async function handler(request: Request, env: Env, requestId: string, startedAt:
 
   if (request.method === "POST" && url.pathname === "/conductor/stream") {
     return await handleConductorStreamStart(request, env, runtime, skills);
+  }
+
+  // WebSocket-based chat — modeled after the Cloudflare Workers WebSocket
+  // example (https://developers.cloudflare.com/workers/examples/websockets/)
+  // and Helm's existing conductor semantics. One DO per session name; the
+  // DO holds all browser tabs watching that session and broadcasts events.
+  if (url.pathname.startsWith("/chat/ws/")) {
+    if (!env.CHAT_SESSIONS) {
+      return json(
+        { ok: false, error: "CHAT_SESSIONS DO binding required", code: "E_DO_BINDING_MISSING" },
+        503,
+        requestId
+      );
+    }
+    const upgrade = request.headers.get("upgrade")?.toLowerCase() ?? "";
+    if (upgrade !== "websocket") {
+      return new Response("expected websocket upgrade", { status: 426 });
+    }
+    const sessionName =
+      decodeURIComponent(url.pathname.slice("/chat/ws/".length).replace(/\/$/, "")) ||
+      "conductor:default";
+    const id = env.CHAT_SESSIONS.idFromName(sessionName);
+    const stub = env.CHAT_SESSIONS.get(id);
+    // Forward to the DO with the session name as a query param so the DO's
+    // fetch handler can read it without re-parsing the path.
+    const forward = new Request(
+      `https://chat-do/?session=${encodeURIComponent(sessionName)}`,
+      request
+    );
+    return stub.fetch(forward);
   }
 
   if (request.method === "POST" && url.pathname === "/conductor/stream-tools") {

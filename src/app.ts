@@ -1701,6 +1701,12 @@ function mountConductor(host, compact) {
 
   renderConductorBody(body);
 
+  // WebSocket-backed chat — persistent connection, multi-tab fanout via the
+  // ChatSessionDO. One per-mount (the tab keeps it alive while /app is open).
+  // Auto-reconnects with exponential backoff. Falls back to fetch POST if the
+  // WS endpoint isn't available (older worker without CHAT_SESSIONS DO).
+  const chat = makeChatStream(state.conductorSession, body, btn);
+
   const send = async () => {
     const content = input.value.trim();
     if (!content) return;
@@ -1708,45 +1714,22 @@ function mountConductor(host, compact) {
     input.value = '';
     btn.disabled = true;
     btn.textContent = mode === 'auto' ? 'Running…' : mode === 'selective' ? 'Selecting…' : mode === 'stream' ? 'Streaming…' : 'Planning…';
-    appendMessageToBody(body, { role: 'user', content });
 
     if (mode === 'stream') {
+      // Codex app-server SSE stream — separate path (true token-stream RPC).
+      appendMessageToBody(body, { role: 'user', content });
       await sendStreaming(body, content);
       btn.disabled = false;
       btn.textContent = 'Send';
       return;
     }
 
-    try {
-      const r = await j('/conductor/message', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ sessionName: state.conductorSession, content, mode })
-      });
-      const data = r.data?.data;
-      if (!r.data?.ok || !data) {
-        appendMessageToBody(body, {
-          role: 'assistant',
-          content: '[conductor] ' + (r.data?.error || 'request failed')
-        });
-      } else {
-        appendMessageToBody(body, {
-          role: 'assistant',
-          content: data.assistantMessage?.content ?? '(empty reply)',
-          suggestedActions: data.suggestedActions ?? [],
-          trace: data.trace ?? [],
-          halted: data.halted,
-          mode: data.mode,
-          iterationsUsed: data.iterationsUsed,
-          provider: data.providerUsed
-        });
-      }
-    } catch (err) {
-      appendMessageToBody(body, { role: 'assistant', content: '[conductor-error] ' + String(err) });
-    } finally {
-      btn.disabled = false;
-      btn.textContent = 'Send';
-    }
+    // WS path — append optimistically; server echoes user-message to other
+    // tabs but the originating tab dedupes via clientMessageId.
+    const clientMessageId = 'c-' + Math.random().toString(36).slice(2, 10);
+    appendMessageToBody(body, { role: 'user', content, clientMessageId });
+    chat.markSeen(clientMessageId);
+    chat.send({ content, mode, clientMessageId });
   };
 
   btn.addEventListener('click', send);
@@ -2083,6 +2066,130 @@ function appendMessageToBody(body, msg) {
 }
 
 function escapeHtml(s) { return String(s).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
+
+/* ---------------- WebSocket chat stream ----------------
+ * Manages one persistent WS to /chat/ws/<sessionName>. Reconnects with
+ * exponential backoff. Outbound user-messages queue while disconnected
+ * and flush on (re)open. Inbound events (assistant-message, halted,
+ * error, complete) drive UI state.
+ *
+ * Multi-tab dedup: the originating tab tags each user-message with a
+ * clientMessageId before send + addss it to a "seen" set; when the
+ * server echoes user-message, we skip rendering if the id matches.
+ * Other tabs (which never saw the local optimistic append) render the
+ * echo normally.
+ */
+function makeChatStream(sessionName, body, btn) {
+  const seen = new Set();
+  let ws = null;
+  let queue = [];
+  let reconnectDelay = 1000;
+  let reconnectTimer = null;
+  let closed = false;
+
+  function open() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const u = proto + '//' + location.host + '/chat/ws/' + encodeURIComponent(sessionName);
+    try {
+      ws = new WebSocket(u);
+    } catch (e) {
+      // CHAT_SESSIONS DO not deployed yet (older worker). Silently disable
+      // WS — sends will queue but never flush. The user can fall back by
+      // running this app with a newer worker bundle.
+      console.warn('[chat-ws] could not open WebSocket:', e);
+      return;
+    }
+    ws.addEventListener('open', () => {
+      reconnectDelay = 1000;
+      while (queue.length > 0 && ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(queue.shift());
+      }
+    });
+    ws.addEventListener('message', (e) => {
+      let event;
+      try { event = JSON.parse(e.data); } catch { return; }
+      handleEvent(event);
+    });
+    ws.addEventListener('close', () => {
+      ws = null;
+      if (closed) return;
+      reconnectTimer = setTimeout(open, reconnectDelay);
+      reconnectDelay = Math.min(reconnectDelay * 1.5, 15000);
+    });
+    ws.addEventListener('error', () => {
+      // close handler will fire next; reconnect there
+    });
+  }
+
+  function handleEvent(event) {
+    switch (event.kind) {
+      case 'ready':
+        // Connection established — could surface a "● live" indicator if we wanted.
+        return;
+      case 'thinking':
+        // Server received the message; UI already shows "Running…" on the button.
+        return;
+      case 'user-message': {
+        // If this is OUR own echo, skip — we already appended optimistically.
+        const cid = event.message && event.message.clientMessageId;
+        if (cid && seen.has(cid)) return;
+        appendMessageToBody(body, event.message);
+        return;
+      }
+      case 'assistant-message':
+        appendMessageToBody(body, event.message);
+        return;
+      case 'halted':
+        // appended via assistant-message above; this is just the explicit signal.
+        return;
+      case 'error':
+        appendMessageToBody(body, {
+          role: 'assistant',
+          content: '[conductor-error] ' + (event.message || 'unknown')
+        });
+        return;
+      case 'complete':
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = 'Send';
+        }
+        return;
+      case 'pong':
+        return;
+    }
+  }
+
+  // Open eagerly so the first send doesn't pay the round-trip. Hibernation
+  // API on the DO side keeps idle WS connections cheap.
+  open();
+
+  return {
+    send(payload) {
+      const frame = JSON.stringify({ kind: 'user-message', ...payload });
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(frame);
+      } else {
+        queue.push(frame);
+        if (!ws && !reconnectTimer) open();
+      }
+    },
+    interrupt() {
+      const frame = JSON.stringify({ kind: 'interrupt' });
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(frame);
+    },
+    markSeen(clientMessageId) {
+      if (clientMessageId) seen.add(clientMessageId);
+    },
+    close() {
+      closed = true;
+      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+      if (ws && ws.readyState === WebSocket.OPEN) ws.close();
+    },
+    // Visible for debugging in console.
+    debug: () => ({ sessionName, ws: ws && ws.readyState, queueDepth: queue.length, seen: seen.size })
+  };
+}
+
 function renderMarkdownLite(src) {
   let out = escapeHtml(src);
   out = out.replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>');

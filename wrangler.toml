@@ -56,6 +56,13 @@ class_name = "AgentSessionDO"
 name = "STREAM_HUBS"
 class_name = "StreamHubDO"
 
+# WebSocket chat sessions — one DO per session name; holds the browser
+# WebSocket connections + broadcasts conductor events to all connected tabs.
+# Uses Cloudflare's Hibernation API so idle WS connections cost nothing.
+[[durable_objects.bindings]]
+name = "CHAT_SESSIONS"
+class_name = "ChatSessionDO"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["AgentSessionDO"]
@@ -63,6 +70,10 @@ new_sqlite_classes = ["AgentSessionDO"]
 [[migrations]]
 tag = "v2"
 new_classes = ["StreamHubDO"]
+
+[[migrations]]
+tag = "v3"
+new_classes = ["ChatSessionDO"]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # OPTIONAL: PA stack bindings
