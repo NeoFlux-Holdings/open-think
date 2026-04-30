@@ -23,11 +23,32 @@ If tool calling is unavailable for your provider, fall back to proposing actions
 Security: never include secrets verbatim. When describing bindings, use their labels only.
 `;
 
-export type ConductorMode = "propose" | "selective" | "auto";
+/**
+ * Two modes ship in /app's chat:
+ *   - "plan"    — Helm describes its approach in markdown. No skill calls.
+ *                 Useful for "what would you do?" without side effects.
+ *   - "execute" — full tool-use loop end-to-end. Helm calls skills, sees
+ *                 results, iterates, summarizes. The default.
+ *
+ * Legacy modes (propose/selective/auto) are accepted as aliases for
+ * back-compat with the older API surface:
+ *     "propose"             → plan
+ *     "selective" | "auto"  → execute
+ *
+ * The `normalizeMode()` helper applies the alias collapse on entry.
+ */
+export type ConductorMode = "plan" | "execute" | "propose" | "selective" | "auto";
+
+export function normalizeMode(m: string | undefined | null): "plan" | "execute" {
+  if (m === "plan" || m === "propose") return "plan";
+  // Default = execute. selective / auto / undefined all resolve here.
+  return "execute";
+}
 
 export type ConductorProvider =
   | "workers-ai"
   | "anthropic"
+  | "openrouter"
   | "openai-compatible"
   | "cf-ai-gateway"
   | "codex";
@@ -288,17 +309,29 @@ async function sessionAppend(
 
 function pickProvider(
   requested: ConductorInput["provider"],
-  enabledPluginIds: Set<string>
+  enabledPluginIds: Set<string>,
+  env?: { OPENROUTER_API_KEY?: string; ANTHROPIC_API_KEY?: string; AI_GATEWAY_ID?: string; OPENAI_COMPATIBLE_URL?: string }
 ): ConductorProvider {
   if (requested && enabledPluginIds.has(requested)) return requested;
+  // OpenRouter on top — when configured, it's the most capable default
+  // (auto-routes to the best model for the prompt). One paste, every model.
+  if (enabledPluginIds.has("openrouter") && env?.OPENROUTER_API_KEY) return "openrouter";
+  if (enabledPluginIds.has("anthropic") && env?.ANTHROPIC_API_KEY) return "anthropic";
+  if (enabledPluginIds.has("cf-ai-gateway") && env?.AI_GATEWAY_ID) return "cf-ai-gateway";
+  if (enabledPluginIds.has("openai-compatible") && env?.OPENAI_COMPATIBLE_URL) return "openai-compatible";
+  if (enabledPluginIds.has("workers-ai")) return "workers-ai";
+  if (enabledPluginIds.has("codex")) return "codex";
+  // Last-resort: any enabled provider, even if env config is missing.
+  // The downstream call will surface the missing-key error with a clear message.
+  if (enabledPluginIds.has("openrouter")) return "openrouter";
+  if (enabledPluginIds.has("anthropic")) return "anthropic";
   if (enabledPluginIds.has("cf-ai-gateway")) return "cf-ai-gateway";
   if (enabledPluginIds.has("workers-ai")) return "workers-ai";
-  if (enabledPluginIds.has("anthropic")) return "anthropic";
   if (enabledPluginIds.has("openai-compatible")) return "openai-compatible";
   if (enabledPluginIds.has("codex")) return "codex";
   throw new AppError(
     "E_NO_PROVIDER",
-    "No chat provider enabled. Enable one of: cf-ai-gateway, workers-ai, anthropic, openai-compatible, codex.",
+    "No chat provider enabled. Add openrouter (OPENROUTER_API_KEY), anthropic (ANTHROPIC_API_KEY), cf-ai-gateway (AI_GATEWAY_ID), workers-ai (auto), openai-compatible, or codex.",
     400
   );
 }
@@ -306,6 +339,7 @@ function pickProvider(
 function supportsNativeTools(provider: string): boolean {
   return (
     provider === "anthropic" ||
+    provider === "openrouter" ||
     provider === "openai-compatible" ||
     provider === "cf-ai-gateway" ||
     provider === "codex"
@@ -332,11 +366,18 @@ export async function handleConductorMessage(
   const stub = env.AGENT_SESSIONS.get(doId);
 
   const enabledPluginIds = new Set(runtime.listPlugins().map((p) => p.id));
-  const provider = pickProvider(body.provider, enabledPluginIds);
+  const provider = pickProvider(body.provider, enabledPluginIds, env);
 
-  const requestedMode: ConductorMode = body.mode ?? "propose";
+  // The wire still accepts legacy modes (propose/selective/auto) AND the
+  // new ones (plan/execute). Collapse to the two canonical values, then
+  // map back to the internal "propose" path for plan and the "auto" path
+  // for execute. Providers without native tool-use are forced to plan
+  // ("propose") since they can't run a tool loop end-to-end.
+  const normalized = normalizeMode(body.mode);
   const mode: ConductorMode =
-    requestedMode !== "propose" && !supportsNativeTools(provider) ? "propose" : requestedMode;
+    normalized === "execute" && supportsNativeTools(provider)
+      ? "auto"
+      : "propose";
 
   const maxIter = Math.min(
     Math.max(1, body.maxIterations ?? MAX_ITERATIONS_DEFAULT),
@@ -713,7 +754,7 @@ async function runAnthropicLoop(args: LoopArgs): Promise<ConductorReply> {
 /* ---------------- OpenAI-compatible auto loop (also cf-ai-gateway + codex) ---------------- */
 
 interface OpenAILoopArgs extends LoopArgs {
-  provider: "openai-compatible" | "cf-ai-gateway" | "codex";
+  provider: "openai-compatible" | "cf-ai-gateway" | "codex" | "openrouter";
 }
 
 async function runOpenAILoop(args: OpenAILoopArgs): Promise<ConductorReply> {

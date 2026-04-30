@@ -21,6 +21,12 @@ MODEL_DEFAULT=@cf/meta/llama-3.3-70b-instruct-fp8-fast
 # MCP_BEARER_TOKEN=replace_me
 
 # Optional provider plugins
+# OpenRouter (recommended) — auto-routes to best model per prompt, 100+ providers.
+# Key from openrouter.ai/settings/keys
+# OPENROUTER_API_KEY=sk-or-replace_me
+# OPENROUTER_DEFAULT_MODEL=openrouter/auto       # override to pin a model, e.g. anthropic/claude-3.7-sonnet
+# OPENROUTER_HTTP_REFERER=https://your-app.example.com
+# OPENROUTER_X_TITLE=Helm
 # ANTHROPIC_API_KEY=sk-ant-replace_me
 # OPENAI_API_KEY=sk-replace_me              # classic Codex auth
 # OPENAI_COMPATIBLE_URL=https://api.groq.com/openai/v1

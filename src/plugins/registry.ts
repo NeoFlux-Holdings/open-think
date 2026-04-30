@@ -13,6 +13,7 @@ import { MemoryPlugin } from "./memory";
 import { MppPlugin } from "./mpp";
 import { NotifierPlugin } from "./notifier";
 import { OpenAICompatiblePlugin } from "./openaiCompatible";
+import { OpenRouterPlugin } from "./openrouter";
 import { SandboxPlugin } from "./sandbox";
 import { WorkersAiPlugin } from "./workersAi";
 
@@ -23,6 +24,7 @@ export function getPlugins(): AgentPlugin[] {
     new CfAiGatewayPlugin(),
     new WorkersAiPlugin(),
     new AnthropicPlugin(),
+    new OpenRouterPlugin(),
     new OpenAICompatiblePlugin(),
     new CodexPlugin(),
     new McpClientPlugin(),

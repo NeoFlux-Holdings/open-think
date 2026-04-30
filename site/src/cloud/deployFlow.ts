@@ -617,14 +617,24 @@ function shellEscape(value: string): string {
 /**
  * Map a Cloudflare API error message + code into actionable recovery copy.
  *
- * Two top error patterns we see, both showing as "Authentication error" or
+ * Three top error patterns we see, all showing as "Authentication error" or
  * similar generic text:
- *   1. Token missing the required permission group
- *   2. Token has the right scope but is restricted to the wrong account
- *      under "Account Resources" during token creation
+ *   1. Token missing the required permission group, because the
+ *      "create custom token" pre-fill URL silently dropped it. Until
+ *      v0.7.0 our URL used the dotted format
+ *      `com.cloudflare.api.account.d1:edit` which CF's dash does NOT parse —
+ *      it silently produces an empty form. CF's actual contract is a
+ *      URL-encoded JSON array of `{key, type}` objects with SHORT keys
+ *      (`d1`, `workers_scripts`, `access`, etc).
+ *      Users on stale token links: re-create from the current deploy page.
+ *   2. Token DOES have the right scope but is restricted to the wrong
+ *      account under "Account Resources" during token creation.
+ *   3. Token is genuinely valid for verify but lacks the per-feature scope
+ *      (e.g. token has Workers Scripts but not D1).
  *
  * The user's CF dash provides no easy way to inspect a token's scopes
- * after creation, so we recommend verifying both possibilities.
+ * after creation, so we recommend re-creating from the current pre-filled
+ * link rather than trying to debug the existing token.
  */
 export function explainCfError(
   apiMsg: string,
@@ -645,10 +655,17 @@ export function explainCfError(
   const acctTail = accountId.slice(0, 8);
   if (looksLikeAuth) {
     return [
-      `Most likely one of these — check both:`,
-      `  1. Token is missing "${expectedScope}". Re-create with the link in the deploy form.`,
-      `  2. Token's "Account Resources" filter excludes account ${acctTail}…`,
-      `     During token creation, set Account Resources → Include → All accounts.`
+      `This usually means the token doesn't have "${expectedScope}".`,
+      ``,
+      `If you created the token before v0.7.0, the pre-fill URL we used was`,
+      `silently broken — CF's dash dropped most/all of the scopes and you got`,
+      `an empty token form. Re-create from the deploy form's link (it now uses`,
+      `the correct JSON format) and you should see all 5 perms pre-filled.`,
+      ``,
+      `Other possibilities:`,
+      `  • Token's "Account Resources" filter excludes account ${acctTail}….`,
+      `    During token creation set Account Resources → Include → All accounts.`,
+      `  • CF API code: ${apiCode ?? "n/a"}.`
     ].join("\n");
   }
   if (lower.includes("not found") || lower.includes("does not exist")) {

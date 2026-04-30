@@ -42,7 +42,8 @@ import type { Env } from "../types";
 import { AgentRuntime } from "../core/runtime";
 import { SkillManager } from "../core/skills";
 import { getPlugins } from "../plugins/registry";
-import { handleConductorMessage } from "../conductor";
+import { handleConductorMessage, normalizeMode } from "../conductor";
+import { runToolStreamWithCallback } from "../conductor-tool-stream";
 
 interface ClientCommand {
   kind: "user-message" | "interrupt" | "ping";
@@ -63,6 +64,11 @@ export class ChatSessionDO extends DurableObject<Env> {
   /** Lazily-bootstrapped runtime + skills, kept alive while DO is awake. */
   private runtime: AgentRuntime | null = null;
   private skills: SkillManager | null = null;
+
+  /** Per-turn AbortController. Set when a streaming turn starts; aborted
+   *  on receipt of an "interrupt" command, stopping the upstream provider
+   *  fetch cleanly. Null when no turn is in flight. */
+  private activeAbortController: AbortController | null = null;
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -108,9 +114,16 @@ export class ChatSessionDO extends DurableObject<Env> {
     }
 
     if (cmd.kind === "interrupt") {
-      // V1: no-op (handleConductorMessage isn't interruptible). V2 will
-      // wire abortSignal through handleConductorToolStream.
-      this.broadcast({ kind: "halted", reason: "interrupt requested · handler not yet wired" });
+      // Real interrupt — aborts the AbortController bound to the active
+      // streaming turn. The upstream provider fetch sees the signal,
+      // throws AbortError, and the loop emits loop-done {reason: "cancelled"}
+      // → DO broadcasts halted + a final cancelled assistant-message.
+      if (this.activeAbortController) {
+        this.activeAbortController.abort();
+        this.broadcast({ kind: "halted", reason: "interrupted by user" });
+      } else {
+        this.broadcast({ kind: "halted", reason: "no active turn to interrupt" });
+      }
       return;
     }
 
@@ -163,40 +176,87 @@ export class ChatSessionDO extends DurableObject<Env> {
 
     this.broadcast({ kind: "thinking", sessionName });
 
+    const mode = normalizeMode(cmd.mode);
     const startedAt = Date.now();
+    // Spin up an AbortController for this turn so a subsequent interrupt
+    // command can cancel the upstream provider fetch mid-stream.
+    this.activeAbortController = new AbortController();
     try {
       const { runtime, skills } = await this.ensureBootstrap();
-      const reply = await handleConductorMessage(this.env, runtime, skills, {
-        sessionName,
-        content,
-        mode: cmd.mode ?? "propose",
-        // ConductorProvider is a union ("anthropic" | "openai-compatible" | …).
-        // Validation happens inside handleConductorMessage; pass through.
-        provider: cmd.provider as never,
-        model: cmd.model
-      });
-      this.broadcast({
-        kind: "assistant-message",
-        message: {
-          role: "assistant",
-          content: reply.assistantMessage?.content ?? "(empty reply)",
-          sessionName,
-          mode: reply.mode,
-          provider: reply.providerUsed,
-          iterationsUsed: reply.iterationsUsed,
-          suggestedActions: reply.suggestedActions ?? [],
-          trace: reply.trace ?? [],
-          halted: reply.halted ?? null,
-          ts: new Date().toISOString()
+      if (mode === "execute") {
+        // Streaming tool-use loop. Every LoopEvent (text-delta, tool-use-*,
+        // turn-stop, loop-done, etc.) flows out over the WS as its own
+        // frame so the UI can render incrementally. The final assistant
+        // message is also sent for history-rendering convenience.
+        let finalText = "";
+        const result = await runToolStreamWithCallback(
+          this.env,
+          runtime,
+          skills,
+          {
+            sessionName,
+            content,
+            mode: "auto",
+            provider: cmd.provider as never,
+            model: cmd.model
+          },
+          (event) => {
+            this.broadcast(event as unknown as Record<string, unknown>);
+            if (event.kind === "text-delta") finalText += event.text;
+            if (event.kind === "loop-done") finalText = event.finalText;
+          },
+          this.activeAbortController?.signal
+        );
+        this.broadcast({
+          kind: "assistant-message",
+          message: {
+            role: "assistant",
+            content: result.finalText || finalText || "(no output)",
+            sessionName,
+            mode: "execute",
+            provider: result.provider,
+            ts: new Date().toISOString(),
+            ...(result.cancelled ? { halted: "cancelled" } : {})
+          }
+        });
+        if (result.cancelled) {
+          this.broadcast({ kind: "halted", reason: "cancelled by user" });
         }
-      });
-      if (reply.halted) {
-        this.broadcast({ kind: "halted", reason: reply.halted });
+        if (result.error) {
+          this.broadcast({ kind: "error", message: result.error });
+        }
+      } else {
+        // Plan mode: one-shot reply describing the approach. No skill calls.
+        // Routes through handleConductorMessage with internal "propose"
+        // semantics so the model is asked to describe (not execute) — the
+        // frontend renders the assistant text as plain markdown without
+        // any action cards.
+        const reply = await handleConductorMessage(this.env, runtime, skills, {
+          sessionName,
+          content,
+          mode: "propose",
+          provider: cmd.provider as never,
+          model: cmd.model
+        });
+        this.broadcast({
+          kind: "assistant-message",
+          message: {
+            role: "assistant",
+            content: reply.assistantMessage?.content ?? "(empty reply)",
+            sessionName,
+            mode: "plan",
+            provider: reply.providerUsed,
+            ts: new Date().toISOString()
+            // Drop suggestedActions / trace / iteration counts — plan mode
+            // is conversational. The proposal-card UI is gone.
+          }
+        });
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.broadcast({ kind: "error", message });
     } finally {
+      this.activeAbortController = null;
       this.broadcast({ kind: "complete", durationMs: Date.now() - startedAt });
     }
   }

@@ -563,15 +563,24 @@ export function deriveScriptName(host: string): string | null {
 /**
  * Build the pre-filled token-creation URL the wizard links to.
  * The four scopes are the minimum needed for runLockdown.
+ *
+ * IMPORTANT: CF's dash expects a URL-encoded JSON array of `{key, type}`
+ * objects with SHORT keys (`workers_scripts`, not the dotted form). We
+ * used to pass `com.cloudflare.api.account.workers.scripts:edit` which
+ * the dash silently dropped — users got blank custom-token forms and
+ * thought the link was broken. See:
+ * https://developers.cloudflare.com/fundamentals/api/how-to/account-owned-token-template/
  */
 export const ACCESS_WIZARD_TOKEN_URL =
   "https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=" +
-  [
-    "com.cloudflare.api.account.workers.scripts:edit",
-    "com.cloudflare.api.account.zerotrust.access:edit",
-    "com.cloudflare.api.account.settings:read",
-    "com.cloudflare.api.user.details:read"
-  ].join(",");
+  encodeURIComponent(
+    JSON.stringify([
+      { key: "workers_scripts", type: "edit" },
+      { key: "access", type: "edit" },
+      { key: "account_settings", type: "read" },
+      { key: "user_details", type: "read" }
+    ])
+  );
 
 export const ACCESS_WIZARD_SCOPES = [
   { resource: "Account", permission: "Workers Scripts:Edit" },

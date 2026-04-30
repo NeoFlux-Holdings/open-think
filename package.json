@@ -19,8 +19,11 @@
     "pa:setup": "node ./scripts/pa_setup.mjs"
   },
   "cloudflare": {
-    "_comment": "Two optional secrets prompted at deploy time. Both let the in-app `Lock it down` wizard at /app#/settings short-circuit to a one-click action. Skipping both still works — the wizard just asks for them later. Other optional secrets (ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.) are added post-deploy via dash → Worker → Settings → Variables.",
+    "_comment": "Three optional secrets prompted at deploy time. OPENROUTER_API_KEY is the strong default for chat (auto-routes to the best model). The two CLOUDFLARE/OWNER fields shortcut the `Lock it down` wizard at /app#/settings. All three are skippable; defaults still work. Workers AI is bound automatically.",
     "bindings": {
+      "OPENROUTER_API_KEY": {
+        "description": "**Recommended.** OpenRouter API key. When set, Helm's chat uses OpenRouter as the default provider with the `openrouter/auto` router — picks the best model per prompt across 100+ providers (Claude, GPT, Gemini, Llama, etc.). Get a key at [openrouter.ai/settings/keys](https://openrouter.ai/settings/keys). Skip to fall back to Workers AI."
+      },
       "CLOUDFLARE_API_TOKEN": {
         "description": "**Optional.** Pre-fills the in-app `Lock it down` wizard at /app#/settings so you don't have to paste a token there later. Create one with these four scopes — [Workers Scripts:Edit, Access: Apps and Policies:Edit, Account Settings:Read, User Details:Read] — at [dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens). Skip if you'd rather paste it in the wizard."
       },

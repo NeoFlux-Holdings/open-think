@@ -5,7 +5,8 @@ import {
   stripActionBlocks,
   extractAssistantText,
   buildAnthropicTools,
-  buildOpenAITools
+  buildOpenAITools,
+  normalizeMode
 } from "../src/conductor";
 import type { SkillDefinition } from "../src/core/skills";
 
@@ -139,5 +140,20 @@ describe("buildOpenAITools", () => {
       function: { name: "admin-introspect", description: "snapshot" }
     });
     expect(tools[0].function.parameters).toMatchObject({ type: "object" });
+  });
+});
+
+describe("normalizeMode", () => {
+  it("plan/propose collapse to plan", () => {
+    expect(normalizeMode("plan")).toBe("plan");
+    expect(normalizeMode("propose")).toBe("plan");
+  });
+  it("execute/selective/auto/undefined collapse to execute", () => {
+    expect(normalizeMode("execute")).toBe("execute");
+    expect(normalizeMode("selective")).toBe("execute");
+    expect(normalizeMode("auto")).toBe("execute");
+    expect(normalizeMode(undefined)).toBe("execute");
+    expect(normalizeMode(null)).toBe("execute");
+    expect(normalizeMode("garbage")).toBe("execute");
   });
 });

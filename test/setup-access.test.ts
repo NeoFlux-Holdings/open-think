@@ -429,11 +429,23 @@ describe("probeScopes", () => {
 });
 
 describe("ACCESS_WIZARD_TOKEN_URL + scopes", () => {
-  it("includes the four required permission groups", () => {
-    expect(ACCESS_WIZARD_TOKEN_URL).toMatch(/workers\.scripts:edit/);
-    expect(ACCESS_WIZARD_TOKEN_URL).toMatch(/zerotrust\.access:edit/);
-    expect(ACCESS_WIZARD_TOKEN_URL).toMatch(/settings:read/);
-    expect(ACCESS_WIZARD_TOKEN_URL).toMatch(/user\.details:read/);
+  it("uses CF's URL-encoded JSON-array contract (NOT dotted ids)", () => {
+    // CF's dash URL parser only accepts a URL-encoded JSON array of
+    // {key, type} objects with the short keys (`workers_scripts`, etc).
+    // The legacy dotted format `com.cloudflare.api.account.*:edit` is
+    // silently dropped by the dash, leaving users with empty token forms.
+    expect(ACCESS_WIZARD_TOKEN_URL).not.toMatch(/com\.cloudflare\.api/);
+    const queryStart = ACCESS_WIZARD_TOKEN_URL.indexOf("permissionGroupKeys=");
+    expect(queryStart).toBeGreaterThan(-1);
+    const encoded = ACCESS_WIZARD_TOKEN_URL.slice(queryStart + "permissionGroupKeys=".length);
+    const decoded = decodeURIComponent(encoded);
+    const parsed = JSON.parse(decoded) as Array<{ key: string; type: string }>;
+    expect(parsed).toEqual([
+      { key: "workers_scripts", type: "edit" },
+      { key: "access", type: "edit" },
+      { key: "account_settings", type: "read" },
+      { key: "user_details", type: "read" }
+    ]);
   });
   it("scope list mirrors the URL", () => {
     expect(ACCESS_WIZARD_SCOPES.length).toBe(4);

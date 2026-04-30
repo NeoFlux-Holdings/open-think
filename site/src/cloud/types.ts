@@ -116,15 +116,24 @@ export const TOKEN_SCOPES = [
 
 /**
  * Pre-filled URL the deploy page links to. CF's dash supports query-string
- * pre-population for custom-token templates via `&permissionGroupKeys=...`.
- * We keep this alongside the scope list so the two never drift.
+ * pre-population for custom-token templates, but the format is a
+ * URL-encoded JSON array of `{key, type}` objects using the SHORT keys
+ * (`d1`, not `com.cloudflare.api.account.d1`). The dotted-string format
+ * we used to send was silently dropped by the dash, leaving users with
+ * tokens missing the requested scopes — most visibly, the D1 perm fell
+ * out and `POST /accounts/{id}/d1/database` failed with code 9109
+ * "Authentication error" even when the user thought they'd added it.
+ *
+ * Reference: https://developers.cloudflare.com/fundamentals/api/how-to/account-owned-token-template/
  */
 export const TOKEN_TEMPLATE_URL =
   "https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=" +
-  [
-    "com.cloudflare.api.account.workers.scripts:edit",
-    "com.cloudflare.api.account.d1:edit",
-    "com.cloudflare.api.account.zerotrust.access:edit",
-    "com.cloudflare.api.account.settings:read",
-    "com.cloudflare.api.user.details:read"
-  ].join(",");
+  encodeURIComponent(
+    JSON.stringify([
+      { key: "workers_scripts", type: "edit" },
+      { key: "d1", type: "edit" },
+      { key: "access", type: "edit" },
+      { key: "account_settings", type: "read" },
+      { key: "user_details", type: "read" }
+    ])
+  );

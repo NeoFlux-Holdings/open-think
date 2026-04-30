@@ -66,6 +66,16 @@ export interface Env {
   STREAM_HUBS?: DurableObjectNamespace;
   /** WebSocket-backed chat session DO. One instance per session name. */
   CHAT_SESSIONS?: DurableObjectNamespace;
+  /** OpenRouter API key (optional). When set, OR is the default provider. */
+  OPENROUTER_API_KEY?: string;
+  /** Optional override for OpenRouter base URL. Defaults to https://openrouter.ai/api/v1 */
+  OPENROUTER_BASE_URL?: string;
+  /** Optional default model. When unset, OR plugin uses "openrouter/auto" router. */
+  OPENROUTER_DEFAULT_MODEL?: string;
+  /** Optional referer URL for OpenRouter attribution headers. */
+  OPENROUTER_HTTP_REFERER?: string;
+  /** Optional title for OpenRouter attribution headers. */
+  OPENROUTER_X_TITLE?: string;
   BROWSER?: Fetcher;
   SANDBOX?: Fetcher;
   WORKSPACE?: R2Bucket;

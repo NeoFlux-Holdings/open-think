@@ -89,14 +89,21 @@ EXECUTION GUIDANCE (for paths 3 + 4):
 
   Step A: Token creation
     Direct the user to:
-    https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=com.cloudflare.api.account.workers.scripts:edit,com.cloudflare.api.account.d1:edit,com.cloudflare.api.account.zerotrust.access:edit,com.cloudflare.api.account.settings:read,com.cloudflare.api.user.details:read
+    https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=%5B%7B%22key%22%3A%22workers_scripts%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22d1%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22access%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22account_settings%22%2C%22type%22%3A%22read%22%7D%2C%7B%22key%22%3A%22user_details%22%2C%22type%22%3A%22read%22%7D%5D
+    (CF's URL parser expects a URL-encoded JSON array of {key, type} objects
+    with the SHORT keys — using the older `com.cloudflare.api.account.*:edit`
+    dotted form caused the dash to silently drop every scope, leaving users
+    with empty token forms and "auth error 9109" later when D1 tried to call
+    /accounts/{id}/d1/database without the perm.)
     This URL pre-fills the EXACT scopes Open Think needs:
-      - Workers Scripts:Edit
-      - D1:Edit
-      - Access: Apps and Policies:Edit
-      - Account Settings:Read
-      - User Details:Read
+      - Workers Scripts:Edit  (key: workers_scripts)
+      - D1:Edit               (key: d1)
+      - Access: Apps and Policies:Edit  (key: access)
+      - Account Settings:Read (key: account_settings)
+      - User Details:Read     (key: user_details)
     Tell them to click "Continue to summary" → "Create token" → copy the value.
+    Sanity check: the create-token form should show all 5 perms pre-filled.
+    If only 0–4 show, the link parser failed — fall back to manual entry.
 
   Step B: Browser deploy
     Open https://beta.open-think.app/deploy/cloud

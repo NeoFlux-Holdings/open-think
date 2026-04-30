@@ -251,125 +251,293 @@ h1.section-title {
   border: 1px solid var(--rule);
   pointer-events: none;
 }
+/* ---------- Conductor / chat surface ---------- */
 .conductor-header {
   display: flex;
   justify-content: space-between;
-  align-items: baseline;
-  padding: 14px 18px;
+  align-items: center;
+  padding: 14px 20px;
   border-bottom: 1px solid var(--rule);
+  gap: 12px;
 }
-.conductor-header .title { font-family: 'Fraunces', serif; font-weight: 600; font-size: 22px; font-variation-settings: 'opsz' 48, 'WONK' 1; }
-.conductor-header .meta { font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
-.conductor-body { padding: 18px; min-height: 240px; max-height: 520px; overflow-y: auto; }
+.conductor-title { display: flex; align-items: center; gap: 10px; }
+.conductor-header .title {
+  font-family: 'Fraunces', serif; font-weight: 600;
+  font-size: 24px; font-variation-settings: 'opsz' 48, 'WONK' 1;
+  letter-spacing: -0.01em;
+}
+.conn-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--muted-2);
+  position: relative;
+  flex-shrink: 0;
+  transition: background 0.2s, box-shadow 0.2s;
+}
+.conn-dot[data-state="live"] {
+  background: #2d8c4f;
+  box-shadow: 0 0 0 2px rgba(45,140,79,0.18);
+  animation: dot-pulse-live 2.4s ease-in-out infinite;
+}
+.conn-dot[data-state="connecting"] {
+  background: var(--accent);
+  animation: dot-pulse-connecting 1.0s ease-in-out infinite;
+}
+.conn-dot[data-state="reconnecting"] {
+  background: #b6590f;
+  animation: dot-pulse-connecting 0.7s ease-in-out infinite;
+}
+@keyframes dot-pulse-live { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
+@keyframes dot-pulse-connecting { 0%,100% { transform: scale(1); } 50% { transform: scale(0.6); } }
+
+.conductor-meta { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.meta-session {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px; letter-spacing: 0.06em;
+  color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  max-width: 200px;
+}
+@media (max-width: 600px) {
+  .conductor-header { padding: 12px 14px; }
+  .meta-session { display: none; }
+}
+
+.conductor-body {
+  padding: 20px 24px;
+  min-height: 280px;
+  max-height: 60vh;
+  overflow-y: auto;
+  display: flex; flex-direction: column;
+  gap: 22px;
+}
+@media (max-width: 600px) {
+  .conductor-body {
+    padding: 16px 14px;
+    max-height: calc(100vh - 320px);
+  }
+}
+
+/* ---------- Message bubbles ---------- */
 .msg {
-  border-bottom: 1px dotted var(--muted-2);
-  padding: 14px 0;
+  padding: 0;
+  border: none;
+  display: flex; flex-direction: column;
+  gap: 8px;
+  max-width: 100%;
 }
-.msg:first-child { padding-top: 0; }
-.msg:last-child { border-bottom: none; }
 .msg .who {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--muted);
-  margin-bottom: 6px;
-  display: flex;
-  gap: 10px;
-  align-items: center;
+  font-size: 10px; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--muted);
+  display: flex; gap: 8px; align-items: center;
+}
+.msg .who .sigil {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px;
+  font-family: 'Fraunces', serif; font-size: 14px;
 }
 .msg.assistant .who { color: var(--accent); }
-.msg .content { font-size: 16px; line-height: 1.55; white-space: pre-wrap; }
-.msg .content :is(code, pre) { font-family: 'JetBrains Mono', monospace; font-size: 13px; }
-.msg .content pre { background: transparent; padding: 10px 14px; border-left: 2px solid var(--accent); overflow-x: auto; margin: 10px 0; white-space: pre; }
-.action-card {
-  margin: 14px 0;
-  border: 1px solid var(--rule);
-  background: var(--paper);
-  padding: 14px 16px;
-  position: relative;
+.msg.assistant .who .sigil { color: var(--accent); font-weight: 600; }
+
+.msg .content {
+  font-size: 16px;
+  line-height: 1.6;
+  color: var(--ink);
+  max-width: 70ch;
+  word-wrap: break-word;
 }
-.action-card::before {
-  content: "Exhibit";
-  position: absolute;
-  top: -10px; left: 14px;
-  background: var(--paper);
-  padding: 0 6px;
+.msg .content p { margin: 0; }
+.msg .content p + p { margin-top: 10px; }
+.msg .content code {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
-  letter-spacing: 0.14em;
+  font-size: 0.9em;
+  background: rgba(18,17,16,0.06);
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+.msg .content pre {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  background: rgba(18,17,16,0.04);
+  border-left: 2px solid var(--accent);
+  padding: 12px 16px;
+  margin: 12px 0;
+  overflow-x: auto;
+  border-radius: 0 3px 3px 0;
+}
+@media (prefers-color-scheme: dark) {
+  .msg .content code { background: rgba(239,234,219,0.08); }
+  .msg .content pre { background: rgba(239,234,219,0.04); }
+}
+.msg.is-streaming .stream-cursor {
+  display: inline-block;
+  width: 2px; height: 1.05em;
+  background: var(--accent);
+  vertical-align: text-bottom;
+  margin-left: 2px;
+  animation: stream-blink 0.9s step-end infinite;
+}
+@keyframes stream-blink { 0%,55% { opacity: 1; } 56%,100% { opacity: 0; } }
+
+.msg.is-halted .stream-cursor { animation: none; opacity: 0; }
+.msg.is-halted .content::after {
+  content: " · halted";
+  color: var(--muted);
+  font-style: italic;
+  font-size: 13px;
+}
+
+/* ---------- Tool-call inline cards ---------- */
+.tool-card {
+  margin: 12px 0 0;
+  padding: 10px 14px;
+  background: rgba(18,17,16,0.03);
+  border-left: 2px solid var(--muted-2);
+  border-radius: 0 4px 4px 0;
+  font-size: 13px;
+  font-family: 'JetBrains Mono', monospace;
+  transition: border-color 0.18s, background 0.18s;
+}
+.tool-card.is-running { border-left-color: var(--accent); }
+.tool-card.is-done { border-left-color: #2d8c4f; }
+.tool-card.is-failed {
+  border-left-color: #8b1d1d;
+  background: rgba(139,29,29,0.06);
+}
+.tool-card .tool-head { display: flex; align-items: center; gap: 8px; }
+.tool-card .tool-arrow { color: var(--accent); }
+.tool-card .tool-name { color: var(--accent); flex: 1; word-break: break-all; }
+.tool-card .tool-status {
+  font-size: 10px; letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--muted);
 }
-.action-card .skill-id { font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--accent); }
-.action-card .input-preview { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--muted); margin-top: 4px; max-height: 80px; overflow-y: auto; white-space: pre-wrap; }
-.action-card button {
-  margin-top: 10px;
-  border: 1px solid var(--accent);
-  color: var(--paper);
-  background: var(--accent);
-  padding: 6px 14px;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  cursor: pointer;
-  transition: filter 0.15s;
+.tool-card.is-running .tool-status { color: var(--accent); }
+.tool-card.is-done .tool-status { color: #2d8c4f; }
+.tool-card.is-failed .tool-status { color: #8b1d1d; }
+.tool-card .tool-input,
+.tool-card .tool-result {
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: rgba(0,0,0,0.04);
+  border-radius: 3px;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  font-size: 12px;
+  max-height: 180px;
+  overflow-y: auto;
 }
-.action-card button:hover { filter: brightness(1.1); }
+@media (prefers-color-scheme: dark) {
+  .tool-card { background: rgba(255,255,255,0.03); }
+  .tool-card .tool-input, .tool-card .tool-result { background: rgba(255,255,255,0.04); }
+}
 
+/* ---------- Composer ---------- */
 .composer {
   border-top: 1px solid var(--rule);
-  padding: 14px 18px;
+  padding: 12px 16px 16px;
+  display: flex; flex-direction: column;
+  gap: 10px;
+  background: var(--paper);
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+}
+.composer-row {
   display: flex;
-  gap: 12px;
-  align-items: flex-end;
+  gap: 10px;
+  align-items: end;
 }
 .composer textarea {
   flex: 1;
-  min-height: 50px;
-  max-height: 180px;
-  resize: vertical;
+  min-height: 44px;
+  max-height: 240px;
+  resize: none;
   font-family: 'Newsreader', serif;
-  font-size: 16px;
-  background: transparent;
+  font-size: 17px;
+  line-height: 1.45;
+  background: var(--paper);
   color: var(--ink);
-  border: 1px solid transparent;
-  outline: none;
-  padding: 6px 0;
-  line-height: 1.5;
-}
-.composer textarea:focus { border-bottom-color: var(--accent); }
-.composer button {
-  border: 1px solid var(--ink);
-  background: var(--ink);
-  color: var(--paper);
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  padding: 10px 18px;
-  cursor: pointer;
-}
-.composer button:disabled { opacity: 0.4; cursor: progress; }
-.composer .kbd { font-size: 10px; color: var(--muted); white-space: nowrap; }
-.mode-toggle {
-  display: inline-flex;
-  gap: 2px;
   border: 1px solid var(--rule);
-  padding: 2px;
-  font-size: 10px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+  border-radius: 12px;
+  outline: none;
+  padding: 11px 14px;
+  transition: border-color 0.12s, box-shadow 0.12s;
 }
-.mode-toggle label {
-  padding: 4px 10px;
+.composer textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(226,88,34,0.18);
+}
+.composer-send {
+  flex-shrink: 0;
+  width: 44px; height: 44px;
+  border-radius: 50%;
+  border: none;
+  background: var(--accent);
+  color: var(--paper);
   cursor: pointer;
-  transition: all 0.15s;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 18px;
+  font-weight: 600;
+  transition: background 0.12s, transform 0.08s;
+}
+.composer-send:hover:not(:disabled) { background: var(--accent-deep); }
+.composer-send:active:not(:disabled) { transform: scale(0.95); }
+.composer-send.is-stop {
+  background: #8b1d1d;
+}
+.composer-send.is-stop:hover { background: #6b1414; }
+.composer-send .ic-arrow {
+  display: inline-flex; align-items: center; justify-content: center;
+  line-height: 1;
+}
+
+.composer-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px;
+}
+.composer-hint {
+  font-size: 10px; letter-spacing: 0.12em;
   color: var(--muted);
 }
-.mode-toggle label:has(input:checked) { background: var(--accent); color: var(--paper); }
-.mode-toggle input { position: absolute; opacity: 0; pointer-events: none; }
+@media (max-width: 600px) {
+  .composer { padding: 10px 12px 14px; }
+  .composer-hint { display: none; }
+  .composer textarea { font-size: 16px; }  /* prevents iOS zoom-on-focus */
+}
+
+/* ---------- Mode segmented control ---------- */
+.mode-seg {
+  display: inline-flex;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  padding: 3px;
+  background: var(--paper);
+}
+.seg-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 6px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  min-height: 28px;
+}
+.seg-btn[aria-selected="true"] {
+  background: var(--accent);
+  color: var(--paper);
+}
+.seg-btn:not([aria-selected="true"]):hover { color: var(--ink); }
+.seg-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 .trace {
   border-left: 2px solid var(--muted-2);
   padding: 6px 14px;
@@ -1712,23 +1880,31 @@ function renderConductor() {
 }
 
 function mountConductor(host, compact) {
+  // Read persisted mode preference; default to "execute".
+  const savedMode = (typeof localStorage !== 'undefined' && localStorage.getItem('helm-chat-mode')) || 'execute';
+
   host.innerHTML = \`
     <div class="conductor-header">
-      <span class="title display">✦ Conductor</span>
-      <span class="meta">session: <span id="c-session"></span></span>
+      <div class="conductor-title">
+        <span class="title display">Helm</span>
+        <span class="conn-dot" id="c-conn" data-state="connecting" aria-label="connecting"></span>
+      </div>
+      <div class="conductor-meta">
+        <span class="meta-session" id="c-session" title="session"></span>
+      </div>
     </div>
-    <div class="conductor-body" id="c-body"></div>
+    <div class="conductor-body" id="c-body" role="log" aria-live="polite"></div>
     <div class="composer">
-      <textarea id="c-input" placeholder="Ask the Conductor (e.g. 'check my runtime health' · 'help me set up Anthropic')"></textarea>
-      <div style="display: flex; flex-direction: column; gap: 8px; align-items: flex-end;">
-        <div class="mode-toggle mono" role="radiogroup" aria-label="execution mode">
-          <label><input type="radio" name="c-mode" value="propose" checked> propose</label>
-          <label><input type="radio" name="c-mode" value="selective"> selective</label>
-          <label><input type="radio" name="c-mode" value="auto"> auto</label>
-          <label><input type="radio" name="c-mode" value="stream"> stream</label>
+      <div class="composer-row">
+        <textarea id="c-input" rows="1" placeholder="Ask Helm…"></textarea>
+        <button id="c-send" type="button" class="composer-send" aria-label="Send"><span class="ic-arrow" aria-hidden="true">↑</span></button>
+      </div>
+      <div class="composer-foot">
+        <div class="mode-seg" role="tablist" aria-label="response mode">
+          <button type="button" role="tab" data-mode="plan" class="seg-btn" aria-selected="\${savedMode === 'plan'}">Plan</button>
+          <button type="button" role="tab" data-mode="execute" class="seg-btn" aria-selected="\${savedMode === 'execute'}">Execute</button>
         </div>
-        <button id="c-send">Send</button>
-        <span class="kbd">⌘↵ · propose = exhibit cards · selective = auto-safe · auto = end-to-end · stream = codex app-server SSE</span>
+        <span class="composer-hint mono" aria-hidden="true">⌘↵ to send</span>
       </div>
     </div>
   \`;
@@ -1736,49 +1912,75 @@ function mountConductor(host, compact) {
   const body = host.querySelector('#c-body');
   const input = host.querySelector('#c-input');
   const btn = host.querySelector('#c-send');
+  const segButtons = host.querySelectorAll('.seg-btn');
+  const connDot = host.querySelector('#c-conn');
+
+  let currentMode = savedMode;
+  let isStreaming = false;
 
   renderConductorBody(body);
 
-  // WebSocket-backed chat — persistent connection, multi-tab fanout via the
-  // ChatSessionDO. One per-mount (the tab keeps it alive while /app is open).
-  // Auto-reconnects with exponential backoff. Falls back to fetch POST if the
-  // WS endpoint isn't available (older worker without CHAT_SESSIONS DO).
-  const chat = makeChatStream(state.conductorSession, body, btn);
+  // Auto-resize textarea up to a sane max — grows with content, capped on
+  // mobile so the message list stays readable.
+  function autoResize() {
+    input.style.height = 'auto';
+    const max = window.innerWidth < 700 ? 140 : 240;
+    input.style.height = Math.min(input.scrollHeight, max) + 'px';
+  }
+  input.addEventListener('input', autoResize);
+  autoResize();
 
-  const send = async () => {
-    const content = input.value.trim();
-    if (!content) return;
-    const mode = (host.querySelector('input[name="c-mode"]:checked')?.value) || 'propose';
-    input.value = '';
-    btn.disabled = true;
-    btn.textContent = mode === 'auto' ? 'Running…' : mode === 'selective' ? 'Selecting…' : mode === 'stream' ? 'Streaming…' : 'Planning…';
+  // Mode segmented control. Single click switches; persists to localStorage.
+  segButtons.forEach((b) => {
+    b.addEventListener('click', () => {
+      currentMode = b.dataset.mode;
+      segButtons.forEach((x) => x.setAttribute('aria-selected', String(x === b)));
+      try { localStorage.setItem('helm-chat-mode', currentMode); } catch {}
+    });
+  });
 
-    if (mode === 'stream') {
-      // Codex app-server SSE stream — separate path (true token-stream RPC).
-      appendMessageToBody(body, { role: 'user', content });
-      await sendStreaming(body, content);
-      btn.disabled = false;
-      btn.textContent = 'Send';
+  // WS-backed chat. Connection state flows into the dot; streaming events
+  // (text-delta, tool-use-*, loop-done) drive incremental rendering.
+  const chat = makeChatStream(state.conductorSession, body, {
+    onConnState: (s) => {
+      connDot.dataset.state = s;
+      connDot.setAttribute('aria-label', s);
+    },
+    onStreamingChange: (streaming) => {
+      isStreaming = streaming;
+      btn.classList.toggle('is-stop', streaming);
+      btn.setAttribute('aria-label', streaming ? 'Stop' : 'Send');
+      btn.querySelector('.ic-arrow').textContent = streaming ? '■' : '↑';
+    }
+  });
+
+  const send = () => {
+    if (isStreaming) {
+      chat.interrupt();
       return;
     }
-
-    // WS path — append optimistically; server echoes user-message to other
-    // tabs but the originating tab dedupes via clientMessageId.
+    const content = input.value.trim();
+    if (!content) return;
+    input.value = '';
+    autoResize();
     const clientMessageId = 'c-' + Math.random().toString(36).slice(2, 10);
     appendMessageToBody(body, { role: 'user', content, clientMessageId });
     chat.markSeen(clientMessageId);
-    chat.send({ content, mode, clientMessageId });
+    chat.send({ content, mode: currentMode, clientMessageId });
   };
 
   btn.addEventListener('click', send);
   input.addEventListener('keydown', (e) => {
+    // Cmd/Ctrl-Enter sends. Plain Enter inserts a newline (textarea default).
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); }
+    // Escape interrupts an active stream.
+    if (e.key === 'Escape' && isStreaming) { e.preventDefault(); chat.interrupt(); }
   });
 
-  if (compact) {
+  if (compact && state.conductorHistory.length === 0) {
     appendMessageToBody(body, {
       role: 'assistant',
-      content: 'Try asking: check runtime health, what plugins are enabled?, or help me enable Anthropic.'
+      content: 'Hey — I\\'m Helm. Ask me anything about your runtime: \\"what plugins are enabled?\\", \\"check runtime health\\", \\"help me add Anthropic\\". Toggle Plan to see what I\\'d do without running it.'
     });
   }
 }
@@ -2117,7 +2319,9 @@ function escapeHtml(s) { return String(s).replace(/[&<>"']/g, (c) => ({ '&':'&am
  * Other tabs (which never saw the local optimistic append) render the
  * echo normally.
  */
-function makeChatStream(sessionName, body, btn) {
+function makeChatStream(sessionName, body, opts) {
+  const onConnState = (opts && opts.onConnState) || (() => {});
+  const onStreamingChange = (opts && opts.onStreamingChange) || (() => {});
   const seen = new Set();
   let ws = null;
   let queue = [];
@@ -2125,20 +2329,35 @@ function makeChatStream(sessionName, body, btn) {
   let reconnectTimer = null;
   let closed = false;
 
+  // Streaming state for execute mode — one in-progress assistant bubble
+  // accumulates text-delta + tool-use events and finalizes on loop-done.
+  let streamEl = null;
+  let streamTextEl = null;
+  let streamCursorEl = null;
+  let streamText = '';
+  let streamToolCards = new Map(); // tool-use-id -> DOM card element
+
+  function setConnState(s) {
+    onConnState(s);
+  }
+  function setStreaming(b) {
+    onStreamingChange(b);
+  }
+
   function open() {
+    setConnState('connecting');
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const u = proto + '//' + location.host + '/chat/ws/' + encodeURIComponent(sessionName);
     try {
       ws = new WebSocket(u);
     } catch (e) {
-      // CHAT_SESSIONS DO not deployed yet (older worker). Silently disable
-      // WS — sends will queue but never flush. The user can fall back by
-      // running this app with a newer worker bundle.
       console.warn('[chat-ws] could not open WebSocket:', e);
+      setConnState('reconnecting');
       return;
     }
     ws.addEventListener('open', () => {
       reconnectDelay = 1000;
+      setConnState('live');
       while (queue.length > 0 && ws && ws.readyState === WebSocket.OPEN) {
         ws.send(queue.shift());
       }
@@ -2151,59 +2370,198 @@ function makeChatStream(sessionName, body, btn) {
     ws.addEventListener('close', () => {
       ws = null;
       if (closed) return;
+      setConnState('reconnecting');
       reconnectTimer = setTimeout(open, reconnectDelay);
       reconnectDelay = Math.min(reconnectDelay * 1.5, 15000);
     });
-    ws.addEventListener('error', () => {
-      // close handler will fire next; reconnect there
+    ws.addEventListener('error', () => { /* close handler will fire next */ });
+  }
+
+  function ensureStreamBubble(provider) {
+    if (streamEl) return streamEl;
+    streamEl = document.createElement('div');
+    streamEl.className = 'msg assistant is-streaming';
+    const who = document.createElement('div');
+    who.className = 'who';
+    const sigil = '<span class="sigil">✦</span>';
+    const label = '<span>Helm' + (provider ? ' · ' + escapeHtml(provider) : '') + '</span>';
+    who.innerHTML = sigil + label;
+    streamEl.appendChild(who);
+
+    const content = document.createElement('div');
+    content.className = 'content';
+    streamEl.appendChild(content);
+
+    streamTextEl = document.createElement('span');
+    streamTextEl.className = 'stream-text';
+    content.appendChild(streamTextEl);
+
+    streamCursorEl = document.createElement('span');
+    streamCursorEl.className = 'stream-cursor';
+    content.appendChild(streamCursorEl);
+
+    body.appendChild(streamEl);
+    body.scrollTop = body.scrollHeight;
+    return streamEl;
+  }
+
+  function appendDelta(text) {
+    ensureStreamBubble();
+    streamText += text;
+    streamTextEl.textContent = streamText;
+    body.scrollTop = body.scrollHeight;
+  }
+
+  function startToolCard(event) {
+    if (!streamEl) ensureStreamBubble();
+    const card = document.createElement('div');
+    card.className = 'tool-card is-running';
+    card.innerHTML =
+      '<div class="tool-head"><span class="tool-arrow">▸</span><span class="tool-name mono">' +
+      escapeHtml(event.name || 'tool') +
+      '</span><span class="tool-status mono">running</span></div>' +
+      '<div class="tool-input mono"></div>' +
+      '<div class="tool-result mono" hidden></div>';
+    // Insert before cursor so subsequent text-delta keeps streaming below.
+    streamEl.insertBefore(card, streamCursorEl ? streamCursorEl.parentElement : null);
+    streamToolCards.set(event.id, card);
+    body.scrollTop = body.scrollHeight;
+  }
+  function completeToolInput(event) {
+    const card = streamToolCards.get(event.id);
+    if (!card) return;
+    const inputEl = card.querySelector('.tool-input');
+    if (inputEl && event.input) {
+      inputEl.textContent = JSON.stringify(event.input, null, 2);
+    }
+  }
+  function finishToolCard(event) {
+    const card = streamToolCards.get(event.toolUseId);
+    if (!card) return;
+    card.classList.remove('is-running');
+    card.classList.add(event.ok ? 'is-done' : 'is-failed');
+    const status = card.querySelector('.tool-status');
+    if (status) {
+      status.textContent = event.ok
+        ? 'done · ' + Math.round(event.durationMs || 0) + 'ms'
+        : 'failed';
+    }
+    const resultEl = card.querySelector('.tool-result');
+    if (resultEl) {
+      resultEl.removeAttribute('hidden');
+      const payload = event.ok ? event.data : { error: event.error };
+      resultEl.textContent = JSON.stringify(payload, null, 2);
+    }
+  }
+  function finishStreaming() {
+    if (!streamEl) return;
+    streamEl.classList.remove('is-streaming');
+    if (streamCursorEl && streamCursorEl.parentNode) {
+      streamCursorEl.parentNode.removeChild(streamCursorEl);
+    }
+    if (streamTextEl) {
+      streamTextEl.innerHTML = renderMarkdownLite(streamText);
+    }
+    state.conductorHistory.push({
+      role: 'assistant',
+      content: streamText,
+      streamed: true
     });
+    streamEl = null;
+    streamTextEl = null;
+    streamCursorEl = null;
+    streamText = '';
+    streamToolCards.clear();
   }
 
   function handleEvent(event) {
     switch (event.kind) {
       case 'ready':
-        // Connection established — could surface a "● live" indicator if we wanted.
+        setConnState('live');
+        return;
+      case 'pong':
         return;
       case 'thinking':
-        // Server received the message; UI already shows "Running…" on the button.
+        setStreaming(true);
         return;
       case 'user-message': {
-        // If this is OUR own echo, skip — we already appended optimistically.
         const cid = event.message && event.message.clientMessageId;
         if (cid && seen.has(cid)) return;
         appendMessageToBody(body, event.message);
         return;
       }
+      // Streaming LoopEvents — render incrementally.
+      case 'turn-start':
+        ensureStreamBubble();
+        return;
+      case 'text-start':
+        ensureStreamBubble();
+        return;
+      case 'text-delta':
+        appendDelta(event.text || '');
+        return;
+      case 'text-stop':
+        return;
+      case 'tool-use-start':
+        startToolCard(event);
+        return;
+      case 'tool-use-input':
+        // Streaming input args — we render at -stop, not per partial.
+        return;
+      case 'tool-use-stop':
+        completeToolInput(event);
+        return;
+      case 'tool-result':
+        finishToolCard(event);
+        return;
+      case 'tool-held':
+        // Selective mode held a dangerous skill — surface as a card. Rare
+        // in execute mode (which runs end-to-end).
+        return;
+      case 'turn-stop':
+        return;
+      case 'loop-done':
+        // The streaming loop ended — finalize the bubble.
+        if (event.finalText && !streamText) {
+          streamText = event.finalText;
+          if (streamTextEl) streamTextEl.textContent = streamText;
+        }
+        finishStreaming();
+        return;
       case 'assistant-message':
-        appendMessageToBody(body, event.message);
+        // For non-streaming (plan) mode, this is the whole reply.
+        // For streaming (execute) mode, finishStreaming() already pushed
+        // history; skip if we just finished a stream.
+        if (streamEl) finishStreaming();
+        if (!event.message || !event.message.streamed) {
+          appendMessageToBody(body, event.message);
+        }
         return;
       case 'halted':
-        // appended via assistant-message above; this is just the explicit signal.
+        if (streamEl) {
+          streamEl.classList.add('is-halted');
+          finishStreaming();
+        }
         return;
       case 'error':
+        if (streamEl) finishStreaming();
         appendMessageToBody(body, {
           role: 'assistant',
-          content: '[conductor-error] ' + (event.message || 'unknown')
+          content: '⚠ ' + (event.message || 'something went wrong')
         });
         return;
       case 'complete':
-        if (btn) {
-          btn.disabled = false;
-          btn.textContent = 'Send';
-        }
-        return;
-      case 'pong':
+        setStreaming(false);
         return;
     }
   }
 
-  // Open eagerly so the first send doesn't pay the round-trip. Hibernation
-  // API on the DO side keeps idle WS connections cheap.
   open();
 
   return {
     send(payload) {
       const frame = JSON.stringify({ kind: 'user-message', ...payload });
+      setStreaming(true);
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(frame);
       } else {
@@ -2215,15 +2573,12 @@ function makeChatStream(sessionName, body, btn) {
       const frame = JSON.stringify({ kind: 'interrupt' });
       if (ws && ws.readyState === WebSocket.OPEN) ws.send(frame);
     },
-    markSeen(clientMessageId) {
-      if (clientMessageId) seen.add(clientMessageId);
-    },
+    markSeen(cid) { if (cid) seen.add(cid); },
     close() {
       closed = true;
       if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
       if (ws && ws.readyState === WebSocket.OPEN) ws.close();
     },
-    // Visible for debugging in console.
     debug: () => ({ sessionName, ws: ws && ws.readyState, queueDepth: queue.length, seen: seen.size })
   };
 }
