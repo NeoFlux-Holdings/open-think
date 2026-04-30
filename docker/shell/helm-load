@@ -1,0 +1,20 @@
+#!/bin/bash
+# helm-load — restore /workspace from the latest snapshot in /persist.
+# Pass a specific snapshot path as the first arg to load that one instead.
+
+set -e
+
+SESSION="${HELM_SESSION:-default}"
+SNAPSHOT="${1:-/persist/sessions/${SESSION}/latest.tar.gz}"
+
+if [ ! -e "$SNAPSHOT" ]; then
+  echo "helm-load: no snapshot found at ${SNAPSHOT}" >&2
+  echo "  Available:" >&2
+  ls -1 "/persist/sessions/${SESSION}/" 2>/dev/null | sed 's/^/    /' >&2 \
+    || echo "    (no /persist/sessions/${SESSION}/ — is /persist mounted?)" >&2
+  exit 2
+fi
+
+echo "helm-load: restoring /workspace from ${SNAPSHOT}"
+tar -C / -xzf "$SNAPSHOT"
+echo "helm-load: restore complete"

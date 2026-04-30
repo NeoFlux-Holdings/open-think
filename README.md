@@ -91,8 +91,8 @@ Both work on Windows / macOS / Linux.
 | External providers | — | `anthropic`, `openai-compatible` (Groq/Together/Ollama/etc.) |
 | Web-scale tier-3 execution | Browser Rendering | `browser` plugin |
 | Tier-4 execution | Cloudflare Sandbox | `sandbox` plugin |
-| **Helm Shell** | — | Cloudflare-Container-backed bash at `/app#/shell` (xterm.js) + `npm run shell` (CLI). Per-session container, ephemeral disk, 15-min idle sleep |
-| **CF infra control** | — | `cloudflare-admin` plugin — agent uses `CLOUDFLARE_API_TOKEN` to verify, list/create D1, KV, R2, secrets, Access apps. Generic `cf-api` escape hatch for anything else |
+| **Helm Shell** | — | Cloudflare-Container-backed bash at `/app#/shell` (xterm.js) + `npm run shell` (CLI). Per-user containers (auto-derived from auth email), ephemeral `/workspace` + R2-FUSE `/persist`, in-shell `helm` REPL, `helm-save`/`helm-load` snapshots. Mental model + state boundaries: [`docs/WORKER_VS_CONTAINER.md`](./docs/WORKER_VS_CONTAINER.md) |
+| **CF infra control** | — | `cloudflare-admin` plugin — agent uses `CLOUDFLARE_API_TOKEN` to verify, list/create D1, KV, R2, secrets, Access apps. Generic `cf-api` escape hatch for anything else. One-click `/setup/auto` endpoint for "set everything up" deploys |
 | Git-for-agents storage | Cloudflare Artifacts | `artifacts` plugin |
 | Extensibility | Self-authored extensions | Plugin SDK + `npm run plugin:new` scaffold |
 | Meta-agent | — | Helm at [`/app`](src/app.ts) — chat, plan, approve-to-run exhibit cards |

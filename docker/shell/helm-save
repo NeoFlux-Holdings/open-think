@@ -1,0 +1,36 @@
+#!/bin/bash
+# helm-save — tar+gzip /workspace into /persist/sessions/<id>/.
+# Skips heavy directories (node_modules, .git/objects, target, dist) so
+# you don't pay R2 ops to upload caches. If you DO want a full snapshot,
+# pass --full.
+
+set -e
+
+SESSION="${HELM_SESSION:-default}"
+DEST_DIR="/persist/sessions/${SESSION}"
+TS="$(date -u +%Y%m%dT%H%M%SZ)"
+TAR="${DEST_DIR}/workspace-${TS}.tar.gz"
+
+# Soft-fail if /persist isn't a real mount — most likely R2_* env vars
+# weren't set, so save would just stuff bytes into ephemeral disk.
+if ! mountpoint -q /persist 2>/dev/null; then
+  echo "helm-save: /persist is not mounted — set R2_* secrets on the Worker first." >&2
+  echo "  helm-save will not snapshot to ephemeral /persist." >&2
+  exit 2
+fi
+
+EXCLUDE_OPTS="--exclude=workspace/node_modules --exclude=workspace/.git/objects \
+              --exclude=workspace/target --exclude=workspace/dist \
+              --exclude=workspace/.cache --exclude=workspace/.next"
+if [ "${1:-}" = "--full" ]; then
+  EXCLUDE_OPTS=""
+  echo "helm-save: --full → including caches (this may upload a lot to R2)"
+fi
+
+mkdir -p "$DEST_DIR"
+echo "helm-save: snapshotting /workspace → ${TAR}"
+# shellcheck disable=SC2086
+tar -C / $EXCLUDE_OPTS -czf "$TAR" workspace
+ln -sf "workspace-${TS}.tar.gz" "${DEST_DIR}/latest.tar.gz"
+SIZE="$(du -h "$TAR" | cut -f1)"
+echo "helm-save: ${SIZE} written to R2 (latest → ${TAR})"

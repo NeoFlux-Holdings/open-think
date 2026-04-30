@@ -42,6 +42,17 @@ AGENT_OWNER = "you"
 # CF_ACCESS_ALLOWED_EMAILS = "you@example.com"
 # AGENT_OWNER_EMAIL = "you@example.com"
 
+# --- Helm Shell container persistence + in-shell helm REPL ---
+# All optional. Without R2_*, /persist inside the container is ephemeral.
+# Without HELM_INTERNAL_TOKEN, the in-shell `helm` command can't reach back.
+# HELM_WORKER_HOST = "helm.your-domain.workers.dev"  # auto-derived if not set
+#
+# Set the rest as Worker secrets, NOT in this file:
+#   wrangler secret put HELM_INTERNAL_TOKEN   # any high-entropy random string
+#   wrangler secret put R2_ACCESS_KEY_ID      # from dash → R2 → Manage R2 API Tokens
+#   wrangler secret put R2_SECRET_ACCESS_KEY  # ditto
+#   wrangler secret put R2_BUCKET             # bucket name (e.g. "helm-persist")
+
 # Local dev only — bypass Access so `wrangler dev` works without a tunnel.
 # Set this in `.dev.vars`, not here. NEVER set in production.
 # DEV_AUTH_BYPASS = "1"

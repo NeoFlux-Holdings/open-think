@@ -399,8 +399,23 @@ async function handler(request: Request, env: Env, requestId: string, startedAt:
       return new Response("expected websocket upgrade", { status: 426 });
     }
     const fromPath = url.pathname.slice("/shell/ws".length).replace(/^\//, "");
-    const sessionName =
-      decodeURIComponent(fromPath || url.searchParams.get("session") || "default") || "default";
+    const explicit = decodeURIComponent(fromPath || url.searchParams.get("session") || "");
+    // No explicit session → derive from authenticated email so each user
+    // gets their own isolated container. We keep the prefix "u-" so it's
+    // visually distinguishable from operator-named sessions and we hash
+    // rather than embed the raw email (case-folding + DO-name-safety).
+    let sessionName = explicit;
+    if (!sessionName) {
+      const email = (auth?.email ?? "anon").toLowerCase();
+      // FNV-1a 32-bit — small, deterministic, no crypto cost. Collision
+      // risk is fine here because the auth gate already isolates users.
+      let h = 0x811c9dc5;
+      for (let i = 0; i < email.length; i++) {
+        h ^= email.charCodeAt(i);
+        h = Math.imul(h, 0x01000193) >>> 0;
+      }
+      sessionName = `u-${h.toString(16).padStart(8, "0")}`;
+    }
     const id = env.SHELL_CONTAINER.idFromName(sessionName);
     const stub = env.SHELL_CONTAINER.get(id);
     // Container DO's fetch hands the request straight to the container's
@@ -737,6 +752,121 @@ async function handler(request: Request, env: Env, requestId: string, startedAt:
     }
     // result already has ok:false + error/recovery/steps; pass through.
     return json(result, 400, requestId);
+  }
+
+  // POST /setup/auto — one-click full setup. Picks the account
+  // automatically (env override → only-account → first-account), reads
+  // owner email from env, runs lockdown end-to-end. Body is optional
+  // and only needed for overrides:
+  //   { accountId?, allowedEmails?, scriptName?, appName? }
+  // Returns: { ok, picked: {accountId,name}, lockdown: LockdownResult,
+  //           recommended: { ... } }
+  if (request.method === "POST" && url.pathname === "/setup/auto") {
+    const body = (await request.json().catch(() => ({}))) as {
+      accountId?: string;
+      allowedEmails?: string[];
+      scriptName?: string;
+      appName?: string;
+      sessionDuration?: string;
+    };
+    const token = env.CLOUDFLARE_API_TOKEN ?? env.CLOUDFLARE_AGENT_TOKEN ?? "";
+    if (!token) {
+      return json(
+        {
+          ok: false,
+          error: "CLOUDFLARE_API_TOKEN secret not set. Paste it in /app#/settings or run `wrangler secret put CLOUDFLARE_API_TOKEN`.",
+          code: "E_TOKEN_MISSING"
+        },
+        400,
+        requestId
+      );
+    }
+    // 1. Pick account.
+    const accountIdOverride = body.accountId || env.CLOUDFLARE_ACCOUNT_ID;
+    let pickedAccount: { id: string; name: string } | null = null;
+    if (accountIdOverride) {
+      pickedAccount = { id: accountIdOverride, name: "(from env)" };
+    } else {
+      const list = await fetch(
+        "https://api.cloudflare.com/client/v4/accounts?per_page=10",
+        { headers: { Authorization: `Bearer ${token}`, accept: "application/json" } }
+      );
+      const listJson = (await list.json().catch(() => ({}))) as {
+        success?: boolean;
+        result?: Array<{ id: string; name: string }>;
+        errors?: Array<{ message: string }>;
+      };
+      if (!list.ok || !listJson.success) {
+        return json(
+          {
+            ok: false,
+            error: listJson.errors?.[0]?.message ?? "list-accounts failed",
+            code: "E_LIST_ACCOUNTS_FAILED",
+            hint:
+              "Most likely the token is missing the 'Account Settings:Read' scope or is restricted to a different account."
+          },
+          400,
+          requestId
+        );
+      }
+      const accounts = listJson.result ?? [];
+      if (accounts.length === 0) {
+        return json({ ok: false, error: "no accounts visible to this token" }, 400, requestId);
+      }
+      pickedAccount = accounts[0];
+    }
+    // 2. Email allowlist — env owner first, body override second.
+    const allowedEmails =
+      body.allowedEmails && body.allowedEmails.length > 0
+        ? body.allowedEmails
+        : env.AGENT_OWNER_EMAIL || env.OWNER_EMAIL
+        ? [(env.AGENT_OWNER_EMAIL || env.OWNER_EMAIL) as string]
+        : [];
+    if (allowedEmails.length === 0) {
+      return json(
+        {
+          ok: false,
+          error:
+            "No owner email available. Set AGENT_OWNER_EMAIL (or OWNER_EMAIL) as a Worker var, or pass {allowedEmails:[...]} in the body.",
+          code: "E_EMAIL_MISSING"
+        },
+        400,
+        requestId
+      );
+    }
+    // 3. Run lockdown.
+    const host = request.headers.get("host") ?? url.host;
+    const scriptName = body.scriptName || deriveScriptName(host) || "helm";
+    const lockdown = await runLockdown({
+      token,
+      accountId: pickedAccount.id,
+      scriptName,
+      appName: body.appName || `Helm — ${scriptName}`,
+      workerHost: host,
+      allowedEmails,
+      sessionDuration: body.sessionDuration
+    });
+    return json(
+      {
+        ok: lockdown.ok,
+        data: {
+          picked: pickedAccount,
+          allowedEmails,
+          scriptName,
+          host,
+          lockdown,
+          recommended: {
+            wranglerVars: {
+              CF_ACCESS_TEAM_DOMAIN: lockdown.teamDomain,
+              CF_ACCESS_AUD: lockdown.aud,
+              AGENT_OWNER_EMAIL: allowedEmails[0]
+            }
+          }
+        }
+      },
+      lockdown.ok ? 200 : 400,
+      requestId
+    );
   }
 
   if (request.method === "POST" && url.pathname === "/oauth/codex/device/start") {

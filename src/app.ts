@@ -935,6 +935,17 @@ h1.section-title {
 .lockdown-prefilled-text { font-size: 14px; color: var(--ink); line-height: 1.5; }
 .lockdown-prefilled-text strong { display: block; margin-bottom: 2px; }
 .lockdown-prefilled-text span { color: var(--muted); font-size: 13px; }
+
+/* One-click auto-setup card — same look as a prefilled banner but with
+   a power-action vibe (electric ⚡, gold accent border on the button). */
+.lockdown-autosetup { display: flex; flex-direction: column; gap: 14px; }
+.lockdown-autosetup .lockdown-prefilled {
+  background: rgba(240, 198, 116, 0.08);
+  border-color: var(--accent);
+}
+.lockdown-autosetup .lockdown-prefilled-mark {
+  background: var(--accent); color: var(--paper);
+}
 .lockdown-prefilled-text a { color: var(--accent); }
 
 /* Numbered "how to create token" instructions panel */
@@ -1682,6 +1693,33 @@ input[type="text"]:focus, select:focus, textarea:focus { border-bottom-color: va
       <div id="ld-error" class="lockdown-error" hidden></div>
     </div>
 
+    <!-- One-click banner: shown ONLY when both CLOUDFLARE_API_TOKEN
+         and AGENT_OWNER_EMAIL/OWNER_EMAIL are pre-set on the Worker.
+         Posts to /setup/auto and rides the same progress UI. -->
+    <div id="lockdown-autosetup" class="lockdown-autosetup" hidden>
+      <div class="lockdown-prefilled">
+        <div class="lockdown-prefilled-mark">⚡</div>
+        <div class="lockdown-prefilled-text">
+          <strong>One-click ready</strong>
+          <span>
+            Token + owner email already configured on this Worker. Click below
+            to verify the token, pick the account, create the Access app + policy,
+            and persist <span class="mono">CF_ACCESS_TEAM_DOMAIN</span> +
+            <span class="mono">CF_ACCESS_AUD</span> — no fields to fill.
+          </span>
+        </div>
+      </div>
+      <div class="lockdown-actions">
+        <button id="ld-auto" class="lockdown-btn lockdown-btn-primary">
+          <span class="lockdown-btn-text">Auto-setup with CF API</span>
+          <span class="lockdown-btn-arrow">⚡</span>
+        </button>
+        <button id="ld-auto-fallback" class="ghost lockdown-btn-dismiss" type="button">
+          Use the form instead
+        </button>
+      </div>
+    </div>
+
     <!-- Step 2: progress -->
     <div id="lockdown-progress" class="lockdown-progress" hidden>
       <ol class="lockdown-steps" id="ld-steps">
@@ -2004,8 +2042,12 @@ async function mountShell() {
   const mount = $('#shell-mount');
   const dot = $('#shell-dot');
   const sessionEl = $('#shell-session');
-  const sessionName = (typeof localStorage !== 'undefined' && localStorage.getItem('helm-shell-session')) || 'default';
-  sessionEl.textContent = sessionName;
+  // Empty/null sessionName ⇒ Worker derives one from the authenticated
+  // email (hash → "u-XXXXXXXX"). Power users can override by setting
+  // helm-shell-session in localStorage (e.g. from the dev console) to
+  // run multiple parallel containers for the same email.
+  const sessionName = (typeof localStorage !== 'undefined' && localStorage.getItem('helm-shell-session')) || '';
+  sessionEl.textContent = sessionName || '(per-user)';
 
   const setState = (s) => { dot.dataset.state = s; dot.setAttribute('aria-label', s); };
   setState('connecting');
@@ -2048,7 +2090,10 @@ async function mountShell() {
 
   const wsUrl = (() => {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    return \`\${proto}//\${location.host}/shell/ws/\${encodeURIComponent(sessionName)}\`;
+    // Empty session ⇒ Worker derives from auth (hash of email).
+    return sessionName
+      ? \`\${proto}//\${location.host}/shell/ws/\${encodeURIComponent(sessionName)}\`
+      : \`\${proto}//\${location.host}/shell/ws\`;
   })();
 
   function sendResize() {
@@ -2058,9 +2103,36 @@ async function mountShell() {
     ws.send('r' + JSON.stringify({ cols, rows }));
   }
 
+  // Cold-start progress: first request to a sleeping container takes 5–10s
+  // for image pull + cmd start. We show a stage-by-stage message so the user
+  // doesn't think it's hung. Cleared as soon as the bridge sends 'm' (motd)
+  // or any 'o' (stdout) frame.
+  let coldStartTimer = 0;
+  let coldStartStage = 0;
+  let connectStartedAt = 0;
+  let receivedFirstByte = false;
+  function tickColdStart() {
+    if (receivedFirstByte) return;
+    const elapsed = Math.floor((Date.now() - connectStartedAt) / 1000);
+    coldStartStage += 1;
+    let line = '';
+    if (coldStartStage === 1) line = \`\\x1b[36m· still booting (\${elapsed}s) — first wake on a cold container takes ~10s while CF pulls the image\\x1b[0m\`;
+    else if (coldStartStage === 2) line = \`\\x1b[36m· still booting (\${elapsed}s) — initializing PTY + bridge\\x1b[0m\`;
+    else if (coldStartStage === 3) line = \`\\x1b[33m· still booting (\${elapsed}s) — taking longer than usual; check container logs in CF dashboard if this persists\\x1b[0m\`;
+    else line = \`\\x1b[31m· no response after \${elapsed}s — try Reconnect, or check the deploy.\\x1b[0m\`;
+    term.writeln(line);
+    if (coldStartStage < 5) coldStartTimer = setTimeout(tickColdStart, 5000);
+  }
+
   function connect() {
     setState('connecting');
-    term.writeln('\\x1b[36m· connecting…\\x1b[0m');
+    term.writeln('\\x1b[36m· connecting to helm-shell container…\\x1b[0m');
+    connectStartedAt = Date.now();
+    coldStartStage = 0;
+    receivedFirstByte = false;
+    clearTimeout(coldStartTimer);
+    coldStartTimer = setTimeout(tickColdStart, 4000);
+
     ws = new WebSocket(wsUrl);
     ws.binaryType = 'arraybuffer';
 
@@ -2076,11 +2148,19 @@ async function mountShell() {
 
     ws.onmessage = (ev) => {
       const data = ev.data;
+      const markFirstByte = () => {
+        if (receivedFirstByte) return;
+        receivedFirstByte = true;
+        clearTimeout(coldStartTimer);
+        const ms = Date.now() - connectStartedAt;
+        if (ms > 3000) term.writeln(\`\\x1b[36m· container ready (\${(ms / 1000).toFixed(1)}s)\\x1b[0m\`);
+      };
       if (typeof data === 'string') {
         if (data.length < 1) return;
         const op = data[0];
         const payload = data.slice(1);
         if (op === 'o' || op === 'm' || op === 'E') {
+          markFirstByte();
           term.write(payload);
           if (op === 'E') term.writeln('\\x1b[31m[bridge error]\\x1b[0m');
           return;
@@ -2099,6 +2179,7 @@ async function mountShell() {
         const payload = arr.slice(1);
         const dec = new TextDecoder('utf-8', { fatal: false });
         if (op === 'o' || op === 'm' || op === 'E') {
+          markFirstByte();
           term.write(dec.decode(payload));
           return;
         }
@@ -3151,6 +3232,65 @@ async function mountLockdownWizard() {
   }
   if (usingExistingToken && discover.prefilledOwnerEmail) {
     els.submitText.textContent = 'Lock it down · 1 click';
+    // Both pre-set: also expose the dedicated one-click panel that uses
+    // /setup/auto (skips account picker + email entry entirely). The
+    // legacy form-based path stays available behind "Use the form".
+    const autoCard = document.getElementById('lockdown-autosetup');
+    if (autoCard) {
+      autoCard.removeAttribute('hidden');
+      els.form.setAttribute('hidden', '');
+    }
+    const autoFallback = document.getElementById('ld-auto-fallback');
+    if (autoFallback) {
+      autoFallback.addEventListener('click', () => {
+        if (autoCard) autoCard.setAttribute('hidden', '');
+        els.form.removeAttribute('hidden');
+      });
+    }
+    const autoBtn = document.getElementById('ld-auto');
+    if (autoBtn) {
+      autoBtn.addEventListener('click', async () => {
+        autoBtn.disabled = true;
+        const origText = autoBtn.querySelector('.lockdown-btn-text').textContent;
+        autoBtn.querySelector('.lockdown-btn-text').textContent = 'Setting up…';
+        try {
+          // Switch to progress UI immediately so user sees motion.
+          if (autoCard) autoCard.setAttribute('hidden', '');
+          els.progress.removeAttribute('hidden');
+          setStepState('preflight', 'is-running');
+          const r = await j('/setup/auto', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: '{}'
+          });
+          const data = r.data?.data ?? r.data ?? r;
+          // Mark preflight + team-domain done if lockdown ran.
+          setStepState('preflight', 'is-done');
+          const ld = data?.lockdown ?? {};
+          (ld.steps || []).forEach((s) => setStepState(s.kind, s.ok ? 'is-done' : 'is-failed', s.error));
+          if (!ld.ok) {
+            showFailure(ld.error || 'auto-setup failed', ld.recovery || 'See steps above.');
+            return;
+          }
+          setStepState('verify-strict', 'is-running', 'Worker redeploying…');
+          const okStrict = await pollForStrictMode();
+          setStepState('verify-strict', okStrict ? 'is-done' : 'is-failed',
+            okStrict ? null : 'still in progress — refresh in a moment');
+          showSuccess(ld);
+        } catch (err) {
+          showFailure(
+            'auto-setup failed',
+            String(err && err.message ? err.message : err) +
+              ' · You can fall back to the form below.'
+          );
+          if (autoCard) autoCard.removeAttribute('hidden');
+          els.progress.setAttribute('hidden', '');
+        } finally {
+          autoBtn.disabled = false;
+          autoBtn.querySelector('.lockdown-btn-text').textContent = origText;
+        }
+      });
+    }
   }
 
   // "Paste a different one instead" — flip back to manual mode.

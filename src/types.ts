@@ -50,6 +50,30 @@ export interface Env {
   CF_ACCESS_ALLOWED_EMAILS?: string;
   DEV_AUTH_BYPASS?: string;
   AGENT_OWNER_EMAIL?: string;
+  /**
+   * Optional internal bearer token. Anything authenticating with
+   * `Authorization: Bearer <HELM_INTERNAL_TOKEN>` bypasses CF Access and is
+   * treated as the agent itself. Used by the Helm Shell container's `helm`
+   * command (and other in-network agents) so they can call /conductor/*
+   * without needing a JWT. Set as a Worker secret with `wrangler secret put
+   * HELM_INTERNAL_TOKEN` — pick a random 32-byte hex.
+   */
+  HELM_INTERNAL_TOKEN?: string;
+  /**
+   * Worker hostname (no scheme) the in-container `helm` REPL command
+   * should call back to. Defaults to the same Worker that hosts the
+   * container, but you may override (e.g. for staging) by setting
+   * this as a Worker var or secret.
+   */
+  HELM_WORKER_HOST?: string;
+  /**
+   * R2 access credentials forwarded into the Helm Shell container so it
+   * can rclone-mount /persist. Generate at dash → R2 → Manage R2 API
+   * Tokens. The account-id is derived from CLOUDFLARE_ACCOUNT_ID.
+   */
+  R2_ACCESS_KEY_ID?: string;
+  R2_SECRET_ACCESS_KEY?: string;
+  R2_BUCKET?: string;
   /* --- Cost tracking --- */
   DAILY_SPEND_CAP_USD?: string;
   /* --- Web Push (VAPID) --- */

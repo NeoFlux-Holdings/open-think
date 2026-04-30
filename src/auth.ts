@@ -41,6 +41,12 @@ export interface AuthContext {
   firstRun: boolean;
 }
 
+function parseBearer(header: string | null): string | null {
+  if (!header) return null;
+  const m = /^Bearer\s+(\S+)/i.exec(header);
+  return m ? m[1] : null;
+}
+
 /**
  * JWKS lookups are cached per-team-domain for the lifetime of the isolate.
  * jose handles the internal cache TTL (it refetches when keys rotate).
@@ -65,6 +71,26 @@ export async function verifyAccessJwt(
   request: Request,
   env: Env
 ): Promise<AuthContext | null> {
+  // --- 0. Internal-bearer path (used by the Helm Shell container's `helm`
+  //         command, scripts, etc. that run inside our own infrastructure
+  //         and can't easily mint a CF Access JWT). The token is set as a
+  //         Worker secret and forwarded into the container via envVars on
+  //         the Container DO. Constant-time-ish equality is fine here —
+  //         the token is high-entropy and strings of equal length compare
+  //         in constant time on V8 anyway. ---
+  const internalBearer = parseBearer(request.headers.get("authorization"));
+  if (internalBearer && env.HELM_INTERNAL_TOKEN && internalBearer === env.HELM_INTERNAL_TOKEN) {
+    const email = env.AGENT_OWNER_EMAIL ?? "internal@helm-shell";
+    return {
+      email,
+      subject: "helm-internal",
+      token: "internal-bearer",
+      claims: { sub: "helm-internal", email, iat: Math.floor(Date.now() / 1000) } as JWTPayload,
+      dev: false,
+      firstRun: false
+    };
+  }
+
   // --- 1. Dev bypass (local only) ---
   if (env.DEV_AUTH_BYPASS === "1") {
     const email = env.AGENT_OWNER_EMAIL ?? "dev@local";

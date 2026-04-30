@@ -1,12 +1,17 @@
 
   ╭─────────────────────────────────────────────────────────────╮
-  │ Helm Shell · Cloudflare Container · ephemeral disk          │
+  │ Helm Shell · Cloudflare Container · two-disk model          │
   ╰─────────────────────────────────────────────────────────────╯
 
-  • This shell lives in a CF Container instance keyed to your session.
-  • Disk is wiped when the container sleeps (~15 min idle). Don't store
-    anything you can't lose. For persistence: write to D1 / KV / R2 via
-    `helm` plugin commands (or use the `wrangler` CLI if you've installed it).
-  • Pre-installed: bash, git, curl, jq, vim, tmux, htop, node, python3.
-  • Type `helm` (coming soon) for an inline conductor REPL.
+  /workspace   ephemeral SSD (fast, wiped on sleep ~15 min idle)
+  /persist     R2-mounted FUSE (durable, slower) — when R2_* env set
+
+  Built-ins:
+    helm "..."      send a prompt to your own conductor
+    helm-save       snapshot /workspace → /persist (R2)
+    helm-load       restore the latest snapshot
+    helm --plan ".."  describe what helm would do without running it
+
+  Pre-installed: bash, git, curl, jq, vim, tmux, htop, node, python3,
+  rclone (R2 mount), tini (signal forwarding).
 

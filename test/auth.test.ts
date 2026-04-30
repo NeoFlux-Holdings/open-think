@@ -98,4 +98,60 @@ describe("auth", () => {
       status: 401
     });
   });
+
+  describe("HELM_INTERNAL_TOKEN bearer path", () => {
+    it("matching bearer authenticates as the agent (overrides Access)", async () => {
+      const env = baseEnv({
+        CF_ACCESS_TEAM_DOMAIN: "https://tom.cloudflareaccess.com",
+        CF_ACCESS_AUD: "aud-tag",
+        HELM_INTERNAL_TOKEN: "secret-internal-xyz",
+        AGENT_OWNER_EMAIL: "tom@example.com"
+      });
+      const req = new Request("https://helm.test/conductor/message", {
+        headers: { authorization: "Bearer secret-internal-xyz" }
+      });
+      const ctx = await verifyAccessJwt(req, env);
+      expect(ctx).not.toBeNull();
+      expect(ctx!.subject).toBe("helm-internal");
+      expect(ctx!.email).toBe("tom@example.com");
+      expect(ctx!.firstRun).toBe(false);
+      expect(ctx!.dev).toBe(false);
+    });
+
+    it("mismatched bearer falls through to JWT verification", async () => {
+      const env = baseEnv({
+        CF_ACCESS_TEAM_DOMAIN: "https://tom.cloudflareaccess.com",
+        CF_ACCESS_AUD: "aud-tag",
+        HELM_INTERNAL_TOKEN: "secret-internal-xyz"
+      });
+      const req = new Request("https://helm.test/conductor/message", {
+        headers: { authorization: "Bearer wrong-token" }
+      });
+      // Wrong bearer + no JWT → null (caller would 401).
+      expect(await verifyAccessJwt(req, env)).toBeNull();
+    });
+
+    it("bearer is ignored when HELM_INTERNAL_TOKEN is unset", async () => {
+      const env = baseEnv({
+        CF_ACCESS_TEAM_DOMAIN: "https://tom.cloudflareaccess.com",
+        CF_ACCESS_AUD: "aud-tag"
+      });
+      const req = new Request("https://helm.test/conductor/message", {
+        headers: { authorization: "Bearer anything" }
+      });
+      expect(await verifyAccessJwt(req, env)).toBeNull();
+    });
+
+    it("non-Bearer Authorization header is not interpreted as internal", async () => {
+      const env = baseEnv({
+        CF_ACCESS_TEAM_DOMAIN: "https://tom.cloudflareaccess.com",
+        CF_ACCESS_AUD: "aud-tag",
+        HELM_INTERNAL_TOKEN: "secret-internal-xyz"
+      });
+      const req = new Request("https://helm.test/conductor/message", {
+        headers: { authorization: "Basic c2VjcmV0LWludGVybmFsLXh5eg==" }
+      });
+      expect(await verifyAccessJwt(req, env)).toBeNull();
+    });
+  });
 });
