@@ -6,11 +6,12 @@ Open Think gives you the building blocks of a production agent — durable sessi
 
 Think of it as an OpenClaw- / Hermes-class runtime that lives entirely on Cloudflare's edge: zero when idle, mathematically cheap when busy, no VMs or containers to babysit. Architecture and code paths are documented in [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md).
 
-**Meet Helm** — the built-in meta-agent at [`/app`](docs/HELM.md) that reads your runtime, plans skill invocations, and gives you three options for how to run them:
+**Meet Helm** — the built-in meta-agent at [`/app`](docs/HELM.md) that reads your runtime, plans skill invocations, and gives you two modes:
 
-- **propose** — exhibit cards you approve one at a time
-- **selective** — auto-run safe skills, halt on anything marked `dangerous`
-- **auto** — native tool-use end-to-end via any enabled provider
+- **plan** — describes what it would do without touching anything
+- **execute** — native tool-use end-to-end via any enabled provider, with token streaming and a real interrupt button
+
+Plus a **Shell** tab at `/app#/shell` — a real bash session in a Cloudflare Container, accessible from the browser (xterm.js) or terminal (`npm run shell -- --host your.workers.dev`).
 
 **Five paths to a model** — pick any combination ([full matrix in docs/PROVIDERS.md](docs/PROVIDERS.md)):
 
@@ -90,6 +91,8 @@ Both work on Windows / macOS / Linux.
 | External providers | — | `anthropic`, `openai-compatible` (Groq/Together/Ollama/etc.) |
 | Web-scale tier-3 execution | Browser Rendering | `browser` plugin |
 | Tier-4 execution | Cloudflare Sandbox | `sandbox` plugin |
+| **Helm Shell** | — | Cloudflare-Container-backed bash at `/app#/shell` (xterm.js) + `npm run shell` (CLI). Per-session container, ephemeral disk, 15-min idle sleep |
+| **CF infra control** | — | `cloudflare-admin` plugin — agent uses `CLOUDFLARE_API_TOKEN` to verify, list/create D1, KV, R2, secrets, Access apps. Generic `cf-api` escape hatch for anything else |
 | Git-for-agents storage | Cloudflare Artifacts | `artifacts` plugin |
 | Extensibility | Self-authored extensions | Plugin SDK + `npm run plugin:new` scaffold |
 | Meta-agent | — | Helm at [`/app`](src/app.ts) — chat, plan, approve-to-run exhibit cards |

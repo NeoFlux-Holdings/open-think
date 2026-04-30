@@ -36,6 +36,7 @@ import type { Env, InvokeRequest } from "./types";
 export { AgentSessionDO } from "./durable/agentSession";
 export { StreamHubDO } from "./durable/streamHub";
 export { ChatSessionDO } from "./durable/chatSession";
+export { ShellContainerDO } from "./durable/shellContainer";
 export { MorningBriefingWorkflow } from "./workflows/morningBriefing";
 
 import {
@@ -369,6 +370,43 @@ async function handler(request: Request, env: Env, requestId: string, startedAt:
     // fetch handler can read it without re-parsing the path.
     const forward = new Request(
       `https://chat-do/?session=${encodeURIComponent(sessionName)}`,
+      request
+    );
+    return stub.fetch(forward);
+  }
+
+  // Helm Shell — Cloudflare Container hosting bash, fronted by a tiny
+  // Node WebSocket↔PTY bridge (docker/shell/server.mjs). Browser uses
+  // xterm.js at /app#/shell; CLI uses scripts/open-think-shell.mjs.
+  // The container's `defaultPort` (7681) is fixed by the bridge and
+  // proxied transparently — we just hand the upgrade to the SDK and
+  // it routes WebSocket frames bidirectionally.
+  if (url.pathname === "/shell/ws" || url.pathname.startsWith("/shell/ws/")) {
+    if (!env.SHELL_CONTAINER) {
+      return json(
+        {
+          ok: false,
+          error:
+            "SHELL_CONTAINER binding missing. Add the [[containers]] block + [[durable_objects.bindings]] for ShellContainerDO from wrangler.toml and redeploy.",
+          code: "E_SHELL_CONTAINER_MISSING"
+        },
+        503,
+        requestId
+      );
+    }
+    const upgrade = request.headers.get("upgrade")?.toLowerCase() ?? "";
+    if (upgrade !== "websocket") {
+      return new Response("expected websocket upgrade", { status: 426 });
+    }
+    const fromPath = url.pathname.slice("/shell/ws".length).replace(/^\//, "");
+    const sessionName =
+      decodeURIComponent(fromPath || url.searchParams.get("session") || "default") || "default";
+    const id = env.SHELL_CONTAINER.idFromName(sessionName);
+    const stub = env.SHELL_CONTAINER.get(id);
+    // Container DO's fetch hands the request straight to the container's
+    // HTTP server (port 7681). The bridge accepts ANY path on upgrade.
+    const forward = new Request(
+      `https://shell-do/ws?session=${encodeURIComponent(sessionName)}`,
       request
     );
     return stub.fetch(forward);

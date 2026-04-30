@@ -118,6 +118,271 @@ const SKILL_CATALOG: SkillDefinition[] = [
       required: ["zoneId"]
     }
   },
+  /* ---- cloudflare-admin: agent provisions its own infrastructure ---- */
+  {
+    id: "cf-verify",
+    name: "CF Token Verify",
+    description:
+      "Verify CLOUDFLARE_API_TOKEN works (calls /user/tokens/verify). Returns token id, status, expiry.",
+    pluginId: "cloudflare-admin",
+    action: "verify",
+    tags: ["cloudflare", "admin", "health"],
+    inputSchema: EMPTY_SCHEMA
+  },
+  {
+    id: "cf-list-accounts",
+    name: "CF List Accounts",
+    description: "List Cloudflare accounts visible to the configured token.",
+    pluginId: "cloudflare-admin",
+    action: "list-accounts",
+    tags: ["cloudflare", "admin"],
+    inputSchema: EMPTY_SCHEMA
+  },
+  {
+    id: "cf-list-workers",
+    name: "CF List Workers",
+    description:
+      "List Workers scripts in an account. accountId optional — defaults to env.CLOUDFLARE_ACCOUNT_ID.",
+    pluginId: "cloudflare-admin",
+    action: "list-workers",
+    tags: ["cloudflare", "admin", "workers"],
+    inputSchema: {
+      type: "object",
+      properties: { accountId: { type: "string" } }
+    }
+  },
+  {
+    id: "cf-list-d1",
+    name: "CF List D1 Databases",
+    description: "List D1 SQLite databases.",
+    pluginId: "cloudflare-admin",
+    action: "list-d1",
+    tags: ["cloudflare", "admin", "d1"],
+    inputSchema: {
+      type: "object",
+      properties: { accountId: { type: "string" } }
+    }
+  },
+  {
+    id: "cf-create-d1",
+    name: "CF Create D1 Database",
+    description: "Create a new D1 database. DANGEROUS — creates real infrastructure.",
+    pluginId: "cloudflare-admin",
+    action: "create-d1",
+    tags: ["cloudflare", "admin", "d1", "create"],
+    dangerous: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        accountId: { type: "string" },
+        name: { type: "string", description: "D1 database name (lowercase, dashes ok)" }
+      },
+      required: ["name"]
+    }
+  },
+  {
+    id: "cf-query-d1",
+    name: "CF Query D1",
+    description:
+      "Run a SQL query against a D1 database. Pass {databaseId, sql, params}. DANGEROUS for non-SELECT statements.",
+    pluginId: "cloudflare-admin",
+    action: "query-d1",
+    tags: ["cloudflare", "admin", "d1", "sql"],
+    dangerous: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        accountId: { type: "string" },
+        databaseId: { type: "string" },
+        sql: { type: "string" },
+        params: { type: "array", items: {} }
+      },
+      required: ["databaseId", "sql"]
+    }
+  },
+  {
+    id: "cf-list-kv",
+    name: "CF List KV Namespaces",
+    description: "List Workers KV namespaces.",
+    pluginId: "cloudflare-admin",
+    action: "list-kv",
+    tags: ["cloudflare", "admin", "kv"],
+    inputSchema: {
+      type: "object",
+      properties: { accountId: { type: "string" } }
+    }
+  },
+  {
+    id: "cf-create-kv",
+    name: "CF Create KV Namespace",
+    description: "Create a new KV namespace. DANGEROUS — creates real infrastructure.",
+    pluginId: "cloudflare-admin",
+    action: "create-kv",
+    tags: ["cloudflare", "admin", "kv", "create"],
+    dangerous: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        accountId: { type: "string" },
+        title: { type: "string" }
+      },
+      required: ["title"]
+    }
+  },
+  {
+    id: "cf-kv-put",
+    name: "CF KV Put",
+    description: "Write a value to KV. value is stored as text (or JSON.stringified object).",
+    pluginId: "cloudflare-admin",
+    action: "kv-put",
+    tags: ["cloudflare", "admin", "kv", "write"],
+    dangerous: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        accountId: { type: "string" },
+        namespaceId: { type: "string" },
+        key: { type: "string" },
+        value: {}
+      },
+      required: ["namespaceId", "key", "value"]
+    }
+  },
+  {
+    id: "cf-kv-get",
+    name: "CF KV Get",
+    description: "Read a key from KV. Returns the raw text value.",
+    pluginId: "cloudflare-admin",
+    action: "kv-get",
+    tags: ["cloudflare", "admin", "kv", "read"],
+    inputSchema: {
+      type: "object",
+      properties: {
+        accountId: { type: "string" },
+        namespaceId: { type: "string" },
+        key: { type: "string" }
+      },
+      required: ["namespaceId", "key"]
+    }
+  },
+  {
+    id: "cf-kv-delete",
+    name: "CF KV Delete",
+    description: "Delete a key from KV. DANGEROUS.",
+    pluginId: "cloudflare-admin",
+    action: "kv-delete",
+    tags: ["cloudflare", "admin", "kv", "delete"],
+    dangerous: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        accountId: { type: "string" },
+        namespaceId: { type: "string" },
+        key: { type: "string" }
+      },
+      required: ["namespaceId", "key"]
+    }
+  },
+  {
+    id: "cf-list-r2",
+    name: "CF List R2 Buckets",
+    description: "List R2 buckets.",
+    pluginId: "cloudflare-admin",
+    action: "list-r2",
+    tags: ["cloudflare", "admin", "r2"],
+    inputSchema: {
+      type: "object",
+      properties: { accountId: { type: "string" } }
+    }
+  },
+  {
+    id: "cf-create-r2",
+    name: "CF Create R2 Bucket",
+    description: "Create an R2 bucket. DANGEROUS — creates real infrastructure.",
+    pluginId: "cloudflare-admin",
+    action: "create-r2",
+    tags: ["cloudflare", "admin", "r2", "create"],
+    dangerous: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        accountId: { type: "string" },
+        name: { type: "string" }
+      },
+      required: ["name"]
+    }
+  },
+  {
+    id: "cf-put-secret",
+    name: "CF Put Worker Secret",
+    description:
+      "Set a secret on a Worker script. {scriptName, name, text}. DANGEROUS — handles secret material.",
+    pluginId: "cloudflare-admin",
+    action: "put-secret",
+    tags: ["cloudflare", "admin", "secret", "worker"],
+    dangerous: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        accountId: { type: "string" },
+        scriptName: { type: "string" },
+        name: { type: "string" },
+        text: { type: "string" }
+      },
+      required: ["scriptName", "name", "text"]
+    }
+  },
+  {
+    id: "cf-list-access-apps",
+    name: "CF List Access Apps",
+    description: "List Cloudflare Access applications.",
+    pluginId: "cloudflare-admin",
+    action: "list-access-apps",
+    tags: ["cloudflare", "admin", "access"],
+    inputSchema: {
+      type: "object",
+      properties: { accountId: { type: "string" } }
+    }
+  },
+  {
+    id: "cf-create-access-app",
+    name: "CF Create Access App",
+    description:
+      "Create a self-hosted Access application. {name, domain, sessionDuration?}. DANGEROUS.",
+    pluginId: "cloudflare-admin",
+    action: "create-access-app",
+    tags: ["cloudflare", "admin", "access", "create"],
+    dangerous: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        accountId: { type: "string" },
+        name: { type: "string" },
+        domain: { type: "string", description: "FQDN to gate (e.g. helm.example.workers.dev)" },
+        sessionDuration: { type: "string", description: "e.g. 24h" }
+      },
+      required: ["name", "domain"]
+    }
+  },
+  {
+    id: "cf-api",
+    name: "CF API (escape hatch)",
+    description:
+      "Generic Cloudflare API call. {method, path, body?}. Use ONLY when no specific cf-* skill fits. Path must start with '/'. DANGEROUS.",
+    pluginId: "cloudflare-admin",
+    action: "cf-api",
+    tags: ["cloudflare", "admin", "raw"],
+    dangerous: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        method: { type: "string", enum: ["GET", "POST", "PUT", "PATCH", "DELETE"] },
+        path: { type: "string", description: "API path starting with '/' (e.g. '/accounts/{id}/...')" },
+        body: {}
+      },
+      required: ["method", "path"]
+    }
+  },
   {
     id: "ai-chat",
     name: "Workers AI Chat",

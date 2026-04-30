@@ -28,7 +28,7 @@ MODEL_DEFAULT = "@cf/openai/gpt-oss-120b"
 # OPENROUTER_API_KEY at deploy time, the chat picks it up immediately
 # (auto-routes to the best model per prompt). admin + workers-ai give
 # zero-config baseline; openrouter is the strong default when keyed.
-ENABLED_PLUGINS = "admin,workers-ai,openrouter"
+ENABLED_PLUGINS = "admin,cloudflare-admin,workers-ai,openrouter"
 # Outbound host allowlist enforced by the plugin bus. Defaults cover the
 # most common providers including OpenRouter; extend as you add plugins.
 ALLOWED_HOSTS = "api.cloudflare.com,mcp.cloudflare.com,api.anthropic.com,api.openai.com,openrouter.ai"
@@ -67,6 +67,23 @@ class_name = "StreamHubDO"
 name = "CHAT_SESSIONS"
 class_name = "ChatSessionDO"
 
+# Helm Shell — Cloudflare-Container-backed bash session. One container
+# per session name; sleeps after 15m idle. Browser tab uses xterm.js;
+# CLI uses scripts/open-think-shell.mjs. Image built from docker/shell/.
+[[durable_objects.bindings]]
+name = "SHELL_CONTAINER"
+class_name = "ShellContainerDO"
+
+[[containers]]
+class_name = "ShellContainerDO"
+image = "./docker/shell/Dockerfile"
+max_instances = 5
+# `basic` = 1/4 vCPU, 1 GiB RAM, 4 GB disk. Plenty for an interactive
+# bash session + git/curl/jq workloads. Bump to standard-1 if users
+# start running heavier toolchains (compile, ffmpeg, etc.).
+instance_type = "basic"
+name = "helm-shell"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["AgentSessionDO"]
@@ -78,6 +95,10 @@ new_classes = ["StreamHubDO"]
 [[migrations]]
 tag = "v3"
 new_classes = ["ChatSessionDO"]
+
+[[migrations]]
+tag = "v4"
+new_sqlite_classes = ["ShellContainerDO"]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # OPTIONAL: PA stack bindings

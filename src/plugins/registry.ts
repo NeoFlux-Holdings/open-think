@@ -5,6 +5,7 @@ import { ArtifactsPlugin } from "./artifacts";
 import { BrowserPlugin } from "./browser";
 import { CalendarPlugin } from "./calendar";
 import { CfAiGatewayPlugin } from "./cfAiGateway";
+import { CloudflareAdminPlugin } from "./cloudflareAdmin";
 import { CloudflareApiMcpPlugin } from "./cloudflareApiMcp";
 import { CodexPlugin } from "./codex";
 import { EmailPlugin } from "./email";
@@ -20,6 +21,7 @@ import { WorkersAiPlugin } from "./workersAi";
 export function getPlugins(): AgentPlugin[] {
   return [
     new AdminPlugin(),
+    new CloudflareAdminPlugin(),
     new CloudflareApiMcpPlugin(),
     new CfAiGatewayPlugin(),
     new WorkersAiPlugin(),

@@ -66,6 +66,12 @@ export interface Env {
   STREAM_HUBS?: DurableObjectNamespace;
   /** WebSocket-backed chat session DO. One instance per session name. */
   CHAT_SESSIONS?: DurableObjectNamespace;
+  /**
+   * Cloudflare Container DO that hosts the Helm Shell — a bash session
+   * accessible from /app#/shell (browser xterm.js) or scripts/open-think-shell.mjs (CLI).
+   * Each session name resolves to its own container instance with ephemeral disk.
+   */
+  SHELL_CONTAINER?: DurableObjectNamespace;
   /** OpenRouter API key (optional). When set, OR is the default provider. */
   OPENROUTER_API_KEY?: string;
   /** Optional override for OpenRouter base URL. Defaults to https://openrouter.ai/api/v1 */

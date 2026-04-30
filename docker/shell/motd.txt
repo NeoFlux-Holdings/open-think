@@ -1,0 +1,12 @@
+
+  ╭─────────────────────────────────────────────────────────────╮
+  │ Helm Shell · Cloudflare Container · ephemeral disk          │
+  ╰─────────────────────────────────────────────────────────────╯
+
+  • This shell lives in a CF Container instance keyed to your session.
+  • Disk is wiped when the container sleeps (~15 min idle). Don't store
+    anything you can't lose. For persistence: write to D1 / KV / R2 via
+    `helm` plugin commands (or use the `wrangler` CLI if you've installed it).
+  • Pre-installed: bash, git, curl, jq, vim, tmux, htop, node, python3.
+  • Type `helm` (coming soon) for an inline conductor REPL.
+

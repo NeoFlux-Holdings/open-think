@@ -286,8 +286,63 @@ h1.section-title {
   background: #b6590f;
   animation: dot-pulse-connecting 0.7s ease-in-out infinite;
 }
+.conn-dot[data-state="error"] { background: #c0392b; }
+.conn-dot[data-state="idle"] { background: var(--muted-2); }
 @keyframes dot-pulse-live { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
 @keyframes dot-pulse-connecting { 0%,100% { transform: scale(1); } 50% { transform: scale(0.6); } }
+
+/* ---- Shell tab (CF-Container-backed bash session) ---- */
+.shell-card {
+  background: #0b0b0d;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  overflow: hidden;
+  display: flex; flex-direction: column;
+  margin-top: 18px;
+}
+.shell-bar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px;
+  background: rgba(255,255,255,0.02);
+  border-bottom: 1px solid var(--rule);
+}
+.shell-bar .spacer { flex: 1; }
+.shell-title {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+}
+.shell-title span { color: var(--ink); }
+.shell-bar .ghost {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 6px;
+}
+.shell-mount {
+  height: 64vh;
+  min-height: 360px;
+  padding: 10px 12px;
+  background: #0b0b0d;
+  outline: none;
+}
+.shell-mount .xterm { height: 100%; }
+.shell-mount .xterm-viewport { background-color: #0b0b0d !important; }
+.shell-foot {
+  padding: 8px 14px;
+  border-top: 1px solid var(--rule);
+  background: rgba(255,255,255,0.02);
+}
+.shell-hint {
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+}
+@media (max-width: 600px) {
+  .shell-mount { height: 56vh; min-height: 280px; padding: 6px 8px; }
+  .shell-bar { padding: 8px 10px; gap: 8px; }
+  .shell-hint { display: none; }
+}
 
 .conductor-meta { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .meta-session {
@@ -1331,6 +1386,7 @@ input[type="text"]:focus, select:focus, textarea:focus { border-bottom-color: va
   <div class="container">
     <a href="#/" data-route="/">Overview</a>
     <a href="#/conductor" data-route="/conductor">Helm</a>
+    <a href="#/shell" data-route="/shell">Shell</a>
     <a href="#/plugins" data-route="/plugins">Plugins</a>
     <a href="#/skills" data-route="/skills">Skills</a>
     <a href="#/sessions" data-route="/sessions">Sessions</a>
@@ -1420,6 +1476,29 @@ input[type="text"]:focus, select:focus, textarea:focus { border-bottom-color: va
   <div class="ascii-rule">· · · ────────  ✦  ──────── · · ·</div>
   <section class="reveal d2">
     <div id="conductor-full" class="conductor"></div>
+  </section>
+</template>
+
+<template id="tpl-shell">
+  <section class="reveal d1">
+    <div class="section-ref">§11.0 · Shell</div>
+    <h1 class="section-title">A real Linux shell, one tab away.</h1>
+    <p class="lede">Cloudflare-Container-hosted bash, fronted by a Node WebSocket↔PTY bridge. Per-session container, ephemeral disk (15-min idle sleep). Works from this browser tab and from terminal via <span class="mono">scripts/open-think-shell.mjs</span>.</p>
+  </section>
+  <section class="reveal d2">
+    <div class="shell-card">
+      <div class="shell-bar">
+        <span class="conn-dot" id="shell-dot" data-state="idle" aria-label="connection state"></span>
+        <span class="shell-title">helm:<span id="shell-session">default</span></span>
+        <span class="spacer"></span>
+        <button class="ghost" id="shell-reconnect" type="button">Reconnect</button>
+        <button class="ghost" id="shell-clear" type="button">Clear</button>
+      </div>
+      <div id="shell-mount" class="shell-mount" tabindex="0" aria-label="terminal"></div>
+      <div class="shell-foot">
+        <span class="mono shell-hint">Tip: ⌘K clears, ⌘⇧V pastes, Ctrl-C kills the foreground process. Container sleeps after 15 min idle.</span>
+      </div>
+    </div>
   </section>
 </template>
 
@@ -1792,6 +1871,7 @@ async function bootData() {
 const routes = {
   '/': renderOverview,
   '/conductor': renderConductor,
+  '/shell': renderShell,
   '/plugins': renderPlugins,
   '/skills': renderSkills,
   '/sessions': renderSessions,
@@ -1877,6 +1957,194 @@ function renderConductor() {
   const tpl = $('#tpl-conductor').content.cloneNode(true);
   $('#view').appendChild(tpl);
   mountConductor($('#conductor-full'), false);
+}
+
+/* ---------------- shell ---------------- */
+async function renderShell() {
+  const tpl = $('#tpl-shell').content.cloneNode(true);
+  $('#view').appendChild(tpl);
+  await mountShell();
+}
+
+// Lazy-load xterm.js from a CDN so the static /app HTML stays small.
+// xterm-fit-addon resizes the terminal to fill its container.
+const XTERM_VERSION = '5.5.0';
+const XTERM_CSS = \`https://cdn.jsdelivr.net/npm/xterm@\${XTERM_VERSION}/css/xterm.min.css\`;
+const XTERM_JS = \`https://cdn.jsdelivr.net/npm/xterm@\${XTERM_VERSION}/lib/xterm.min.js\`;
+const XTERM_FIT = \`https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.10.0/lib/xterm-addon-fit.min.js\`;
+
+let _xtermLoaded = null;
+function loadXterm() {
+  if (_xtermLoaded) return _xtermLoaded;
+  _xtermLoaded = new Promise((resolve, reject) => {
+    if (!document.querySelector(\`link[href="\${XTERM_CSS}"]\`)) {
+      const link = document.createElement('link');
+      link.rel = 'stylesheet';
+      link.href = XTERM_CSS;
+      document.head.appendChild(link);
+    }
+    let pending = 2;
+    const done = () => { if (--pending === 0) resolve(true); };
+    const addScript = (src) => {
+      if (document.querySelector(\`script[src="\${src}"]\`)) { done(); return; }
+      const s = document.createElement('script');
+      s.src = src;
+      s.async = false;
+      s.onload = done;
+      s.onerror = () => reject(new Error('failed to load ' + src));
+      document.head.appendChild(s);
+    };
+    addScript(XTERM_JS);
+    addScript(XTERM_FIT);
+  });
+  return _xtermLoaded;
+}
+
+async function mountShell() {
+  const mount = $('#shell-mount');
+  const dot = $('#shell-dot');
+  const sessionEl = $('#shell-session');
+  const sessionName = (typeof localStorage !== 'undefined' && localStorage.getItem('helm-shell-session')) || 'default';
+  sessionEl.textContent = sessionName;
+
+  const setState = (s) => { dot.dataset.state = s; dot.setAttribute('aria-label', s); };
+  setState('connecting');
+
+  try {
+    await loadXterm();
+  } catch (err) {
+    mount.innerHTML = '<pre class="run-output">Failed to load xterm.js from CDN. Check your network or self-host the assets.</pre>';
+    setState('error');
+    return;
+  }
+
+  // eslint-disable-next-line no-undef
+  const term = new Terminal({
+    fontFamily: '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace',
+    fontSize: 13,
+    lineHeight: 1.2,
+    cursorBlink: true,
+    cursorStyle: 'bar',
+    scrollback: 5000,
+    theme: {
+      background: '#0b0b0d',
+      foreground: '#f0eee6',
+      cursor: '#f0c674',
+      selectionBackground: '#3a3a3d'
+    },
+    allowProposedApi: true,
+    convertEol: false
+  });
+  // eslint-disable-next-line no-undef
+  const fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open(mount);
+  fit.fit();
+
+  let ws = null;
+  let pingTimer = 0;
+  let reconnectTimer = 0;
+  let manuallyClosed = false;
+
+  const wsUrl = (() => {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return \`\${proto}//\${location.host}/shell/ws/\${encodeURIComponent(sessionName)}\`;
+  })();
+
+  function sendResize() {
+    if (!ws || ws.readyState !== 1) return;
+    const cols = term.cols;
+    const rows = term.rows;
+    ws.send('r' + JSON.stringify({ cols, rows }));
+  }
+
+  function connect() {
+    setState('connecting');
+    term.writeln('\\x1b[36m· connecting…\\x1b[0m');
+    ws = new WebSocket(wsUrl);
+    ws.binaryType = 'arraybuffer';
+
+    ws.onopen = () => {
+      setState('live');
+      sendResize();
+      // Heartbeat — Cloudflare's edge will close idle WSs after ~100s.
+      clearInterval(pingTimer);
+      pingTimer = setInterval(() => {
+        if (ws && ws.readyState === 1) ws.send('p');
+      }, 30000);
+    };
+
+    ws.onmessage = (ev) => {
+      const data = ev.data;
+      if (typeof data === 'string') {
+        if (data.length < 1) return;
+        const op = data[0];
+        const payload = data.slice(1);
+        if (op === 'o' || op === 'm' || op === 'E') {
+          term.write(payload);
+          if (op === 'E') term.writeln('\\x1b[31m[bridge error]\\x1b[0m');
+          return;
+        }
+        if (op === 'e') {
+          term.writeln('\\x1b[33m· pty exited\\x1b[0m');
+          setState('idle');
+          return;
+        }
+        if (op === 'P') return; // pong
+      } else if (data instanceof ArrayBuffer) {
+        // Binary frame — first byte opcode, rest payload.
+        const arr = new Uint8Array(data);
+        if (arr.length < 1) return;
+        const op = String.fromCharCode(arr[0]);
+        const payload = arr.slice(1);
+        const dec = new TextDecoder('utf-8', { fatal: false });
+        if (op === 'o' || op === 'm' || op === 'E') {
+          term.write(dec.decode(payload));
+          return;
+        }
+      }
+    };
+
+    ws.onclose = (ev) => {
+      clearInterval(pingTimer);
+      if (manuallyClosed) {
+        setState('idle');
+        return;
+      }
+      setState('reconnecting');
+      term.writeln(\`\\x1b[33m· disconnected (code \${ev.code}) — reconnecting in 2s…\\x1b[0m\`);
+      clearTimeout(reconnectTimer);
+      reconnectTimer = setTimeout(connect, 2000);
+    };
+
+    ws.onerror = () => {
+      // onclose will fire after onerror; let it handle the reconnect.
+    };
+  }
+
+  // Pipe local input → ws ('i' opcode + UTF-8 bytes).
+  term.onData((data) => {
+    if (!ws || ws.readyState !== 1) return;
+    ws.send('i' + data);
+  });
+
+  // Resize on window resize + refit.
+  const onResize = () => { try { fit.fit(); sendResize(); } catch {} };
+  window.addEventListener('resize', onResize);
+
+  $('#shell-clear').addEventListener('click', () => term.clear());
+  $('#shell-reconnect').addEventListener('click', () => {
+    manuallyClosed = true;
+    if (ws) ws.close(1000, 'manual reconnect');
+    clearTimeout(reconnectTimer);
+    setTimeout(() => { manuallyClosed = false; connect(); }, 100);
+  });
+
+  connect();
+
+  // Autofocus terminal on click anywhere in the mount container.
+  mount.addEventListener('click', () => term.focus());
+  term.focus();
 }
 
 function mountConductor(host, compact) {
