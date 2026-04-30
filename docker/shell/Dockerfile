@@ -66,10 +66,12 @@ COPY package.json server.mjs motd.txt /opt/shell/
 COPY entrypoint.sh /usr/local/bin/entrypoint
 COPY helm-save /usr/local/bin/helm-save
 COPY helm-load /usr/local/bin/helm-load
+COPY helm-fetch /usr/local/bin/helm-fetch
 COPY helm /usr/local/bin/helm
 RUN chmod +x /usr/local/bin/entrypoint \
     /usr/local/bin/helm-save \
     /usr/local/bin/helm-load \
+    /usr/local/bin/helm-fetch \
     /usr/local/bin/helm \
     && chown -R helm:helm /opt/shell
 

@@ -10,6 +10,9 @@
     helm "..."      send a prompt to your own conductor
     helm-save       snapshot /workspace → /persist (R2)
     helm-load       restore the latest snapshot
+    helm-fetch K    pull a file from the Files tab into /workspace
+    helm-fetch --list           list every file you've uploaded
+    helm-fetch --search <s>     find files by substring
     helm --plan ".."  describe what helm would do without running it
 
   Pre-installed: bash, git, curl, jq, vim, tmux, htop, node, python3,

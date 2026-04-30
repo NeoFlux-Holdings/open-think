@@ -364,6 +364,23 @@ h1.section-title {
 .shell-sessions-actions label { color: var(--muted); display: flex; align-items: center; gap: 6px; }
 .shell-sessions-actions .spacer { flex: 1; }
 
+/* Totals strip above the sessions table */
+.shell-sessions-totals {
+  display: flex; gap: 24px; padding: 10px 16px;
+  border-bottom: 1px solid var(--rule);
+  background: rgba(240,198,116,0.04);
+  font-size: 12px;
+}
+.shell-sessions-totals .totals-cell { display: flex; flex-direction: column; gap: 2px; }
+.shell-sessions-totals .totals-label {
+  font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--muted-2);
+}
+.shell-sessions-totals .totals-val {
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--ink); font-weight: 600;
+}
+
 /* Secrets manager — grouped slots with paste-and-save UI */
 .secrets-card { padding: 22px 26px; border: 1px solid var(--rule); border-radius: 8px; }
 .secrets-group { margin-bottom: 26px; }
@@ -408,6 +425,77 @@ h1.section-title {
 .cli-auth-meta strong { color: var(--ink); margin-right: 8px; }
 .cli-auth-warn { font-size: 13px; color: var(--muted); padding: 12px; background: rgba(240,198,116,0.08); border-left: 3px solid var(--accent); border-radius: 0 4px 4px 0; line-height: 1.5; }
 .cli-auth-actions { display: flex; gap: 10px; align-items: center; }
+
+/* Files tab */
+.files-card {
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  overflow: hidden;
+  display: flex; flex-direction: column;
+}
+.files-toolbar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--rule);
+  background: rgba(255,255,255,0.02);
+}
+.files-toolbar .spacer { flex: 1; }
+.files-toolbar .ghost { font-size: 12px; padding: 4px 10px; border-radius: 4px; }
+.files-breadcrumb { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 2px; }
+.files-breadcrumb a { color: var(--ink); text-decoration: none; padding: 2px 4px; border-radius: 3px; }
+.files-breadcrumb a:hover { background: rgba(0,0,0,0.04); }
+.files-dropzone {
+  margin: 14px;
+  border: 2px dashed var(--rule);
+  border-radius: 8px;
+  padding: 28px;
+  text-align: center;
+  transition: border-color 0.15s, background 0.15s;
+}
+.files-dropzone.is-dragover { border-color: var(--accent); background: rgba(240,198,116,0.06); }
+.files-dropzone-inner { display: flex; flex-direction: column; gap: 8px; align-items: center; color: var(--muted); }
+.files-drop-icon { font-size: 28px; color: var(--accent); }
+.files-drop-text { font-size: 13px; }
+.files-pick-btn { background: none; border: none; color: var(--accent); cursor: pointer; padding: 0; text-decoration: underline; }
+.files-uploads { padding: 0 14px; display: flex; flex-direction: column; gap: 6px; }
+.files-uploads:empty { display: none; }
+.upload-row { display: flex; align-items: center; gap: 10px; padding: 6px 10px; background: rgba(0,0,0,0.02); border-radius: 4px; font-size: 12px; }
+.upload-bar { flex: 1; height: 4px; background: var(--rule); border-radius: 2px; overflow: hidden; }
+.upload-bar-fill { display: block; height: 100%; background: var(--accent); width: 0; transition: width 0.2s; }
+.upload-status { font-size: 11px; color: var(--muted); min-width: 50px; text-align: right; }
+.upload-status.ok { color: #2d8c4f; }
+.upload-status.err { color: #c0392b; }
+.files-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.files-table th { text-align: left; padding: 8px 14px; font-weight: 600; color: var(--muted); font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; border-bottom: 1px solid var(--rule); }
+.files-table td { padding: 8px 14px; border-bottom: 1px solid var(--rule); }
+.files-table tr:last-child td { border-bottom: 0; }
+.files-table .ghost { font-size: 11px; padding: 3px 8px; border-radius: 4px; }
+.files-table a { color: var(--ink); text-decoration: none; }
+.files-table a:hover { text-decoration: underline; }
+.files-table .folder-row { background: rgba(240,198,116,0.03); }
+.files-foot { padding: 8px 14px; border-top: 1px solid var(--rule); background: rgba(255,255,255,0.02); }
+
+/* "Ask Helm to set me up" card */
+.ask-helm-card {
+  padding: 22px 26px;
+  background: linear-gradient(180deg, rgba(240,198,116,0.06), rgba(240,198,116,0.02));
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+}
+.ask-helm-flex { display: flex; gap: 18px; align-items: flex-start; }
+.ask-helm-icon {
+  width: 40px; height: 40px; flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--accent); color: var(--paper);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 20px;
+}
+.ask-helm-body { flex: 1; }
+.ask-helm-title { font-size: 18px; margin: 0 0 4px 0; font-weight: 600; color: var(--ink); }
+.ask-helm-lede { font-size: 14px; color: var(--muted); margin: 0 0 14px 0; line-height: 1.55; max-width: 64ch; }
+.ask-helm-actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.ask-helm-hint { font-size: 11px; color: var(--muted-2); }
 
 .conductor-meta { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .meta-session {
@@ -1463,6 +1551,7 @@ input[type="text"]:focus, select:focus, textarea:focus { border-bottom-color: va
     <a href="#/" data-route="/">Overview</a>
     <a href="#/conductor" data-route="/conductor">Helm</a>
     <a href="#/shell" data-route="/shell">Shell</a>
+    <a href="#/files" data-route="/files">Files</a>
     <a href="#/plugins" data-route="/plugins">Plugins</a>
     <a href="#/skills" data-route="/skills">Skills</a>
     <a href="#/sessions" data-route="/sessions">Sessions</a>
@@ -1555,6 +1644,47 @@ input[type="text"]:focus, select:focus, textarea:focus { border-bottom-color: va
   </section>
 </template>
 
+<template id="tpl-files">
+  <section class="reveal d1">
+    <div class="section-ref">§12.0 · Files</div>
+    <h1 class="section-title">Drop a file. Ask the agent about it.</h1>
+    <p class="lede">Per-user durable storage in R2 (via the <span class="mono">/persist</span> proxy — no R2 keys needed). Drop a CSV, ask Helm to analyze it. Save outputs from a shell session, download later. Files survive container sleeps; <span class="mono">helm-fetch &lt;key&gt;</span> inside the shell pulls them into /workspace.</p>
+  </section>
+  <section class="reveal d2">
+    <div class="files-card">
+      <div class="files-toolbar">
+        <div class="files-breadcrumb mono" id="files-breadcrumb">files/</div>
+        <span class="spacer"></span>
+        <button class="ghost" id="files-mkdir" type="button">+ folder</button>
+        <button class="ghost" id="files-refresh" type="button">Refresh</button>
+      </div>
+      <div id="files-dropzone" class="files-dropzone">
+        <div class="files-dropzone-inner">
+          <span class="files-drop-icon">⬆</span>
+          <span class="files-drop-text">Drop files here, or <button id="files-pick" class="files-pick-btn" type="button">browse</button></span>
+          <input type="file" id="files-input" multiple style="display: none;">
+        </div>
+      </div>
+      <div id="files-uploads" class="files-uploads"></div>
+      <table class="files-table">
+        <thead>
+          <tr>
+            <th style="width: 4%"></th>
+            <th>name</th>
+            <th style="width: 14%">size</th>
+            <th style="width: 22%">modified</th>
+            <th style="width: 26%"></th>
+          </tr>
+        </thead>
+        <tbody id="files-body"><tr><td colspan="5" class="mono">loading<span class="load-dot"></span></td></tr></tbody>
+      </table>
+      <div class="files-foot">
+        <span class="mono shell-hint">Backed by R2 (env.WORKSPACE). Per-user prefix: <span id="files-prefix-display">files/</span>. Files are durable; ephemeral disk in /workspace inside the shell isn't.</span>
+      </div>
+    </div>
+  </section>
+</template>
+
 <template id="tpl-cli-auth">
   <section class="reveal d1">
     <div class="section-ref">§13.0 · CLI auth</div>
@@ -1596,11 +1726,20 @@ input[type="text"]:focus, select:focus, textarea:focus { border-bottom-color: va
         <span class="h display">Active sessions</span>
         <span class="meta" id="shell-sessions-count">—</span>
       </div>
+      <div id="shell-sessions-totals" class="shell-sessions-totals" hidden></div>
       <table class="shell-sessions-table">
         <thead>
-          <tr><th style="width: 28%">session</th><th style="width: 22%">user</th><th style="width: 14%">live</th><th style="width: 22%">last seen</th><th style="width: 14%"></th></tr>
+          <tr>
+            <th style="width: 22%">session</th>
+            <th style="width: 18%">user</th>
+            <th style="width: 10%">live</th>
+            <th style="width: 14%">awake</th>
+            <th style="width: 10%">est. cost</th>
+            <th style="width: 14%">last seen</th>
+            <th style="width: 12%"></th>
+          </tr>
         </thead>
-        <tbody id="shell-sessions-body"><tr><td colspan="5" class="mono">loading<span class="load-dot"></span></td></tr></tbody>
+        <tbody id="shell-sessions-body"><tr><td colspan="7" class="mono">loading<span class="load-dot"></span></td></tr></tbody>
       </table>
       <div class="shell-sessions-actions">
         <label class="mono"><input type="checkbox" id="shell-sessions-all"> Show everyone's sessions</label>
@@ -1685,6 +1824,33 @@ input[type="text"]:focus, select:focus, textarea:focus { border-bottom-color: va
     <div class="section-ref">§08.0 · Settings</div>
     <h1 class="section-title">One panel to configure the whole runtime.</h1>
     <p class="lede">Probe every capability, generate wrangler.toml + .dev.vars snippets on demand, or hand the job to Helm — it will use the Cloudflare MCP to provision infrastructure while you approve each move.</p>
+  </section>
+
+  <!-- One-click "ask Helm to set me up" — primes a conductor session
+       with a curated cf-admin prompt and jumps to /app#/conductor with
+       it preselected. Different from the free-form "Guided setup" panel
+       further down: this is the no-decisions path. -->
+  <section class="reveal d2 ask-helm-card" style="margin-top: 28px;">
+    <div class="ask-helm-flex">
+      <div class="ask-helm-icon">⚡</div>
+      <div class="ask-helm-body">
+        <h2 class="ask-helm-title">Ask Helm to set me up</h2>
+        <p class="ask-helm-lede">
+          Helm reads your current capability matrix, then proposes the smallest set of
+          <span class="mono">cf-admin</span> skill calls to reach a fully-configured state —
+          D1 + R2 + Access + secrets + bindings. Each skill is a card you approve before it runs.
+          Takes ~30 seconds.
+        </p>
+        <div class="ask-helm-actions">
+          <button id="ask-helm-go" class="lockdown-btn lockdown-btn-primary">
+            <span class="lockdown-btn-text">Set me up</span>
+            <span class="lockdown-btn-arrow">⚡</span>
+          </button>
+          <span class="mono ask-helm-hint">requires CLOUDFLARE_API_TOKEN already set</span>
+        </div>
+        <div id="ask-helm-result" class="mono" style="margin-top: 10px; font-size: 12px; color: var(--muted);"></div>
+      </div>
+    </div>
   </section>
 
   <section class="reveal d2">
@@ -2022,6 +2188,7 @@ const routes = {
   '/': renderOverview,
   '/conductor': renderConductor,
   '/shell': renderShell,
+  '/files': renderFiles,
   '/plugins': renderPlugins,
   '/skills': renderSkills,
   '/sessions': renderSessions,
@@ -2115,6 +2282,13 @@ async function renderOverview() {
 function renderConductor() {
   const tpl = $('#tpl-conductor').content.cloneNode(true);
   $('#view').appendChild(tpl);
+  // ?session=... in the hash overrides state.conductorSession so
+  // "Ask Helm to set me up" can deep-link into a primed session.
+  const session = currentRouteQuery().get('session');
+  if (session) {
+    state.conductorSession = session;
+    state.conductorHistory = [];
+  }
   mountConductor($('#conductor-full'), false);
 }
 
@@ -2203,6 +2377,240 @@ async function renderCliAuth() {
     });
     $('#cli-auth-result').innerHTML = '<span style="color: var(--muted);">Denied. Your CLI will see "denied" on its next poll.</span>';
   });
+}
+
+/* ---------------- files ---------------- */
+async function renderFiles() {
+  const tpl = $('#tpl-files').content.cloneNode(true);
+  $('#view').appendChild(tpl);
+  await mountFiles();
+}
+
+async function mountFiles() {
+  // Per-user prefix derived from the auth context's email (resolved by
+  // the Worker — we just ask /me). Uploads land at "files/<userPrefix>/path".
+  // Falls back to "files/anon/" if /me isn't reachable.
+  let userPrefix = 'anon';
+  try {
+    const me = await j('/me');
+    const email = me.data?.data?.email ?? me.data?.email ?? '';
+    if (email) {
+      // FNV-1a same as the worker's session-name derivation, so the
+      // browser prefix and the auth-derived prefix line up.
+      let h = 0x811c9dc5;
+      for (let i = 0; i < email.length; i++) { h ^= email.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+      userPrefix = 'u-' + h.toString(16).padStart(8, '0');
+    }
+  } catch { /* /me unauthenticated → anon */ }
+
+  let currentDir = ''; // relative to "files/<userPrefix>/"
+  const breadcrumb = $('#files-breadcrumb');
+  const tableBody = $('#files-body');
+  const dropzone = $('#files-dropzone');
+  const fileInput = $('#files-input');
+  const uploadsEl = $('#files-uploads');
+  const prefixDisplay = $('#files-prefix-display');
+  prefixDisplay.textContent = 'files/' + userPrefix + '/';
+
+  function fullPrefix() {
+    const dir = currentDir ? currentDir.replace(/^\\/+|\\/+$/g, '') + '/' : '';
+    return 'files/' + userPrefix + '/' + dir;
+  }
+  function updateBreadcrumb() {
+    const parts = ['files/'].concat(currentDir ? currentDir.split('/').filter(Boolean) : []);
+    breadcrumb.innerHTML = parts.map((p, i) => {
+      if (i === 0) return '<a href="#" data-dir="">' + escapeHtml(p) + '</a>';
+      const dir = parts.slice(1, i + 1).join('/');
+      return '<span class="muted">/</span><a href="#" data-dir="' + escapeHtml(dir) + '">' + escapeHtml(p) + '</a>';
+    }).join('');
+    breadcrumb.querySelectorAll('a').forEach((a) => {
+      a.addEventListener('click', (e) => {
+        e.preventDefault();
+        currentDir = a.dataset.dir || '';
+        load();
+      });
+    });
+  }
+  function fmtSize(n) {
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+    if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
+    return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+  }
+  function fmtTime(iso) {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    return d.toLocaleString();
+  }
+
+  async function load() {
+    updateBreadcrumb();
+    tableBody.innerHTML = '<tr><td colspan="5" class="mono">loading<span class="load-dot"></span></td></tr>';
+    try {
+      const r = await j('/persist?prefix=' + encodeURIComponent(fullPrefix()));
+      const keys = r.data?.data?.keys ?? [];
+      // Group children of currentDir into folders + files.
+      const prefix = fullPrefix();
+      const folders = new Map();
+      const files = [];
+      for (const k of keys) {
+        if (!k.key.startsWith(prefix)) continue;
+        const rel = k.key.slice(prefix.length);
+        const slash = rel.indexOf('/');
+        if (slash < 0) {
+          files.push({ name: rel, ...k });
+        } else {
+          const folder = rel.slice(0, slash);
+          if (!folders.has(folder)) folders.set(folder, { count: 0, size: 0, latest: '' });
+          const v = folders.get(folder);
+          v.count += 1; v.size += k.size; if (k.uploaded > v.latest) v.latest = k.uploaded;
+        }
+      }
+      const rows = [];
+      // Folders first
+      for (const [name, v] of Array.from(folders.entries()).sort((a, b) => a[0].localeCompare(b[0]))) {
+        rows.push('<tr class="folder-row" data-folder="' + escapeHtml(name) + '">' +
+          '<td>📁</td>' +
+          '<td class="mono"><a href="#" class="folder-open" data-folder="' + escapeHtml(name) + '">' + escapeHtml(name) + '/</a></td>' +
+          '<td class="mono muted">' + v.count + ' item' + (v.count === 1 ? '' : 's') + ' · ' + fmtSize(v.size) + '</td>' +
+          '<td class="mono muted">' + fmtTime(v.latest) + '</td>' +
+          '<td></td>' +
+          '</tr>');
+      }
+      for (const f of files.sort((a, b) => a.name.localeCompare(b.name))) {
+        rows.push('<tr>' +
+          '<td>📄</td>' +
+          '<td class="mono">' + escapeHtml(f.name) + '</td>' +
+          '<td class="mono muted">' + fmtSize(f.size) + '</td>' +
+          '<td class="mono muted">' + fmtTime(f.uploaded) + '</td>' +
+          '<td>' +
+            '<button class="ghost file-download" data-key="' + escapeHtml(prefix + f.name) + '" data-name="' + escapeHtml(f.name) + '">↓</button> ' +
+            '<button class="ghost file-copy" data-key="' + escapeHtml(prefix + f.name) + '">copy path</button> ' +
+            '<button class="ghost file-delete" data-key="' + escapeHtml(prefix + f.name) + '">×</button>' +
+          '</td>' +
+          '</tr>');
+      }
+      if (rows.length === 0) {
+        tableBody.innerHTML = '<tr><td colspan="5" class="mono muted">empty — drop files above to add some.</td></tr>';
+      } else {
+        tableBody.innerHTML = rows.join('');
+      }
+      // Wire row buttons.
+      tableBody.querySelectorAll('.folder-open').forEach((a) => {
+        a.addEventListener('click', (e) => {
+          e.preventDefault();
+          currentDir = (currentDir ? currentDir + '/' : '') + a.dataset.folder;
+          load();
+        });
+      });
+      tableBody.querySelectorAll('.file-download').forEach((b) => {
+        b.addEventListener('click', () => {
+          // Use a tab navigation so the cookie/auth flows naturally.
+          window.open('/persist/' + encodeURIComponent(b.dataset.key).replace(/%2F/g, '/'), '_blank');
+        });
+      });
+      tableBody.querySelectorAll('.file-copy').forEach((b) => {
+        b.addEventListener('click', async () => {
+          try {
+            await navigator.clipboard.writeText(b.dataset.key);
+            const orig = b.textContent;
+            b.textContent = 'copied ✓';
+            setTimeout(() => { b.textContent = orig; }, 1500);
+          } catch { /* clipboard might be denied */ }
+        });
+      });
+      tableBody.querySelectorAll('.file-delete').forEach((b) => {
+        b.addEventListener('click', async () => {
+          if (!confirm('Delete ' + b.dataset.key + '? R2 deletions are immediate and irreversible.')) return;
+          try {
+            await fetch('/persist/' + encodeURIComponent(b.dataset.key).replace(/%2F/g, '/'), { method: 'DELETE' });
+            load();
+          } catch (err) { alert('delete failed: ' + (err.message || err)); }
+        });
+      });
+    } catch (err) {
+      tableBody.innerHTML = '<tr><td colspan="5" class="mono muted">failed to load: ' + escapeHtml(String(err.message || err)) + '</td></tr>';
+    }
+  }
+
+  // ---- upload ----
+  async function uploadFile(file) {
+    const key = fullPrefix() + (file.webkitRelativePath || file.name);
+    const id = 'up-' + Math.random().toString(36).slice(2, 8);
+    const row = document.createElement('div');
+    row.className = 'upload-row';
+    row.id = id;
+    row.innerHTML = '<span class="mono">' + escapeHtml(file.name) + '</span><span class="upload-bar"><span class="upload-bar-fill" id="' + id + '-fill"></span></span><span class="mono upload-status" id="' + id + '-status">queued</span>';
+    uploadsEl.appendChild(row);
+
+    return new Promise((resolve) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('PUT', '/persist/' + encodeURIComponent(key).replace(/%2F/g, '/'));
+      xhr.setRequestHeader('content-type', file.type || 'application/octet-stream');
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          const pct = Math.round((e.loaded / e.total) * 100);
+          const fill = document.getElementById(id + '-fill');
+          if (fill) fill.style.width = pct + '%';
+          const status = document.getElementById(id + '-status');
+          if (status) status.textContent = pct + '%';
+        }
+      };
+      xhr.onload = () => {
+        const status = document.getElementById(id + '-status');
+        if (xhr.status >= 200 && xhr.status < 300) {
+          if (status) { status.textContent = '✓'; status.classList.add('ok'); }
+          setTimeout(() => row.remove(), 2500);
+        } else {
+          if (status) { status.textContent = 'failed'; status.classList.add('err'); }
+        }
+        resolve();
+      };
+      xhr.onerror = () => {
+        const status = document.getElementById(id + '-status');
+        if (status) { status.textContent = 'error'; status.classList.add('err'); }
+        resolve();
+      };
+      xhr.send(file);
+    });
+  }
+  async function handleFiles(fileList) {
+    const arr = Array.from(fileList);
+    for (const f of arr) {
+      await uploadFile(f);
+    }
+    load();
+  }
+
+  dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('is-dragover'); });
+  dropzone.addEventListener('dragleave', () => dropzone.classList.remove('is-dragover'));
+  dropzone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropzone.classList.remove('is-dragover');
+    if (e.dataTransfer?.files?.length) handleFiles(e.dataTransfer.files);
+  });
+  $('#files-pick').addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files?.length) handleFiles(fileInput.files);
+    fileInput.value = '';
+  });
+
+  $('#files-mkdir').addEventListener('click', async () => {
+    const name = prompt('New folder name (relative to ' + breadcrumb.textContent + '):');
+    if (!name) return;
+    // R2 has no real folders — we create an empty marker file so the
+    // folder appears in listings until something else lands inside.
+    const key = fullPrefix() + name.replace(/[/]+$/, '') + '/.keep';
+    await fetch('/persist/' + encodeURIComponent(key).replace(/%2F/g, '/'), {
+      method: 'PUT',
+      headers: { 'content-type': 'text/plain' },
+      body: ''
+    });
+    load();
+  });
+
+  $('#files-refresh').addEventListener('click', load);
+  load();
 }
 
 /* ---------------- shell ---------------- */
@@ -2446,15 +2854,44 @@ async function mountShell() {
     if (h < 24) return h + 'h ago';
     return Math.floor(h / 24) + 'd ago';
   }
+  function fmtDuration(ms) {
+    if (!ms || ms < 1000) return '—';
+    const s = Math.floor(ms / 1000);
+    if (s < 60) return s + 's';
+    const m = Math.floor(s / 60);
+    if (m < 60) return m + 'm ' + (s % 60) + 's';
+    const h = Math.floor(m / 60);
+    return h + 'h ' + (m % 60) + 'm';
+  }
+  function fmtCost(usd) {
+    if (!usd || usd < 0.0001) return '$0.00';
+    if (usd < 1) return '$' + usd.toFixed(3);
+    return '$' + usd.toFixed(2);
+  }
   async function loadSessions() {
-    sessionsBody.innerHTML = '<tr><td colspan="5" class="mono">loading<span class="load-dot"></span></td></tr>';
+    sessionsBody.innerHTML = '<tr><td colspan="7" class="mono">loading<span class="load-dot"></span></td></tr>';
     try {
       const qs = sessionsAll.checked ? '?all=1' : '';
       const r = await j('/shell/list' + qs);
       const list = (r.data?.sessions ?? r.sessions ?? []);
+      const totals = r.data?.totals;
       sessionsCount.textContent = list.length === 0 ? 'no sessions' : list.length + ' session' + (list.length === 1 ? '' : 's');
+      // Totals strip — only show when we have real data.
+      const totalsEl = $('#shell-sessions-totals');
+      if (totals && list.length > 0) {
+        totalsEl.innerHTML =
+          '<div class="totals-cell"><span class="totals-label">today (UTC)</span>' +
+          '<span class="totals-val">' + fmtDuration(totals.awakeMsToday) + ' awake</span></div>' +
+          '<div class="totals-cell"><span class="totals-label">est. cost today</span>' +
+          '<span class="totals-val">' + fmtCost(totals.estCostTodayUsd) + '</span></div>' +
+          '<div class="totals-cell"><span class="totals-label">live now</span>' +
+          '<span class="totals-val">' + totals.live + ' / ' + totals.sessions + '</span></div>';
+        totalsEl.removeAttribute('hidden');
+      } else {
+        totalsEl.setAttribute('hidden', '');
+      }
       if (list.length === 0) {
-        sessionsBody.innerHTML = '<tr><td colspan="5" class="mono muted">no recent sessions yet — connect once to populate.</td></tr>';
+        sessionsBody.innerHTML = '<tr><td colspan="7" class="mono muted">no recent sessions yet — connect once to populate.</td></tr>';
         return;
       }
       sessionsBody.innerHTML = list.map((s) => {
@@ -2465,6 +2902,8 @@ async function mountShell() {
           '<td class="mono">' + escapeHtml(s.session) + '</td>' +
           '<td class="mono muted">' + escapeHtml(s.email || 'anon') + '</td>' +
           '<td>' + live + '</td>' +
+          '<td class="mono">' + fmtDuration(s.awakeMsLive ?? s.awakeMs ?? 0) + '</td>' +
+          '<td class="mono">' + fmtCost(s.estCostUsd ?? 0) + '</td>' +
           '<td class="mono muted">' + fmtRelative(s.lastSeen) + '</td>' +
           '<td><button class="ghost session-attach" data-session="' + escapeHtml(s.session) + '">Attach</button> <button class="ghost session-forget" data-session="' + escapeHtml(s.session) + '">Forget</button></td>' +
           '</tr>';
@@ -2490,7 +2929,7 @@ async function mountShell() {
         });
       });
     } catch (err) {
-      sessionsBody.innerHTML = '<tr><td colspan="5" class="mono muted">failed to load: ' + escapeHtml(String(err.message ?? err)) + '</td></tr>';
+      sessionsBody.innerHTML = '<tr><td colspan="7" class="mono muted">failed to load: ' + escapeHtml(String(err.message ?? err)) + '</td></tr>';
     }
   }
   $('#shell-sessions-toggle').addEventListener('click', () => {
@@ -4121,6 +4560,52 @@ async function renderSettings() {
   }
 
   picker.addEventListener('change', updateSnippet);
+
+  // "Ask Helm to set me up" — curated one-click variant of the guided
+  // setup flow. Same backend, just a tighter prompt that drives cf-admin
+  // skills explicitly so the user doesn't have to think of the goal.
+  const askBtn = $('#ask-helm-go');
+  if (askBtn) {
+    askBtn.addEventListener('click', async () => {
+      const out = $('#ask-helm-result');
+      const origText = askBtn.querySelector('.lockdown-btn-text').textContent;
+      askBtn.disabled = true;
+      askBtn.querySelector('.lockdown-btn-text').textContent = 'Priming Helm…';
+      out.textContent = '';
+      try {
+        const goal = [
+          'Set me up. Use the cloudflare-admin plugin skills to:',
+          '1. Verify CLOUDFLARE_API_TOKEN works (cf-verify)',
+          '2. List my accounts and pick one (cf-list-accounts)',
+          '3. Check what already exists (cf-list-d1, cf-list-r2, cf-list-access-apps)',
+          '4. Propose the SMALLEST set of cf-create-* / cf-put-secret calls to reach',
+          '   a fully-configured state: D1 for PA stack, R2 bucket for /persist,',
+          '   Access app for auth, HELM_INTERNAL_TOKEN for the in-shell helm REPL.',
+          '5. Surface every mutation as an exhibit card before running.',
+          'Stop after each major step and ask if I want to continue.'
+        ].join('\\n');
+        const r = await j('/setup/guided-start', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ goal, bringCloudflareMcp: true })
+        });
+        const data = r.data?.data;
+        if (!data?.sessionName) {
+          out.textContent = 'failed: ' + (r.data?.error || 'unknown');
+          askBtn.disabled = false;
+          askBtn.querySelector('.lockdown-btn-text').textContent = origText;
+          return;
+        }
+        state.conductorSession = data.sessionName;
+        out.innerHTML = '✓ session <span class="mono">' + escapeHtml(data.sessionName) + '</span> primed · jumping to Helm tab…';
+        setTimeout(() => { location.hash = '#/conductor?session=' + encodeURIComponent(data.sessionName); }, 600);
+      } catch (err) {
+        out.textContent = 'failed: ' + String(err.message || err);
+        askBtn.disabled = false;
+        askBtn.querySelector('.lockdown-btn-text').textContent = origText;
+      }
+    });
+  }
 
   // Guided start
   $('#setup-start').addEventListener('click', async () => {

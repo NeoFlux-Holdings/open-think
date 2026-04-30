@@ -906,6 +906,25 @@ async function handler(request: Request, env: Env, requestId: string, startedAt:
     return new Response("method not allowed", { status: 405 });
   }
 
+  // GET /me — return the authenticated identity. Used by the Files
+  // tab to derive the per-user prefix without re-implementing the
+  // hash on the client. Cheap, no side effects.
+  if (request.method === "GET" && url.pathname === "/me") {
+    return json(
+      {
+        ok: true,
+        data: {
+          email: auth?.email ?? "anon",
+          subject: auth?.subject ?? "",
+          dev: auth?.dev ?? false,
+          firstRun: auth?.firstRun ?? false
+        }
+      },
+      200,
+      requestId
+    );
+  }
+
   // ---------------- CLI device-code auth ----------------
   // POST /cli-auth/start — CLI begins the flow. Mints (deviceCode, userCode);
   // returns userCode + verifyUrl + poll interval. NO auth required (the

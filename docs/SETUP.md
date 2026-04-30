@@ -198,10 +198,40 @@ Other paths: pass `--service-token-id`/`--service-token-secret` for CI,
 or `--cf-access-jwt` for raw JWT injection. `--logout` drops the cached
 bearer; `--print-token` writes it to stdout (handy for `curl`).
 
-## Sessions panel
+## Files tab — give the agent files to work with
+
+`/app#/files` is a per-user file area backed by R2 (via the same
+`/persist` proxy as snapshots — no R2 keys needed in the container).
+
+- **Drag-and-drop** to upload; chunked progress per file
+- **Folders** for organization (R2 has no real folders; we use a
+  `.keep` marker convention for empty ones)
+- **Per-file actions**: download, copy R2 path, delete
+- **Per-user prefix** auto-derived from your authenticated email
+  (`files/u-<8-hex>/...`) so other users don't see your files
+
+The agent reads files from inside the Helm Shell with `helm-fetch`:
+
+```bash
+helm-fetch --list                 # list all your files
+helm-fetch --search invoice       # find by substring
+helm-fetch files/u-XXXXXXXX/sales.csv      # download to /workspace/sales.csv
+helm-fetch files/u-XXXXXXXX/sales.csv data/sales.csv    # explicit path
+```
+
+Combine with the `helm` REPL to ask the agent to do something with
+the file:
+
+```bash
+helm-fetch files/u-XXXXXXXX/sales.csv
+helm "use cf-query-d1 to ingest /workspace/sales.csv into the leads table"
+```
+
+## Sessions panel + cost meter
 
 `/app#/shell` → click `Sessions` to see every recent shell session in
-the registry: name, owner email, live/idle state, last seen.
+the registry: name, owner email, live/idle state, awake time, est.
+cost, last seen.
 
 - **Attach** flips your localStorage to that session and reloads — useful
   when you want to drop into a teammate's session (or one of your own

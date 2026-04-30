@@ -1,0 +1,86 @@
+#!/bin/bash
+# helm-fetch — pull a file from the user's Files tab (R2 via /persist proxy)
+# down into /workspace.
+#
+# Usage:
+#   helm-fetch <key>                 # download to /workspace/<basename>
+#   helm-fetch <key> <local-path>    # explicit local destination
+#   helm-fetch --list [<prefix>]     # list keys, optionally filtered by prefix
+#   helm-fetch --search <substring>  # list keys containing <substring>
+#
+# The "key" is the full R2 path printed by the Files tab (or returned by
+# `helm-fetch --list`). For per-user files: "files/u-<hash>/<your-path>".
+#
+# Auth: HELM_INTERNAL_TOKEN bearer (forwarded automatically into the
+# container by ShellContainerDO).
+
+set -e
+
+if [ -z "${HELM_WORKER_HOST:-}" ] || [ -z "${HELM_INTERNAL_TOKEN:-}" ]; then
+  echo "helm-fetch: HELM_WORKER_HOST + HELM_INTERNAL_TOKEN required" >&2
+  echo "  Set them as Worker secrets; the container DO forwards them." >&2
+  exit 2
+fi
+
+case "${1:-}" in
+  --list)
+    PREFIX="${2:-}"
+    URL="https://${HELM_WORKER_HOST}/persist?prefix=${PREFIX}"
+    curl -fsS -H "Authorization: Bearer ${HELM_INTERNAL_TOKEN}" "$URL" \
+      | jq -r '.data.keys[] | "\(.key)\t\(.size)\t\(.uploaded)"' \
+      | column -t -s $'\t'
+    exit 0
+    ;;
+  --search)
+    SUB="${2:-}"
+    if [ -z "$SUB" ]; then
+      echo "helm-fetch --search <substring>" >&2
+      exit 2
+    fi
+    URL="https://${HELM_WORKER_HOST}/persist?prefix="
+    curl -fsS -H "Authorization: Bearer ${HELM_INTERNAL_TOKEN}" "$URL" \
+      | jq -r --arg s "$SUB" '.data.keys[] | select(.key | contains($s)) | "\(.key)\t\(.size)\t\(.uploaded)"' \
+      | column -t -s $'\t'
+    exit 0
+    ;;
+  ""|--help|-h)
+    cat <<'USAGE'
+helm-fetch — download a file from R2 into /workspace.
+
+USAGE
+  helm-fetch <key>                       download to /workspace/<basename>
+  helm-fetch <key> <local-path>          explicit destination
+  helm-fetch --list [<prefix>]           list available keys
+  helm-fetch --search <substring>        find keys by substring
+  helm-fetch --help
+
+The Files tab in /app shows the full key for each file (right-click "copy path").
+Per-user prefix is files/u-<hash>/.
+USAGE
+    exit 0
+    ;;
+esac
+
+KEY="$1"
+DEST="${2:-/workspace/$(basename "$KEY")}"
+
+# Make sure parent dir exists.
+mkdir -p "$(dirname "$DEST")"
+
+# URL-encode '?' '#' '+' but leave '/' alone so the path stays readable.
+ENC_KEY="$(echo -n "$KEY" | sed 's/?/%3F/g; s/#/%23/g; s/ /%20/g; s/+/%2B/g')"
+
+echo "helm-fetch: GET /persist/${KEY} → ${DEST}"
+HTTP="$(curl -fsS -w '%{http_code}' \
+  -H "Authorization: Bearer ${HELM_INTERNAL_TOKEN}" \
+  -o "$DEST" \
+  "https://${HELM_WORKER_HOST}/persist/${ENC_KEY}")"
+
+if [ "$HTTP" != "200" ]; then
+  echo "helm-fetch: HTTP $HTTP" >&2
+  rm -f "$DEST"
+  exit 1
+fi
+
+SIZE="$(du -h "$DEST" | cut -f1)"
+echo "helm-fetch: ${SIZE} → ${DEST}"
