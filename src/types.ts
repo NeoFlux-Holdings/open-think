@@ -39,6 +39,13 @@ export interface Env {
   PERSONAL_CONTEXT?: string;
   AGENT_NAME?: string;
   AGENT_OWNER?: string;
+  /**
+   * Auto-resolved by helm-setup-deploy on first run via /workers/scripts.
+   * Once persisted as a Worker secret, every subsequent cf-* skill skips
+   * the script-name lookup entirely. The agent should never see a
+   * "Worker does not exist" error after first setup.
+   */
+  WORKER_SCRIPT_NAME?: string;
   ENABLED_PLUGINS: string;
   ALLOWED_HOSTS: string;
   MODEL_DEFAULT?: string;

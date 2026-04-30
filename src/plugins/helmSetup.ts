@@ -308,7 +308,11 @@ export class HelmSetupPlugin implements AgentPlugin {
     const accountId = await this.resolveAccount(token, o.accountId || env.CLOUDFLARE_ACCOUNT_ID);
     if (!accountId.ok) return { ok: false, error: accountId.error };
     const acc = accountId.id;
-    const scriptName = o.scriptName || env.AGENT_NAME || "helm";
+    // scriptName auto-discovery: explicit input → AGENT_NAME →
+    // WORKER_SCRIPT_NAME → list workers + pick best. The user's actual
+    // deployed name might be "tomtom-agent" not "helm", and we should
+    // figure that out instead of asking.
+    const scriptName = await this.resolveScript(token, acc, o.scriptName);
 
     const steps: Array<{ kind: string; ok: boolean; detail?: string }> = [];
     const tomlSnippets: string[] = [];
@@ -426,6 +430,19 @@ export class HelmSetupPlugin implements AgentPlugin {
       steps.push({ kind: "secret CLOUDFLARE_ACCOUNT_ID", ok: true, detail: "already set" });
     }
 
+    // ---- 9. WORKER_SCRIPT_NAME secret (so future requests skip
+    //         /workers/scripts auto-discovery — saves a roundtrip
+    //         AND prevents the "wrong default" footgun where /scripts/helm
+    //         404s because the user named their Worker something else). ----
+    const fromEnv = env.AGENT_NAME ||
+      (env as Env & { WORKER_SCRIPT_NAME?: string }).WORKER_SCRIPT_NAME;
+    if (!fromEnv) {
+      const r = await this.cfPutSecret(token, acc, scriptName, "WORKER_SCRIPT_NAME", scriptName);
+      steps.push({ kind: "secret WORKER_SCRIPT_NAME", ok: r.ok, detail: r.detail });
+    } else {
+      steps.push({ kind: "secret WORKER_SCRIPT_NAME", ok: true, detail: `${fromEnv} (already set)` });
+    }
+
     return {
       ok: steps.every((s) => s.ok),
       data: {
@@ -446,6 +463,44 @@ export class HelmSetupPlugin implements AgentPlugin {
     const buf = new Uint8Array(bytes);
     crypto.getRandomValues(buf);
     return Array.from(buf, (b) => b.toString(16).padStart(2, "0")).join("");
+  }
+
+  /**
+   * Resolve the deployed Worker's script name. The default "helm" is
+   * usually wrong — users name their Workers "tomtom-agent" or
+   * whatever. Walk the priority ladder + fall back to listing the
+   * account's Workers and picking the best match heuristically.
+   *
+   * Heuristic: prefer single match. If multiple, prefer name matching
+   * env.AGENT_NAME, else regex on /helm|agent|open.?think|tomtom/i,
+   * else most-recently-modified. Only "helm" as last-resort.
+   */
+  private async resolveScript(token: string, accId: string, override?: string): Promise<string> {
+    if (override) return override;
+    if (!this.ctx) return "helm";
+    const env = this.ctx.env as Env;
+    const fromEnv = env.AGENT_NAME
+      || (env as Env & { WORKER_SCRIPT_NAME?: string }).WORKER_SCRIPT_NAME;
+    if (fromEnv) return fromEnv;
+    try {
+      const r = await this.ctx.fetch(
+        `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accId)}/workers/scripts`,
+        { headers: { Authorization: `Bearer ${token}`, accept: "application/json" } }
+      );
+      const j = (await r.json().catch(() => ({}))) as {
+        success?: boolean;
+        result?: Array<{ id?: string; modified_on?: string }>;
+      };
+      const workers = (j.result ?? []).filter((s): s is { id: string; modified_on?: string } => Boolean(s.id));
+      if (workers.length === 0) return "helm";
+      if (workers.length === 1) return workers[0].id;
+      // Sort by most-recent first.
+      workers.sort((a, b) => (b.modified_on ?? "").localeCompare(a.modified_on ?? ""));
+      const preferred = workers.find((s) => /^(helm|agent|open[-_]?think|tomtom|tom-tom)/i.test(s.id));
+      return (preferred ?? workers[0]).id;
+    } catch {
+      return "helm";
+    }
   }
 
   private async resolveAccount(token: string, override?: string): Promise<{ ok: true; id: string } | { ok: false; error: string }> {

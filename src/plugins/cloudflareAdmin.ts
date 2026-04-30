@@ -127,17 +127,88 @@ async function resolveAccountId(
 }
 
 /**
+ * Cached resolved Worker script name. Populated on first auto-discovery
+ * (via /workers/scripts). Reused across the isolate's lifetime.
+ */
+let _cachedScriptName: string | null = null;
+
+/**
  * Resolve the Worker script name. Priority:
  *   1. Explicit input.scriptName
  *   2. env.AGENT_NAME (operator-pinned; same field that brands the agent)
- *   3. "helm" — the canonical default from wrangler.toml
+ *   3. env.WORKER_SCRIPT_NAME (set by helm-setup-deploy after auto-resolve)
+ *   4. In-memory cache from a previous resolution
+ *   5. /workers/scripts auto-fetch:
+ *        - If exactly one Worker: use it
+ *        - If multiple: prefer one matching env.AGENT_NAME, then any name
+ *          containing "helm" / "agent" / "open-think". Fall back to the
+ *          first one with a warning.
+ *   6. "helm" as last-ditch default
  *
- * Helm should NEVER ask the user for this; it's our own infrastructure.
+ * The agent NEVER has to ask the user for the script name. We discover it.
  */
-function resolveScriptName(env: Env, input: unknown): string {
+async function resolveScriptName(
+  env: Env,
+  fetchImpl: typeof globalThis.fetch,
+  accountId: string,
+  input: unknown
+): Promise<string> {
+  const fromInput = asObj(input).scriptName;
+  if (typeof fromInput === "string" && fromInput.length > 0) {
+    _cachedScriptName = fromInput;
+    return fromInput;
+  }
+  const fromEnv = env.AGENT_NAME || (env as Env & { WORKER_SCRIPT_NAME?: string }).WORKER_SCRIPT_NAME;
+  if (fromEnv) {
+    _cachedScriptName = fromEnv;
+    return fromEnv;
+  }
+  if (_cachedScriptName) return _cachedScriptName;
+
+  // Auto-discover by listing the account's Workers and picking the
+  // best match heuristically.
+  const token = env.CLOUDFLARE_API_TOKEN ?? env.CLOUDFLARE_AGENT_TOKEN;
+  if (!token) {
+    _cachedScriptName = "helm";
+    return "helm";
+  }
+  try {
+    const r = await fetchImpl(
+      `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/workers/scripts`,
+      { headers: { Authorization: `Bearer ${token}`, accept: "application/json" } }
+    );
+    const j = (await r.json().catch(() => ({}))) as {
+      success?: boolean;
+      result?: Array<{ id?: string; modified_on?: string }>;
+    };
+    if (r.ok && j.success && j.result && j.result.length > 0) {
+      const names = j.result.map((s) => s.id ?? "").filter(Boolean);
+      // Single Worker → unambiguous.
+      if (names.length === 1) {
+        _cachedScriptName = names[0];
+        return names[0];
+      }
+      // Multiple — pick the best match by name heuristic.
+      const preferred = names.find((n) => /^(helm|agent|open[-_]?think|tomtom|tom-tom)/i.test(n))
+        ?? names[0];
+      _cachedScriptName = preferred;
+      return preferred;
+    }
+  } catch {
+    /* fall through to default */
+  }
+  _cachedScriptName = "helm";
+  return "helm";
+}
+
+/** Synchronous fallback used by code paths that can't await — same priority
+ *  ladder minus the auto-discovery step. */
+function resolveScriptNameSync(env: Env, input: unknown): string {
   const fromInput = asObj(input).scriptName;
   if (typeof fromInput === "string" && fromInput.length > 0) return fromInput;
-  return env.AGENT_NAME || "helm";
+  const fromEnv = env.AGENT_NAME || (env as Env & { WORKER_SCRIPT_NAME?: string }).WORKER_SCRIPT_NAME;
+  if (fromEnv) return fromEnv;
+  return _cachedScriptName ?? "helm";
 }
 
 export class CloudflareAdminPlugin implements AgentPlugin {
@@ -379,7 +450,7 @@ export class CloudflareAdminPlugin implements AgentPlugin {
         case "put-secret": {
           const acc = await resolveAccountId(this.ctx.env, this.ctx.fetch, input);
           const o = asObj(input);
-          const scriptName = resolveScriptName(this.ctx.env, input);
+          const scriptName = await resolveScriptName(this.ctx.env, this.ctx.fetch, acc, input);
           const secretName = String(o.name ?? "");
           const text = String(o.text ?? "");
           if (!secretName || !text) {
@@ -395,7 +466,7 @@ export class CloudflareAdminPlugin implements AgentPlugin {
 
         case "list-bindings": {
           const acc = await resolveAccountId(this.ctx.env, this.ctx.fetch, input);
-          const scriptName = resolveScriptName(this.ctx.env, input);
+          const scriptName = await resolveScriptName(this.ctx.env, this.ctx.fetch, acc, input);
           const r = await this.call<{ bindings?: Array<Record<string, unknown>> }>(
             "GET",
             `/accounts/${encodeURIComponent(acc)}/workers/scripts/${encodeURIComponent(scriptName)}/settings`
@@ -411,7 +482,7 @@ export class CloudflareAdminPlugin implements AgentPlugin {
 
         case "list-secrets": {
           const acc = await resolveAccountId(this.ctx.env, this.ctx.fetch, input);
-          const scriptName = resolveScriptName(this.ctx.env, input);
+          const scriptName = await resolveScriptName(this.ctx.env, this.ctx.fetch, acc, input);
           // CF returns secret NAMES only — values are write-only by design.
           // This is exactly what we want: the agent can see which secrets
           // are set without us leaking the values.
@@ -438,7 +509,7 @@ export class CloudflareAdminPlugin implements AgentPlugin {
           //     Always include the TOML snippet they should paste.
           const acc = await resolveAccountId(this.ctx.env, this.ctx.fetch, input);
           const o = asObj(input);
-          const scriptName = resolveScriptName(this.ctx.env, input);
+          const scriptName = await resolveScriptName(this.ctx.env, this.ctx.fetch, acc, input);
           const type = String(o.type ?? "");
           const name = String(o.name ?? "");
           const config = (o.config && typeof o.config === "object")
