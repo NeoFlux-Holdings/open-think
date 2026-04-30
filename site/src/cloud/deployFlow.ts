@@ -127,8 +127,11 @@ export async function runDeploy(
   // --- 1. Verify the token works against the chosen account ---
   const verify = await verifyToken(req.token, options);
   if (!verify.success) {
-    steps.push(step("verify-token", false, "token rejected by Cloudflare", undefined,
-      verify.errors?.[0]?.message ?? "unknown"));
+    const apiMsg = verify.errors?.[0]?.message ?? "unknown";
+    const apiCode = verify.errors?.[0]?.code;
+    const recovery = explainCfError(apiMsg, apiCode, "User Details:Read", acc);
+    steps.push(step("verify-token", false, `token rejected · ${apiMsg}`, undefined,
+      `${apiMsg}\n\n${recovery}`));
     return { ok: false, accountId: acc, workerName: name, steps, error: "verify-token failed" };
   }
   steps.push(step("verify-token", true, `token ok (id ${verify.result?.id ?? "unknown"})`, {
@@ -143,8 +146,11 @@ export async function runDeploy(
     const dbName = `${name}-pa`.toLowerCase().replace(/[^a-z0-9-]/g, "-").slice(0, 32);
     const d1 = await createD1Database(req.token, acc, dbName, options);
     if (!d1.success) {
-      steps.push(step("create-d1", false, `D1 create failed`, undefined,
-        d1.errors?.[0]?.message ?? "unknown"));
+      const apiMsg = d1.errors?.[0]?.message ?? "unknown";
+      const apiCode = d1.errors?.[0]?.code;
+      const recovery = explainCfError(apiMsg, apiCode, "D1:Edit", acc);
+      steps.push(step("create-d1", false, `D1 create failed · ${apiMsg}`, undefined,
+        `${apiMsg}\n\n${recovery}`));
       return finalize(steps, false, acc, name, "create-d1 failed");
     }
     d1Id = d1.result?.uuid;
@@ -165,10 +171,20 @@ export async function runDeploy(
     // First, get the team domain.
     const org = await getAccessOrganization(req.token, acc, options);
     if (!org.success || !org.result?.auth_domain) {
+      const apiMsg = org.errors?.[0]?.message ?? "no auth_domain";
+      const apiCode = org.errors?.[0]?.code;
+      // 200-with-empty-auth_domain = Zero Trust not yet configured.
+      // Anything else (400/403/etc.) = scope or account-resources problem.
+      const isEmptyDomain = org.success && !org.result?.auth_domain;
+      const detail = isEmptyDomain
+        ? "Zero Trust team name not set. Visit dash → Zero Trust → Settings → General → set a Team name. Free tier; takes ~1 minute."
+        : `${apiMsg}\n\n${explainCfError(apiMsg, apiCode, "Access: Apps and Policies:Edit", acc)}`;
       steps.push(step("create-access-app", false,
-        "Access org has no team domain — set one at dash → Zero Trust → Settings",
+        isEmptyDomain
+          ? "Access org has no team domain — set one at dash → Zero Trust → Settings"
+          : `Access org lookup failed · ${apiMsg}`,
         undefined,
-        org.errors?.[0]?.message ?? "no auth_domain"));
+        detail));
       // Don't abort — Access is optional. Continue without it.
     } else {
       accessTeamDomain = `https://${org.result.auth_domain}`;
@@ -181,8 +197,11 @@ export async function runDeploy(
         options
       );
       if (!app.success || !app.result?.aud) {
-        steps.push(step("create-access-app", false, "Access app create failed", undefined,
-          app.errors?.[0]?.message ?? "unknown"));
+        const apiMsg = app.errors?.[0]?.message ?? "unknown";
+        const apiCode = app.errors?.[0]?.code;
+        const recovery = explainCfError(apiMsg, apiCode, "Access: Apps and Policies:Edit", acc);
+        steps.push(step("create-access-app", false, `Access app create failed · ${apiMsg}`, undefined,
+          `${apiMsg}\n\n${recovery}`));
         // Continue without Access.
       } else {
         accessAud = app.result.aud;
@@ -567,4 +586,47 @@ function shellEscape(value: string): string {
   // Conservative — strips characters that would terminate a double-quoted string.
   // The user can always edit the command if they have a fancier secret.
   return value.replace(/[`"$\\]/g, "");
+}
+
+/**
+ * Map a Cloudflare API error message + code into actionable recovery copy.
+ *
+ * Two top error patterns we see, both showing as "Authentication error" or
+ * similar generic text:
+ *   1. Token missing the required permission group
+ *   2. Token has the right scope but is restricted to the wrong account
+ *      under "Account Resources" during token creation
+ *
+ * The user's CF dash provides no easy way to inspect a token's scopes
+ * after creation, so we recommend verifying both possibilities.
+ */
+export function explainCfError(
+  apiMsg: string,
+  apiCode: number | undefined,
+  expectedScope: string,
+  accountId: string
+): string {
+  const lower = apiMsg.toLowerCase();
+  const looksLikeAuth =
+    lower.includes("auth") ||
+    lower.includes("permission") ||
+    lower.includes("forbidden") ||
+    lower.includes("unauthorized") ||
+    apiCode === 9109 ||
+    apiCode === 9106 ||
+    apiCode === 10000 ||
+    apiCode === 10001;
+  const acctTail = accountId.slice(0, 8);
+  if (looksLikeAuth) {
+    return [
+      `Most likely one of these — check both:`,
+      `  1. Token is missing "${expectedScope}". Re-create with the link in the deploy form.`,
+      `  2. Token's "Account Resources" filter excludes account ${acctTail}…`,
+      `     During token creation, set Account Resources → Include → All accounts.`
+    ].join("\n");
+  }
+  if (lower.includes("not found") || lower.includes("does not exist")) {
+    return `Resource not found for this token. Most likely cause: token's "Account Resources" filter excludes account ${acctTail}… Re-create with Account Resources → All accounts.`;
+  }
+  return `If retrying doesn't help: re-create the token with the deploy form's pre-filled scope link, and set Account Resources → All accounts.`;
 }

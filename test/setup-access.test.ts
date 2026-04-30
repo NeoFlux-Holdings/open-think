@@ -13,8 +13,11 @@
 import { describe, expect, it } from "vitest";
 import {
   preflightToken,
+  probeScopes,
   runLockdown,
   deriveScriptName,
+  classifyApiFailure,
+  classifyAccessOrgFailure,
   ACCESS_WIZARD_TOKEN_URL,
   ACCESS_WIZARD_SCOPES
 } from "../src/setup-access";
@@ -276,7 +279,9 @@ describe("runLockdown · failure paths", () => {
     expect(r.ok).toBe(false);
     expect(r.appId).toBe("app-1");
     expect(r.aud).toBe("AUD-X");
-    expect(r.recovery).toMatch(/Delete the app/);
+    // Recovery now leads with the scope classification + appends the
+    // cleanup hint. Match either of the two cleanup phrasings.
+    expect(r.recovery).toMatch(/Delete (it|the app) at dash/);
   });
 
   it("secret PUT fails after app+policy succeed → recovery names the missing secrets", async () => {
@@ -342,6 +347,84 @@ describe("deriveScriptName", () => {
   it("returns null for custom domains (caller must specify)", () => {
     expect(deriveScriptName("agent.example.com")).toBe(null);
     expect(deriveScriptName("")).toBe(null);
+  });
+});
+
+describe("classifyApiFailure (recovery copy)", () => {
+  it("identifies auth/permission errors and recommends checking BOTH scope and account-resources", () => {
+    const r = classifyApiFailure(
+      "Authentication error",
+      9109,
+      "Workers Scripts:Edit",
+      "abc12345-acct-id"
+    );
+    expect(r.toLowerCase()).toContain("scope");
+    expect(r).toContain("Workers Scripts:Edit");
+    expect(r).toContain("Account Resources");
+    expect(r).toContain("abc12345");
+  });
+
+  it("identifies not-found errors as account-scope filter issues", () => {
+    const r = classifyApiFailure(
+      "Resource does not exist",
+      undefined,
+      "D1:Edit",
+      "abc12345-acct-id"
+    );
+    expect(r.toLowerCase()).toContain("account resources");
+  });
+
+  it("returns a generic recovery for unknown error shapes", () => {
+    const r = classifyApiFailure(
+      "Internal server error",
+      500,
+      "D1:Edit",
+      "abc12345-acct-id"
+    );
+    // Generic recovery suggests recreating with the pre-filled link.
+    expect(r.toLowerCase()).toContain("recreate the token");
+  });
+});
+
+describe("classifyAccessOrgFailure", () => {
+  it("warns user that this is a TOKEN issue, not a Zero Trust issue, when the API returns auth", () => {
+    const r = classifyAccessOrgFailure("Authentication error", 9109, "abc12345-acct-id");
+    expect(r.toLowerCase()).toContain("auth");
+    expect(r).toContain("Account Settings:Read");
+    expect(r).toContain("Access: Apps and Policies:Edit");
+    expect(r).not.toContain("Enable Zero Trust"); // we explicitly avoid this
+  });
+
+  it("falls through to a token-scope hint for non-auth errors too", () => {
+    const r = classifyAccessOrgFailure("Some other error", 12345, "abc12345-acct-id");
+    expect(r).toContain("Account Settings:Read");
+  });
+});
+
+describe("probeScopes", () => {
+  it("returns ok: true for each scope when every probe call succeeds", async () => {
+    const f = routedFetch({
+      [`${CF}/accounts/acc-1/access/apps`]: () => ok([]),
+      [`${CF}/accounts/acc-1/access/organizations`]: () =>
+        ok({ auth_domain: "x.cloudflareaccess.com", name: "x" }),
+      [`${CF}/accounts/acc-1/workers/scripts`]: () => ok([])
+    });
+    const probes = await probeScopes("token", "acc-1", { fetchImpl: f });
+    expect(probes.length).toBe(3);
+    expect(probes.every((p) => p.ok)).toBe(true);
+  });
+
+  it("flags individual scopes when CF returns 403/auth on one of them", async () => {
+    const f = routedFetch({
+      [`${CF}/accounts/acc-1/access/apps`]: () => ok([]),
+      [`${CF}/accounts/acc-1/access/organizations`]: () =>
+        err(9109, "Authentication error"),
+      [`${CF}/accounts/acc-1/workers/scripts`]: () => ok([])
+    });
+    const probes = await probeScopes("token", "acc-1", { fetchImpl: f });
+    const orgProbe = probes.find((p) => p.scope.includes("organization"));
+    expect(orgProbe?.ok).toBe(false);
+    expect(orgProbe?.error).toMatch(/Authentication error/);
   });
 });
 

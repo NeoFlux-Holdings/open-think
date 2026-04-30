@@ -240,6 +240,19 @@ export function renderCloudDeploy(): string {
 .cloud-steps li.ok::marker { color: var(--ok, #2d5c3e); }
 .cloud-steps li.fail::marker { color: var(--accent); }
 .cloud-steps li small { color: var(--muted); display: block; }
+.cloud-steps li .step-error {
+  display: block;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  margin: 6px 0 0;
+  padding: 8px 12px;
+  background: rgba(243, 128, 32, 0.05);
+  border-left: 2px solid var(--accent);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--ink);
+}
 .field { margin: 14px 0; }
 .field label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
 .field input[type="text"], .field input[type="email"], .field input[type="password"], .field select {
@@ -430,9 +443,13 @@ export function renderCloudDeploy(): string {
         li.className = s.ok ? 'ok' : 'fail';
         li.textContent = s.summary;
         if (s.error) {
-          const small = document.createElement('small');
-          small.textContent = '↳ ' + s.error;
-          li.appendChild(small);
+          // Errors may be multi-line: the API message on line 1, then a
+          // recovery hint on subsequent lines. Render as a <pre> so the
+          // step-by-step hint stays readable.
+          const detail = document.createElement('pre');
+          detail.className = 'step-error';
+          detail.textContent = s.error;
+          li.appendChild(detail);
         }
         stepsList.appendChild(li);
       }

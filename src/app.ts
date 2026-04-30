@@ -656,6 +656,44 @@ h1.section-title {
 .lockdown-scopes li { padding: 2px 0; }
 .lockdown-scopes li::before { content: '→ '; color: var(--accent); }
 
+/* Scope-probe results — surfaced inline before submit so the user sees
+   which scopes their token actually has. */
+.lockdown-scope-probe {
+  margin-top: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  background: var(--paper);
+}
+.lockdown-scope-title {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+.lockdown-scope-title.ok { color: var(--ok, #2d5c3e); }
+.lockdown-scope-title.fail { color: var(--accent); }
+.lockdown-scope-list {
+  list-style: none; padding: 0; margin: 0;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.lockdown-scope-list li {
+  display: flex; gap: 8px; align-items: baseline;
+  padding: 2px 0;
+}
+.lockdown-scope-list li.ok { color: var(--ink); }
+.lockdown-scope-list li.fail { color: var(--accent); }
+.lockdown-scope-list .ic { display: inline-block; width: 14px; flex-shrink: 0; }
+.lockdown-scope-list li.ok .ic { color: var(--ok, #2d5c3e); }
+.lockdown-scope-list .lockdown-scope-err { color: var(--muted); font-size: 11px; margin-left: 8px; }
+.lockdown-scope-hint {
+  font-size: 12px; color: var(--muted);
+  margin-top: 10px; line-height: 1.55;
+}
+
 /* "Token already configured" banner — replaces the token field when prefilled */
 .lockdown-prefilled {
   display: flex; gap: 14px; align-items: flex-start;
@@ -2549,16 +2587,19 @@ async function mountLockdownWizard() {
 
   // Preflight the token. When usingExistingToken=true we send no token in
   // the body — the server falls back to env.CLOUDFLARE_API_TOKEN.
-  async function preflight() {
+  async function preflight(accountIdOverride) {
     const tokenVal = (els.token.value || '').trim();
     if (!usingExistingToken && !tokenVal) return null;
-    const cacheKey = usingExistingToken ? '__env__' : tokenVal;
+    const accountIdForProbe = accountIdOverride || els.account.value || null;
+    const cacheKey = (usingExistingToken ? '__env__' : tokenVal) + ':' + (accountIdForProbe || '');
     if (preflightCache && preflightCache.key === cacheKey) return preflightCache.data;
     els.submit.disabled = true;
+    const reqBody = usingExistingToken ? {} : { token: tokenVal };
+    if (accountIdForProbe) reqBody.accountId = accountIdForProbe;
     const r = await j('/setup/access/preflight', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(usingExistingToken ? {} : { token: tokenVal })
+      body: JSON.stringify(reqBody)
     });
     refreshSubmitState();
     if (!r.data?.ok) {
@@ -2579,9 +2620,55 @@ async function mountLockdownWizard() {
       els.account.appendChild(opt);
     }
     els.accountRow.style.display = data.accounts.length > 1 ? '' : 'none';
+    // Render scope-probe results inline so the user sees missing scopes
+    // BEFORE submit. Each scope is a small status pill: ✓ ok / ✗ failed.
+    renderScopeProbe(data.scopes || []);
     return data;
   }
   els.token.addEventListener('blur', () => { preflight(); });
+  // Re-probe when the user picks a different account (multi-account case).
+  els.account.addEventListener('change', () => {
+    preflightCache = null;
+    preflight(els.account.value);
+  });
+
+  function renderScopeProbe(scopes) {
+    let host = document.getElementById('ld-scope-probe');
+    if (!host) {
+      // Lazy-create the host directly above the submit row.
+      host = document.createElement('div');
+      host.id = 'ld-scope-probe';
+      host.className = 'lockdown-scope-probe';
+      const actions = document.querySelector('.lockdown-actions');
+      if (actions && actions.parentNode) {
+        actions.parentNode.insertBefore(host, actions);
+      }
+    }
+    if (!scopes || scopes.length === 0) {
+      host.innerHTML = '';
+      return;
+    }
+    const allOk = scopes.every((s) => s.ok);
+    const titleClass = allOk ? 'ok' : 'fail';
+    const items = scopes.map((s) => {
+      const icon = s.ok ? '✓' : '✗';
+      const cls = s.ok ? 'ok' : 'fail';
+      const err = s.ok ? '' : ' <span class="lockdown-scope-err">' + escapeHtml(s.error || '') + '</span>';
+      return '<li class="' + cls + '"><span class="ic">' + icon + '</span>' + escapeHtml(s.scope) + err + '</li>';
+    }).join('');
+    host.innerHTML =
+      '<div class="lockdown-scope-title ' + titleClass + '">' +
+        (allOk ? '✓ Token scopes look good' : '✗ Token is missing one or more scopes for this account') +
+      '</div>' +
+      '<ul class="lockdown-scope-list">' + items + '</ul>' +
+      (allOk ? '' :
+        '<p class="lockdown-scope-hint">' +
+          'Two likely causes: (a) you didn\\'t include the failing permission group ' +
+          'when creating the token, OR (b) the token\\'s "Account Resources" filter ' +
+          'excludes this account. Re-create with the wizard\\'s pre-filled link and ' +
+          'set Account Resources → All accounts.' +
+        '</p>');
+  }
 
   function showError(msg) {
     els.error.textContent = msg;
@@ -2702,7 +2789,14 @@ async function mountLockdownWizard() {
   function showFailure(reason, recovery) {
     els.progress.setAttribute('hidden', '');
     els.failure.removeAttribute('hidden');
+    // Show the actual reason verbatim — no "user-friendly" rewrites that
+    // mask the real Cloudflare API error.
     els.failureReason.textContent = reason;
+    // Recovery may have multiple lines (we use \\n in classifyApiFailure);
+    // preserve them as a <pre>-style block so step-by-step text is readable.
+    els.failureRecovery.style.whiteSpace = 'pre-wrap';
+    els.failureRecovery.style.fontFamily = "'JetBrains Mono', monospace";
+    els.failureRecovery.style.fontSize = '13px';
     els.failureRecovery.textContent = recovery;
   }
 

@@ -26,6 +26,7 @@ import {
   ACCESS_WIZARD_TOKEN_URL,
   deriveScriptName,
   preflightToken,
+  probeScopes,
   runLockdown
 } from "./setup-access";
 import { isPublicRoute, requireAuth, type AuthContext } from "./auth";
@@ -625,20 +626,40 @@ async function handler(request: Request, env: Env, requestId: string, startedAt:
     );
   }
 
-  // POST /setup/access/preflight — verify token + return account picker rows.
+  // POST /setup/access/preflight — verify token + return account picker rows
+  // + (when accountId is supplied) probe each required scope so the UI can
+  // tell the user which permission is missing BEFORE they submit.
   // Token comes from the request body OR (if absent) from env.CLOUDFLARE_API_TOKEN.
   if (request.method === "POST" && url.pathname === "/setup/access/preflight") {
-    const body = (await request.json().catch(() => ({}))) as { token?: string };
+    const body = (await request.json().catch(() => ({}))) as {
+      token?: string;
+      accountId?: string;
+    };
     const token = body.token || env.CLOUDFLARE_API_TOKEN || "";
     if (!token) {
       return json({ ok: false, error: "token required" }, 400, requestId);
     }
     const r = await preflightToken(token);
-    if (r.ok) {
-      return json({ ok: true, data: r }, 200, requestId);
+    if (!r.ok) {
+      return json(r, 400, requestId);
     }
-    // Already has ok:false + error fields; pass through.
-    return json(r, 400, requestId);
+    // Pick the account to probe against — body.accountId if supplied,
+    // else the first account (single-account case).
+    const probeAccountId =
+      body.accountId && r.accounts.find((a) => a.id === body.accountId)
+        ? body.accountId
+        : r.accounts[0]?.id;
+    if (probeAccountId) {
+      try {
+        r.scopes = await probeScopes(token, probeAccountId);
+      } catch {
+        // Probes are best-effort; an exception here doesn't fail the
+        // preflight. The user can still submit; runLockdown surfaces the
+        // real error if a scope is actually missing.
+        r.scopes = [];
+      }
+    }
+    return json({ ok: true, data: r }, 200, requestId);
   }
 
   // POST /setup/access/run — orchestrate the lockdown.

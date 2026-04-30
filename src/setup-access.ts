@@ -66,12 +66,23 @@ async function cfCall<T>(
 
 /* ---------------- Token preflight ---------------- */
 
+export interface ScopeProbeResult {
+  /** Logical scope name, mapped to a human-readable permission group. */
+  scope: string;
+  /** True if the token can hit the endpoint we tested for this scope. */
+  ok: boolean;
+  /** API error message when ok=false. */
+  error?: string;
+}
+
 export interface TokenPreflightOk {
   ok: true;
   tokenId: string;
   expiresOn?: string;
   /** Accounts this token can touch — UI shows a picker iff > 1. */
   accounts: Array<{ id: string; name: string }>;
+  /** Per-scope probe results when an accountId is supplied; empty otherwise. */
+  scopes?: ScopeProbeResult[];
 }
 export interface TokenPreflightErr {
   ok: false;
@@ -152,6 +163,46 @@ export async function preflightToken(
     expiresOn: verify.result.expires_on,
     accounts: accounts.map((a) => ({ id: a.id, name: a.name }))
   };
+}
+
+/**
+ * Probe the four scopes the lockdown wizard needs against a specific
+ * account. Each probe is a cheap read-only call; failures here predict
+ * failures in runLockdown so the UI can warn before submit.
+ *
+ * Note: there's no perfect "test this exact permission" CF API. We use
+ * representative read endpoints that require each scope.
+ */
+export async function probeScopes(
+  token: string,
+  accountId: string,
+  options: CallOptions = {}
+): Promise<ScopeProbeResult[]> {
+  const probes: Array<{ scope: string; path: string }> = [
+    {
+      scope: "Access: Apps and Policies (Edit) — read-probe",
+      path: `/accounts/${accountId}/access/apps`
+    },
+    {
+      scope: "Account Settings (Read) — Access organization",
+      path: `/accounts/${accountId}/access/organizations`
+    },
+    {
+      scope: "Workers Scripts (Edit) — read-probe",
+      path: `/accounts/${accountId}/workers/scripts`
+    }
+  ];
+  const results = await Promise.all(
+    probes.map(async (p) => {
+      const r = await cfCall<unknown>(token, p.path, { method: "GET", ...options });
+      return {
+        scope: p.scope,
+        ok: r.success,
+        error: r.success ? undefined : r.errors?.[0]?.message ?? "unknown"
+      };
+    })
+  );
+  return results;
 }
 
 /* ---------------- Lockdown orchestrator ---------------- */
@@ -244,17 +295,29 @@ export async function runLockdown(
     `/accounts/${input.accountId}/access/organizations`,
     { method: "GET", fetchImpl }
   );
-  if (!orgRes.success || !orgRes.result?.auth_domain) {
-    const msg =
-      orgRes.errors?.[0]?.message ??
-      "No team domain — enable Zero Trust at dash → Zero Trust → Settings.";
-    steps.push(step("team-domain", false, "team domain unavailable", undefined, msg));
+  if (!orgRes.success) {
+    // CF returned an error — most often this means the token can't read
+    // Access organizations. Disambiguate from "Zero Trust not configured".
+    const apiMsg = orgRes.errors?.[0]?.message ?? "team domain lookup failed";
+    const apiCode = orgRes.errors?.[0]?.code;
+    steps.push(step("team-domain", false, `team domain lookup failed · ${apiMsg}`, { apiCode }, apiMsg));
+    return {
+      ok: false,
+      steps,
+      error: apiMsg,
+      recovery: classifyAccessOrgFailure(apiMsg, apiCode, input.accountId)
+    };
+  }
+  if (!orgRes.result?.auth_domain) {
+    // 200 OK but empty auth_domain — Zero Trust really isn't set up.
+    const msg = "team domain is empty — enable Zero Trust + set a team name.";
+    steps.push(step("team-domain", false, "Zero Trust team name not set", undefined, msg));
     return {
       ok: false,
       steps,
       error: msg,
       recovery:
-        "Enable Zero Trust on your Cloudflare account first (free), then retry. Visit dash → Zero Trust → Settings → set a team name."
+        "Visit dash → Zero Trust → Settings → General → set a Team name. Free tier; takes ~1 minute. Then retry."
     };
   }
   const teamDomain = `https://${orgRes.result.auth_domain}`;
@@ -281,14 +344,14 @@ export async function runLockdown(
     }
   );
   if (!appRes.success || !appRes.result) {
-    const msg = appRes.errors?.[0]?.message ?? "Access app creation failed.";
-    steps.push(step("create-app", false, "Access app creation failed", undefined, msg));
+    const apiMsg = appRes.errors?.[0]?.message ?? "Access app creation failed.";
+    const apiCode = appRes.errors?.[0]?.code;
+    steps.push(step("create-app", false, `Access app creation failed · ${apiMsg}`, { apiCode }, apiMsg));
     return {
       ok: false,
       steps,
-      error: msg,
-      recovery:
-        "Token may be missing 'Access: Apps and Policies:Edit'. Recreate token with the pre-filled URL and retry."
+      error: apiMsg,
+      recovery: classifyApiFailure(apiMsg, apiCode, "Access: Apps and Policies:Edit", input.accountId)
     };
   }
   const appId = appRes.result.id;
@@ -341,14 +404,14 @@ export async function runLockdown(
     }
   );
   if (!polRes.success) {
-    const msg = polRes.errors?.[0]?.message ?? "Policy creation failed.";
-    steps.push(step("create-policy", false, "policy creation failed", undefined, msg));
+    const apiMsg = polRes.errors?.[0]?.message ?? "Policy creation failed.";
+    const apiCode = polRes.errors?.[0]?.code;
+    steps.push(step("create-policy", false, `policy creation failed · ${apiMsg}`, { apiCode }, apiMsg));
     return {
       ok: false,
       steps,
-      error: msg,
-      recovery:
-        "Access app was created but no policy was attached — anyone is rejected. Delete the app at dash → Zero Trust → Access → Apps and retry.",
+      error: apiMsg,
+      recovery: `${classifyApiFailure(apiMsg, apiCode, "Access: Apps and Policies:Edit", input.accountId)}\n\nAlso: the Access app (id ${appId}) was created without a policy — it currently rejects everyone. Delete it at dash → Zero Trust → Access → Apps before retrying.`,
       appId,
       aud,
       teamDomain
@@ -384,13 +447,15 @@ export async function runLockdown(
       }
     );
     if (!r.success) {
-      const msg = r.errors?.[0]?.message ?? `setting ${s.name} failed`;
-      steps.push(step(s.kind, false, `${s.name}: failed`, undefined, msg));
+      const apiMsg = r.errors?.[0]?.message ?? `setting ${s.name} failed`;
+      const apiCode = r.errors?.[0]?.code;
+      steps.push(step(s.kind, false, `${s.name}: ${apiMsg}`, { apiCode }, apiMsg));
+      const scopeRecovery = classifyApiFailure(apiMsg, apiCode, "Workers Scripts:Edit", input.accountId);
       return {
         ok: false,
         steps,
-        error: msg,
-        recovery: `Access app + policy created (aud=${aud.slice(0, 12)}…) but secrets weren't persisted. Add CF_ACCESS_TEAM_DOMAIN, CF_ACCESS_AUD, and CF_ACCESS_ALLOWED_EMAILS manually at dash → Workers & Pages → ${input.scriptName} → Settings → Variables. Or delete the Access app at dash → Zero Trust → Access → Apps to retry from scratch.`,
+        error: apiMsg,
+        recovery: `${scopeRecovery}\n\nThe Access app + policy were created OK (aud=${aud.slice(0, 12)}…) but the Worker secrets didn't persist. Once the token is fixed: (a) retry the wizard, OR (b) add CF_ACCESS_TEAM_DOMAIN, CF_ACCESS_AUD, and CF_ACCESS_ALLOWED_EMAILS by hand at dash → Workers & Pages → ${input.scriptName} → Settings → Variables. To start over from scratch instead, delete the Access app at dash → Zero Trust → Access → Apps.`,
         appId,
         aud,
         teamDomain
@@ -400,6 +465,81 @@ export async function runLockdown(
   }
 
   return { ok: true, steps, teamDomain, aud, appId };
+}
+
+/* ---------------- Failure classification ---------------- */
+
+/**
+ * Map a CF API error message + code into actionable recovery copy.
+ *
+ * The two top error patterns we see are:
+ *   1. Token missing the right permission group ("Authentication error",
+ *      "Insufficient permissions", code 9109/10000/9106 etc.)
+ *   2. Token has the right scope but is restricted to the wrong account
+ *      under "Account Resources" during token creation.
+ *
+ * Distinguishing between them is hard from the error text alone, so we
+ * recommend the user verify BOTH.
+ */
+export function classifyApiFailure(
+  apiMsg: string,
+  apiCode: number | undefined,
+  expectedScope: string,
+  accountId: string
+): string {
+  const lower = apiMsg.toLowerCase();
+  const looksLikeAuth =
+    lower.includes("auth") ||
+    lower.includes("permission") ||
+    lower.includes("forbidden") ||
+    lower.includes("unauthorized") ||
+    apiCode === 9109 ||
+    apiCode === 9106 ||
+    apiCode === 10000 ||
+    apiCode === 10001;
+  if (looksLikeAuth) {
+    return [
+      `Cloudflare returned: "${apiMsg}". Two likely causes — check both:`,
+      `  1. Token is missing the "${expectedScope}" permission group.`,
+      `     Re-create at dash → Profile → API Tokens with the link in the wizard.`,
+      `  2. Token's "Account Resources" was scoped to a different account than ${accountId.slice(0, 8)}…`,
+      `     During token creation, set Account Resources → Include → All accounts (or pick the right one).`
+    ].join("\n");
+  }
+  if (lower.includes("not found") || lower.includes("does not exist")) {
+    return `Cloudflare returned: "${apiMsg}". The resource (account ${accountId.slice(0, 8)}…) wasn't found by this token. Most often: token's "Account Resources" filter excludes this account. Re-create the token with Account Resources → All accounts.`;
+  }
+  return `Cloudflare returned: "${apiMsg}" (code ${apiCode ?? "n/a"}). If retrying doesn't help, recreate the token with the wizard's pre-filled scope link.`;
+}
+
+/**
+ * Specifically diagnose /access/organizations failure. Distinguishes:
+ *   - auth/scope (token can't read Access)
+ *   - resource-not-found (account scope filter)
+ *   - empty auth_domain (Zero Trust not actually set up)
+ */
+export function classifyAccessOrgFailure(
+  apiMsg: string,
+  apiCode: number | undefined,
+  accountId: string
+): string {
+  const lower = apiMsg.toLowerCase();
+  if (
+    lower.includes("auth") ||
+    lower.includes("permission") ||
+    lower.includes("forbidden") ||
+    apiCode === 9109 ||
+    apiCode === 10000
+  ) {
+    return [
+      `Cloudflare returned: "${apiMsg}". This is an AUTH failure, not a Zero Trust setup issue.`,
+      `  1. Verify your token has BOTH "Access: Apps and Policies:Edit" AND "Account Settings:Read".`,
+      `  2. Verify the token's "Account Resources" includes account ${accountId.slice(0, 8)}…`,
+      `     (during token creation, pick All accounts or specifically include this one).`,
+      `  3. If both look right, regenerate the token using the wizard's pre-filled link.`
+    ].join("\n");
+  }
+  return `Cloudflare returned: "${apiMsg}". If Zero Trust IS already set up, this is likely a token-scope or token-account issue rather than a Zero Trust one. Double-check the token has "Access: Apps and Policies:Edit" + "Account Settings:Read" and includes account ${accountId.slice(0, 8)}…`;
 }
 
 /* ---------------- Helpers ---------------- */
