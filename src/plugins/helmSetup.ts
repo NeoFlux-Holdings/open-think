@@ -26,6 +26,7 @@ import { collectStatus } from "../setup";
 import { runLockdown } from "../setup-access";
 import { listSecretStatus } from "../setup-secrets";
 import { HELM_DOCS } from "./helmDocs";
+import { resolveShellSession } from "./helmShellSession";
 
 interface InvokeInput {
   accountId?: string;
@@ -117,10 +118,11 @@ export class HelmSetupPlugin implements AgentPlugin {
           error: "SHELL_CONTAINER binding missing. Redeploy with the v0.8+ wrangler.toml."
         };
       }
-      // Default session: a stable name so repeated helm-exec calls hit
-      // the same /workspace. We use "agent-default" so it's
-      // distinguishable from per-user shell sessions in the registry.
-      const sessionName = o.session && o.session.trim() ? o.session.trim() : "agent-default";
+      // CRITICAL: default session name matches the user's browser shell
+      // session — derived from env.AGENT_OWNER_EMAIL via the same FNV-1a
+      // hash that /shell/ws uses. So files the user `git clone`s in the
+      // browser tab are visible to helm-exec, and vice versa.
+      const sessionName = resolveShellSession(env, o.session);
       const id = env.SHELL_CONTAINER.idFromName(sessionName);
       const stub = env.SHELL_CONTAINER.get(id);
       const resp = await stub.fetch(

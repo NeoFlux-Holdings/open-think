@@ -34,6 +34,7 @@
 import type { AgentPlugin, PluginContext, PluginResult } from "../core/plugin";
 import type { Env } from "../types";
 import { AppError } from "../core/errors";
+import { resolveShellSession } from "./helmShellSession";
 
 interface ExecResult {
   ok: boolean;
@@ -78,13 +79,23 @@ export class HelmTomlPlugin implements AgentPlugin {
   }
 
   /** Run a one-shot bash command in the container DO. Returns raw exec result. */
-  private async execContainer(cmd: string, cwd?: string, timeoutMs = 30_000): Promise<ExecResult> {
+  private async execContainer(
+    cmd: string,
+    cwd?: string,
+    timeoutMs = 30_000,
+    sessionOverride?: string
+  ): Promise<ExecResult> {
     if (!this.ctx) throw new AppError("E_NOT_INIT", "plugin not initialized", 500);
     const env = this.ctx.env as Env;
     if (!env.SHELL_CONTAINER) {
       return { ok: false, stderr: "SHELL_CONTAINER binding missing — redeploy with v0.8+", code: -1 };
     }
-    const stub = env.SHELL_CONTAINER.get(env.SHELL_CONTAINER.idFromName("agent-default"));
+    // Default session matches the user's browser shell — derived from
+    // env.AGENT_OWNER_EMAIL via the same FNV-1a hash /shell/ws uses.
+    // So when the user `git clone`s in their browser tab, helm-toml-*
+    // sees the files (same /workspace).
+    const sessionName = resolveShellSession(env, sessionOverride);
+    const stub = env.SHELL_CONTAINER.get(env.SHELL_CONTAINER.idFromName(sessionName));
     const resp = await stub.fetch(
       new Request("https://shell-do/exec", {
         method: "POST",
@@ -98,16 +109,78 @@ export class HelmTomlPlugin implements AgentPlugin {
     return (await resp.json()) as ExecResult;
   }
 
-  /** Read the repo's wrangler.toml. Returns null if the file doesn't exist. */
-  private async readToml(repoPath: string, tomlPath: string): Promise<string | null> {
+  /**
+   * Find the user's wrangler.toml. Tries (in order):
+   *   1. Explicit input.repoPath / env.HELM_REPO_PATH
+   *   2. /workspace/repo (our default convention)
+   *   3. Scan /workspace for any subdirectory containing wrangler.toml
+   *      (catches the common case where the user cloned to
+   *      /workspace/<repo-name> instead of /workspace/repo)
+   *
+   * Returns the absolute directory containing wrangler.toml, plus the
+   * relative tomlPath (almost always "wrangler.toml"), or null if none
+   * found.
+   */
+  private async autoDetectRepo(repoPathHint: string, tomlRel: string): Promise<{ repoPath: string; tomlRel: string; foundVia: string } | null> {
+    // Step 1: try the explicit / configured path.
+    const direct = await this.execContainer(
+      `[ -f "${tomlRel}" ] && echo OK || echo MISSING`,
+      repoPathHint
+    );
+    if (direct.ok && (direct.stdout ?? "").trim() === "OK") {
+      return { repoPath: repoPathHint, tomlRel, foundVia: "configured path" };
+    }
+    // Step 2: scan /workspace top-level for wrangler.toml.
+    const scan = await this.execContainer(
+      `find /workspace -maxdepth 3 -name wrangler.toml -not -path '*/node_modules/*' 2>/dev/null | head -5`
+    );
+    const candidates = (scan.stdout ?? "")
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+    if (candidates.length > 0) {
+      const fullPath = candidates[0];
+      const lastSlash = fullPath.lastIndexOf("/");
+      const dir = fullPath.slice(0, lastSlash);
+      const file = fullPath.slice(lastSlash + 1);
+      return { repoPath: dir, tomlRel: file, foundVia: `auto-detected via find (also saw: ${candidates.slice(1).join(", ") || "no other matches"})` };
+    }
+    return null;
+  }
+
+  /** Read a wrangler.toml at the resolved path. Returns content + diagnostics. */
+  private async readToml(repoPath: string, tomlPath: string): Promise<{ content: string | null; resolved?: { repoPath: string; tomlRel: string; foundVia: string }; diagnostic?: string }> {
     const r = await this.execContainer(
       `if [ -f "${tomlPath}" ]; then cat "${tomlPath}"; else echo "__HELM_NO_TOML__"; fi`,
       repoPath
     );
-    if (!r.ok) return null;
+    if (!r.ok) {
+      return {
+        content: null,
+        diagnostic: `exec failed (code ${r.code}): ${(r.stderr ?? "").slice(0, 200)}`
+      };
+    }
     const out = (r.stdout ?? "").replace(/\r\n/g, "\n");
-    if (out.trim() === "__HELM_NO_TOML__") return null;
-    return out;
+    if (out.trim() !== "__HELM_NO_TOML__") {
+      return { content: out };
+    }
+    // File missing at the configured path — try to find it elsewhere.
+    const detected = await this.autoDetectRepo(repoPath, tomlPath);
+    if (detected) {
+      const r2 = await this.execContainer(`cat "${detected.tomlRel}"`, detected.repoPath);
+      if (r2.ok) {
+        return {
+          content: (r2.stdout ?? "").replace(/\r\n/g, "\n"),
+          resolved: detected
+        };
+      }
+    }
+    // Truly nothing — return diagnostic context.
+    const ls = await this.execContainer(`ls -la /workspace/ 2>&1 | head -20`);
+    return {
+      content: null,
+      diagnostic: `wrangler.toml not at ${repoPath}/${tomlPath}. /workspace contents:\n${(ls.stdout ?? "").slice(0, 800)}`
+    };
   }
 
   async invoke(action: string, input: unknown): Promise<PluginResult> {
@@ -123,32 +196,47 @@ export class HelmTomlPlugin implements AgentPlugin {
         "/workspace"
       );
       const lines = (ls.stdout ?? "").split("\n").map((l) => l.trim()).filter(Boolean);
+      // If the configured path has no wrangler.toml, scan for one.
+      let detected: { repoPath: string; tomlRel: string; foundVia: string } | null = null;
+      if (!lines.includes("HAS_TOML")) {
+        detected = await this.autoDetectRepo(repoPath, tomlRel);
+      }
+      // Show what's in /workspace so the agent has context.
+      const workspaceLs = await this.execContainer(`ls -la /workspace/ 2>&1 | head -20`);
       return {
         ok: true,
         data: {
-          repoPath,
-          tomlRel,
-          cloned: lines.includes("CLONED"),
-          hasToml: lines.includes("HAS_TOML"),
-          containerExecOk: ls.ok,
-          hint: !lines.includes("CLONED")
-            ? `Repo not cloned. Run helm-exec with: git clone <repo> ${repoPath}`
-            : !lines.includes("HAS_TOML")
-              ? `${tomlRel} not found at ${repoPath}. Did you set HELM_WRANGLER_TOML_PATH?`
-              : "ready"
+          configuredRepoPath: repoPath,
+          configuredTomlRel: tomlRel,
+          configuredHasToml: lines.includes("HAS_TOML"),
+          configuredHasGit: lines.includes("CLONED"),
+          autoDetected: detected,
+          // Effective values — what helm-toml-sync/patch will actually use.
+          effectiveRepoPath: detected?.repoPath ?? repoPath,
+          effectiveTomlRel: detected?.tomlRel ?? tomlRel,
+          ready: lines.includes("HAS_TOML") || !!detected,
+          workspaceContents: (workspaceLs.stdout ?? "").trim(),
+          containerSession: resolveShellSession(env),
+          hint: lines.includes("HAS_TOML")
+            ? "ready — use configured path"
+            : detected
+              ? `ready — using auto-detected repo at ${detected.repoPath} (${detected.foundVia}). Pass these as input.repoPath/tomlPath to lock it in.`
+              : `wrangler.toml not found anywhere in /workspace. Clone the repo first: helm-exec git clone <url> /workspace/<repo-name>`
         }
       };
     }
 
     if (action === "sync") {
       // Drift detection. Compare live bindings vs TOML declarations.
-      const toml = await this.readToml(repoPath, tomlRel);
-      if (toml === null) {
+      const read = await this.readToml(repoPath, tomlRel);
+      if (read.content === null) {
         return {
           ok: false,
-          error: `wrangler.toml not found at ${repoPath}/${tomlRel}. helm-toml-status to debug.`
+          error: `wrangler.toml not found. ${read.diagnostic ?? ""}`,
+          data: { configuredRepoPath: repoPath, configuredTomlRel: tomlRel, containerSession: resolveShellSession(env) }
         };
       }
+      const toml = read.content;
       const accountId = env.CLOUDFLARE_ACCOUNT_ID;
       const token = env.CLOUDFLARE_API_TOKEN ?? env.CLOUDFLARE_AGENT_TOKEN;
       if (!token || !accountId) {
@@ -176,8 +264,9 @@ export class HelmTomlPlugin implements AgentPlugin {
       return {
         ok: true,
         data: {
-          repoPath,
-          tomlRel,
+          repoPath: read.resolved?.repoPath ?? repoPath,
+          tomlRel: read.resolved?.tomlRel ?? tomlRel,
+          autoDetected: read.resolved ?? null,
           scriptName,
           liveBindingCount: liveBindings.length,
           drift,
@@ -206,13 +295,19 @@ export class HelmTomlPlugin implements AgentPlugin {
       }
       const commitMessage = String(o.commitMessage ?? "wrangler.toml: helm-toml-patch sync");
       const push = Boolean(o.push);
-      const toml = await this.readToml(repoPath, tomlRel);
-      if (toml === null) {
+      const read = await this.readToml(repoPath, tomlRel);
+      if (read.content === null) {
         return {
           ok: false,
-          error: `wrangler.toml not found at ${repoPath}/${tomlRel}. Clone the repo first via helm-exec.`
+          error: `wrangler.toml not found. ${read.diagnostic ?? ""} Clone via helm-exec or set HELM_REPO_PATH.`
         };
       }
+      // If autoDetect rerouted us to a different path, use that for the
+      // write + git commands too. Otherwise the patch would write to a
+      // dir that doesn't have the TOML.
+      const effectiveRepo = read.resolved?.repoPath ?? repoPath;
+      const effectiveToml = read.resolved?.tomlRel ?? tomlRel;
+      const toml = read.content;
       const merged = mergeTomlBlock(toml, snippet);
       if (merged.unchanged) {
         return {
@@ -225,22 +320,22 @@ export class HelmTomlPlugin implements AgentPlugin {
       }
       // Write the new content via base64 round-trip (avoids quoting hell).
       const encoded = btoa(unescape(encodeURIComponent(merged.next)));
-      const writeCmd = `echo "${encoded}" | base64 -d > "${tomlRel}"`;
-      const w = await this.execContainer(writeCmd, repoPath);
+      const writeCmd = `echo "${encoded}" | base64 -d > "${effectiveToml}"`;
+      const w = await this.execContainer(writeCmd, effectiveRepo);
       if (!w.ok) {
         return { ok: false, error: `write failed: ${(w.stderr ?? "").slice(0, 300)}` };
       }
       // Diff for the response.
-      const d = await this.execContainer(`git diff --no-color -- "${tomlRel}"`, repoPath);
+      const d = await this.execContainer(`git diff --no-color -- "${effectiveToml}"`, effectiveRepo);
       // Stage + commit + (optionally) push.
       const commit = await this.execContainer(
-        `git add "${tomlRel}" && git -c user.name=Helm -c user.email=helm@open-think commit -m "${commitMessage.replace(/"/g, '\\"')}"`,
-        repoPath
+        `git add "${effectiveToml}" && git -c user.name=Helm -c user.email=helm@open-think commit -m "${commitMessage.replace(/"/g, '\\"')}"`,
+        effectiveRepo
       );
       const commitOk = commit.ok;
       let pushed: ExecResult | null = null;
       if (push && commitOk) {
-        pushed = await this.execContainer("git push", repoPath, 60_000);
+        pushed = await this.execContainer("git push", effectiveRepo, 60_000);
       }
       return {
         ok: true,
@@ -248,6 +343,9 @@ export class HelmTomlPlugin implements AgentPlugin {
           changed: true,
           replaced: merged.replaced,
           appended: !merged.replaced,
+          repoPath: effectiveRepo,
+          tomlRel: effectiveToml,
+          autoDetected: read.resolved ?? null,
           diff: (d.stdout ?? "").slice(0, 4000),
           committed: commitOk,
           commitOutput: (commit.stdout ?? "").slice(0, 800) + (commit.stderr ? "\n" + commit.stderr.slice(0, 400) : ""),

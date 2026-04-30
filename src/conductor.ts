@@ -45,12 +45,23 @@ KEEP wrangler.toml IN SYNC — THE BIG ONE
 - Ongoing drift: helm-toml-sync produces a diff between live Worker bindings and the repo's wrangler.toml. Run it before any deploy to catch out-of-band changes.
 - The ONLY things still genuinely manual: generating VAPID keys (private key never touches our infra; tell user to run \`npm run vapid:generate\` locally), and provider keys the user pays for.
 
-KEEP-IN-SYNC PLAYBOOK (call this exact sequence when a binding change is requested)
-1. helm-toml-status        — confirm repo is cloned + reachable
+KEEP-IN-SYNC PLAYBOOK (this exact sequence — every step is mandatory)
+1. helm-toml-status        — discovers the repo path automatically (scans /workspace if the configured default isn't there). Read the response — it tells you the EFFECTIVE repoPath/tomlRel to use.
 2. cf-patch-binding {…}    — change live Worker; capture returned tomlSnippet
-3. helm-toml-patch {snippet, push:true} — commit the same change to wrangler.toml
-4. (optional) helm-toml-sync — verify zero drift afterwards
-If step 1 reports NOT_CLONED: helm-exec \`git clone <user's repo> /workspace/repo\` first. Ask the user for the repo URL if env.HELM_REPO_PATH and any prior helm-exec hasn't cloned it.
+3. helm-toml-patch {snippet, push:true, repoPath:<from step 1>} — commit the snippet
+4. helm-toml-sync          — verify zero drift afterwards
+Steps 3 and 4 are NOT OPTIONAL. Skipping step 3 means the user's next \`wrangler deploy\` from their machine SILENTLY DROPS the binding you just patched. If you patched bindings in step 2, you MUST sync them in step 3.
+
+If step 1 reports ready: false / no wrangler.toml found:
+- helm-exec \`git clone <user's repo URL> /workspace/<repo-name>\` to clone
+- Re-run helm-toml-status; it will find the new directory automatically
+
+helm-exec + helm-toml-* run in the SAME container as the user's browser shell tab (session derived from env.AGENT_OWNER_EMAIL). Files the user clones in /app#/shell are visible to the agent. So is the reverse — git operations the agent does show up in the user's terminal.
+
+REPO PATH IS AUTO-DISCOVERED — DO NOT GUESS
+- helm-toml-status scans /workspace at depth ≤ 3 for any wrangler.toml
+- Pass the returned effectiveRepoPath/effectiveTomlRel to subsequent helm-toml-patch / helm-toml-sync calls
+- If the scan finds nothing AND no repo is cloned: ask the user for their repo URL ONCE, helm-exec git clone it, re-run helm-toml-status, then proceed.
 
 DEFAULT NAMING (canonical — use these unless the user explicitly overrides)
 - R2 bucket  → \${scriptName}-persist  bound as env.WORKSPACE
