@@ -9,6 +9,9 @@ import {
   createAccessApp,
   createAccessPolicy,
   createD1Database,
+  ensureD1Database,
+  findD1DatabaseByName,
+  flattenMigrationsForCfApi,
   getAccessOrganization,
   listAccounts,
   listZones,
@@ -196,5 +199,139 @@ describe("cfApi.putWorkerSecret", () => {
     const body = JSON.parse(capturedBody);
     expect(body).toEqual({ name: "ANTHROPIC_API_KEY", text: "sk-ant-test", type: "secret_text" });
     expect(r.success).toBe(true);
+  });
+});
+
+describe("cfApi.flattenMigrationsForCfApi", () => {
+  it("flattens an array of historical migrations into one CF API object", () => {
+    const out = flattenMigrationsForCfApi([
+      { tag: "v1", new_sqlite_classes: ["AgentSessionDO"] },
+      { tag: "v2", new_classes: ["StreamHubDO"] },
+      { tag: "v3", new_classes: ["ChatSessionDO"] }
+    ]);
+    expect(out).toEqual({
+      new_tag: "v3",
+      new_classes: ["StreamHubDO", "ChatSessionDO"],
+      new_sqlite_classes: ["AgentSessionDO"]
+    });
+  });
+
+  it("returns undefined for empty / missing input", () => {
+    expect(flattenMigrationsForCfApi(undefined)).toBeUndefined();
+    expect(flattenMigrationsForCfApi([])).toBeUndefined();
+  });
+
+  it("passes through if already in object shape", () => {
+    const obj = { new_tag: "v2", new_classes: ["X"] };
+    expect(flattenMigrationsForCfApi(obj)).toEqual(obj);
+  });
+
+  it("ignores migrations with no class fields (just a tag)", () => {
+    const out = flattenMigrationsForCfApi([
+      { tag: "v1" },
+      { tag: "v2", new_classes: ["X"] }
+    ]);
+    expect(out).toEqual({ new_tag: "v2", new_classes: ["X"] });
+  });
+});
+
+describe("cfApi.findD1DatabaseByName", () => {
+  it("hits the right URL with name query", async () => {
+    let capturedUrl = "";
+    const f = fakeFetch((url) => {
+      capturedUrl = url;
+      return new Response(
+        JSON.stringify({
+          success: true,
+          result: [{ uuid: "abc-123", name: "helm-pa" }]
+        }),
+        { status: 200 }
+      );
+    });
+    const r = await findD1DatabaseByName("t", "acc-1", "helm-pa", { fetchImpl: f });
+    expect(capturedUrl).toContain("/accounts/acc-1/d1/database");
+    expect(capturedUrl).toContain("name=helm-pa");
+    expect(r.success).toBe(true);
+    expect(r.result?.[0]?.uuid).toBe("abc-123");
+  });
+});
+
+describe("cfApi.ensureD1Database (idempotent create)", () => {
+  it("returns the new uuid when create succeeds first try", async () => {
+    let calls = 0;
+    const f = fakeFetch(() => {
+      calls++;
+      return new Response(
+        JSON.stringify({ success: true, result: { uuid: "new-uuid", name: "helm-pa" } }),
+        { status: 200 }
+      );
+    });
+    const r = await ensureD1Database("t", "acc-1", "helm-pa", { fetchImpl: f });
+    expect(r.success).toBe(true);
+    expect(r.result?.uuid).toBe("new-uuid");
+    expect(r.reused).toBeUndefined();
+    expect(calls).toBe(1); // only the create call, no fallback list
+  });
+
+  it("falls back to list-by-name when create says 'already exists'", async () => {
+    let calls = 0;
+    const f = fakeFetch((url, init) => {
+      calls++;
+      if (init.method === "POST") {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            errors: [{ code: 7501, message: "A database with that name already exists" }]
+          }),
+          { status: 400 }
+        );
+      }
+      // GET fallback — return the existing database
+      return new Response(
+        JSON.stringify({
+          success: true,
+          result: [{ uuid: "existing-uuid", name: "helm-pa" }]
+        }),
+        { status: 200 }
+      );
+    });
+    const r = await ensureD1Database("t", "acc-1", "helm-pa", { fetchImpl: f });
+    expect(r.success).toBe(true);
+    expect(r.result?.uuid).toBe("existing-uuid");
+    expect(r.reused).toBe(true);
+    expect(calls).toBe(2); // create + list
+  });
+
+  it("surfaces the original error when create fails for a non-name-collision reason", async () => {
+    const f = fakeFetch(() =>
+      new Response(
+        JSON.stringify({
+          success: false,
+          errors: [{ code: 9109, message: "Authentication error" }]
+        }),
+        { status: 403 }
+      )
+    );
+    const r = await ensureD1Database("t", "acc-1", "helm-pa", { fetchImpl: f });
+    expect(r.success).toBe(false);
+    expect(r.errors?.[0]?.message).toMatch(/Authentication error/);
+  });
+
+  it("returns original create error if list-by-name finds nothing", async () => {
+    const f = fakeFetch((_url, init) => {
+      if (init.method === "POST") {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            errors: [{ code: 7501, message: "name already exists" }]
+          }),
+          { status: 400 }
+        );
+      }
+      return new Response(JSON.stringify({ success: true, result: [] }), { status: 200 });
+    });
+    const r = await ensureD1Database("t", "acc-1", "helm-pa", { fetchImpl: f });
+    expect(r.success).toBe(false);
+    expect(r.errors?.[0]?.message).toMatch(/already exists/);
   });
 });

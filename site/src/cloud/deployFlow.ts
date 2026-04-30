@@ -21,7 +21,8 @@
 import {
   createAccessApp,
   createAccessPolicy,
-  createD1Database,
+  ensureD1Database,
+  flattenMigrationsForCfApi,
   getAccessOrganization,
   listAccounts,
   putWorkerSecret,
@@ -144,7 +145,10 @@ export async function runDeploy(
   let d1Name: string | undefined;
   if (req.enableD1) {
     const dbName = `${name}-pa`.toLowerCase().replace(/[^a-z0-9-]/g, "-").slice(0, 32);
-    const d1 = await createD1Database(req.token, acc, dbName, options);
+    // ensureD1Database is idempotent: on "already exists" it falls back to
+    // looking up the existing DB by name + returns its uuid. Lets users
+    // retry a partial deploy without manually deleting the D1 first.
+    const d1 = await ensureD1Database(req.token, acc, dbName, options);
     if (!d1.success) {
       const apiMsg = d1.errors?.[0]?.message ?? "unknown";
       const apiCode = d1.errors?.[0]?.code;
@@ -155,9 +159,13 @@ export async function runDeploy(
     }
     d1Id = d1.result?.uuid;
     d1Name = d1.result?.name;
-    steps.push(step("create-d1", true, `D1 \`${d1Name}\` created`, {
+    const summary = d1.reused
+      ? `D1 \`${d1Name}\` already existed · reusing (uuid ${d1Id?.slice(0, 8)}…)`
+      : `D1 \`${d1Name}\` created`;
+    steps.push(step("create-d1", true, summary, {
       uuid: d1Id,
-      name: d1Name
+      name: d1Name,
+      reused: d1.reused === true
     }));
   }
 
@@ -199,7 +207,18 @@ export async function runDeploy(
       if (!app.success || !app.result?.aud) {
         const apiMsg = app.errors?.[0]?.message ?? "unknown";
         const apiCode = app.errors?.[0]?.code;
-        const recovery = explainCfError(apiMsg, apiCode, "Access: Apps and Policies:Edit", acc);
+        const isWorkersDev = name && /\.workers\.dev$/i.test(`${name}.workers.dev`);
+        const isDomainZoneError = /domain does not belong to zone/i.test(apiMsg);
+        const recovery = isDomainZoneError
+          ? [
+              `Cloudflare's API doesn't allow Self-hosted Access apps to be created against *.workers.dev URLs via this endpoint — the domain has to be on a zone in your account.`,
+              ``,
+              `Three paths forward:`,
+              `  1. Skip Access for now (recommended quick path): re-deploy with the "Create a Cloudflare Access app" checkbox UNCHECKED. Your Worker still runs — auth is in first-run permissive mode and the /app UI shows a yellow banner reminding you to lock it down later. The same workers.dev limit applies to the in-app wizard, so see (2) or (3) for actually locking down.`,
+              `  2. Add a custom domain to your Worker first (cleanest). Dash → Workers & Pages → ${name} → Settings → Triggers → "Add Custom Domain". Re-run this deploy form with that domain — Access app creation works against your zones.`,
+              `  3. Create the Access app manually in the dashboard. Zero Trust → Access → Applications → Add → Self-hosted → enter "${name}.workers.dev" as the application domain. The dashboard uses an internal mechanism that works on workers.dev where the public API doesn't.`
+            ].join("\n")
+          : explainCfError(apiMsg, apiCode, "Access: Apps and Policies:Edit", acc);
         steps.push(step("create-access-app", false, `Access app create failed · ${apiMsg}`, undefined,
           `${apiMsg}\n\n${recovery}`));
         // Continue without Access.
@@ -429,13 +448,20 @@ async function runDirectDeploy(input: DirectDeployInput): Promise<DirectDeployRe
   }
 
   // d. PUT the script.
-  const metadata = {
+  // Note: CF's Workers Scripts API expects metadata.migrations as a SINGLE
+  // migration object (the diff to apply), not the array our manifest carries
+  // verbatim from wrangler.toml. flattenMigrationsForCfApi collapses the
+  // historical [v1, v2, v3] into one {new_tag, new_classes, new_sqlite_classes}.
+  const metadata: Record<string, unknown> = {
     main_module: manifest.metadata.main_module,
     compatibility_date: manifest.metadata.compatibility_date,
     compatibility_flags: manifest.metadata.compatibility_flags,
-    bindings,
-    migrations: manifest.metadata.migrations
+    bindings
   };
+  const flatMigrations = flattenMigrationsForCfApi(
+    manifest.metadata.migrations as Array<Record<string, unknown>> | undefined
+  );
+  if (flatMigrations) metadata.migrations = flatMigrations;
 
   const upload = await uploadWorkerScript(
     input.token,

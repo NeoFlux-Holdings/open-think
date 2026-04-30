@@ -121,6 +121,18 @@ export function renderCloudDeploy(): string {
           <input id="cf-access" type="checkbox" checked />
           Create a Cloudflare Access app (recommended — gates /app on your email)
         </label>
+        <div id="cf-access-workersdev-warn" class="workersdev-warn" hidden>
+          <strong>⚠ Note:</strong> Cloudflare's API can't create a Self-hosted
+          Access app against <span class="mono">*.workers.dev</span> URLs (the domain has to be on a zone in
+          your account). We'd recommend leaving this <em>unchecked</em> for now —
+          your Worker still runs in first-run permissive mode. Three follow-up
+          options:
+          <ol>
+            <li>Add a custom domain to the Worker first (dash → Workers &amp; Pages → your worker → Settings → Triggers → Add Custom Domain), then redeploy with that domain.</li>
+            <li>Create the Access app manually in the dashboard (Zero Trust → Access → Applications → Add → Self-hosted) — it works there, just not via the public API.</li>
+            <li>Skip Access; your Worker stays in permissive mode (banner reminds you).</li>
+          </ol>
+        </div>
       </div>
       <div class="field">
         <label for="cf-owner">Owner email <span style="color: var(--muted); font-size: 12px;">— Access policy + PA notifications</span></label>
@@ -240,6 +252,17 @@ export function renderCloudDeploy(): string {
 .cloud-steps li.ok::marker { color: var(--ok, #2d5c3e); }
 .cloud-steps li.fail::marker { color: var(--accent); }
 .cloud-steps li small { color: var(--muted); display: block; }
+.workersdev-warn {
+  margin-top: 8px;
+  padding: 12px 14px;
+  background: rgba(243, 128, 32, 0.05);
+  border-left: 2px solid var(--accent);
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--ink);
+}
+.workersdev-warn ol { margin: 8px 0 0 0; padding-left: 20px; }
+.workersdev-warn li { padding: 2px 0; }
 .cloud-steps li .step-error {
   display: block;
   white-space: pre-wrap;
@@ -351,6 +374,20 @@ export function renderCloudDeploy(): string {
       /* ignore */
     }
   })();
+
+  // Surface the workers.dev Access constraint upfront. Always show the
+  // warning when the Access checkbox is checked — the deploy form always
+  // creates a *.workers.dev Worker (custom domains are post-deploy work).
+  const accessCheckbox = $('#cf-access');
+  const workersDevWarn = $('#cf-access-workersdev-warn');
+  function refreshWorkersDevWarn() {
+    if (accessCheckbox.checked) workersDevWarn.removeAttribute('hidden');
+    else workersDevWarn.setAttribute('hidden', '');
+  }
+  if (accessCheckbox && workersDevWarn) {
+    accessCheckbox.addEventListener('change', refreshWorkersDevWarn);
+    refreshWorkersDevWarn();
+  }
 
   verifyBtn.addEventListener('click', async () => {
     const token = tokenInput.value.trim();

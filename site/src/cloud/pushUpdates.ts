@@ -18,7 +18,7 @@
  * outside this Worker's memory for the duration of the push.
  */
 
-import { getWorkerSettings, uploadWorkerScript } from "./cfApi";
+import { flattenMigrationsForCfApi, getWorkerSettings, uploadWorkerScript } from "./cfApi";
 import { decryptCfToken } from "./crypto";
 import {
   listActiveDeployments,
@@ -281,10 +281,22 @@ async function pushOne(input: PushOneInput): Promise<void> {
     );
   }
 
-  const metadata = {
+  // Flatten the manifest's migrations array (wrangler.toml-shape) into the
+  // single-object shape CF's Workers Scripts API expects. Without this,
+  // upload fails with "json: cannot unmarshal array into Go struct field
+  // Metadata.migrations of type reader.ActorMigrations".
+  const flatMigrations = flattenMigrationsForCfApi(
+    manifest.metadata.migrations as Array<Record<string, unknown>> | undefined
+  );
+  const metadata: Record<string, unknown> = {
     ...manifest.metadata,
     bindings: mergedBindings
   };
+  if (flatMigrations) {
+    metadata.migrations = flatMigrations;
+  } else {
+    delete (metadata as { migrations?: unknown }).migrations;
+  }
 
   // Upload to the customer's Worker.
   const result = await uploadWorkerScript(

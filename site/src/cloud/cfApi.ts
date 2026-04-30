@@ -125,6 +125,116 @@ export async function createD1Database(
   });
 }
 
+/**
+ * `GET /accounts/{id}/d1/database?name=<name>` — finds an existing D1 by
+ * name. Used by the deploy flow to recover the uuid when create returns
+ * "already exists" (e.g., a partial deploy that finished D1 but failed
+ * later, then the user retries).
+ */
+export async function findD1DatabaseByName(
+  token: string,
+  accountId: string,
+  databaseName: string,
+  options: FetchOptions = {}
+): Promise<CfApiResult<D1Database[]>> {
+  return call<D1Database[]>(
+    token,
+    `/accounts/${accountId}/d1/database?name=${encodeURIComponent(databaseName)}&per_page=50`,
+    { method: "GET", ...options }
+  );
+}
+
+/**
+ * Idempotent D1 creation: try to create, fall back to lookup-by-name if
+ * the name already exists. Returns a normalized `{ uuid, name }`.
+ *
+ * Why: deploys often partially succeed (D1 created, Worker upload fails),
+ * then the user retries. Without this, the retry's createD1Database call
+ * fails with "database name already taken" and the wizard can't recover.
+ */
+export async function ensureD1Database(
+  token: string,
+  accountId: string,
+  databaseName: string,
+  options: FetchOptions = {}
+): Promise<CfApiResult<D1Database> & { reused?: boolean }> {
+  const created = await createD1Database(token, accountId, databaseName, options);
+  if (created.success) return created;
+  // Look for "already exists" / 7501 / similar — if matched, recover the uuid.
+  const errorMsg = (created.errors?.[0]?.message ?? "").toLowerCase();
+  const errorCode = created.errors?.[0]?.code;
+  const looksLikeNameTaken =
+    errorMsg.includes("already") ||
+    errorMsg.includes("exists") ||
+    errorMsg.includes("name is taken") ||
+    errorCode === 7501 ||
+    errorCode === 7402; // CF "name already in use" range
+  if (!looksLikeNameTaken) return created;
+  // Try to find the existing one by name.
+  const found = await findD1DatabaseByName(token, accountId, databaseName, options);
+  if (found.success && found.result && found.result.length > 0) {
+    const existing = found.result.find((d) => d.name === databaseName) ?? found.result[0];
+    return { success: true, result: existing, reused: true };
+  }
+  // Couldn't recover; surface the original error.
+  return created;
+}
+
+/* ---------- Migration shape transformation ---------- */
+
+/**
+ * Cloudflare's Workers Scripts API accepts `metadata.migrations` as a
+ * SINGLE migration object describing the diff to apply, not as the array
+ * of historical migrations that wrangler.toml uses.
+ *
+ *   wrangler.toml + our manifest:
+ *     [
+ *       { tag: "v1", new_sqlite_classes: ["AgentSessionDO"] },
+ *       { tag: "v2", new_classes: ["StreamHubDO"] },
+ *       { tag: "v3", new_classes: ["ChatSessionDO"] }
+ *     ]
+ *
+ *   What CF API expects (for a fresh upload that needs all classes set up):
+ *     { new_tag: "v3", new_sqlite_classes: ["AgentSessionDO"], new_classes: ["StreamHubDO", "ChatSessionDO"] }
+ *
+ * For a script that's already on v3, sending this same object is a no-op
+ * (CF detects the tag matches). For first-time uploads, all classes get
+ * applied in one step. This is the same flattening wrangler does.
+ */
+export interface ApiMigration {
+  new_tag?: string;
+  old_tag?: string;
+  new_classes?: string[];
+  new_sqlite_classes?: string[];
+  deleted_classes?: string[];
+  renamed_classes?: Array<{ from: string; to: string }>;
+  transferred_classes?: Array<{ from: string; from_script: string; to: string }>;
+}
+
+export function flattenMigrationsForCfApi(
+  migrations: Array<Record<string, unknown>> | ApiMigration | undefined
+): ApiMigration | undefined {
+  if (!migrations) return undefined;
+  // If it's already an object (not an array), pass through — caller
+  // already gave us the API shape.
+  if (!Array.isArray(migrations)) return migrations;
+  if (migrations.length === 0) return undefined;
+
+  const newClasses: string[] = [];
+  const newSqliteClasses: string[] = [];
+  let latestTag: string | undefined;
+  for (const m of migrations) {
+    if (Array.isArray(m.new_classes)) newClasses.push(...(m.new_classes as string[]));
+    if (Array.isArray(m.new_sqlite_classes)) newSqliteClasses.push(...(m.new_sqlite_classes as string[]));
+    if (typeof m.tag === "string") latestTag = m.tag;
+  }
+  const out: ApiMigration = {};
+  if (latestTag) out.new_tag = latestTag;
+  if (newClasses.length > 0) out.new_classes = newClasses;
+  if (newSqliteClasses.length > 0) out.new_sqlite_classes = newSqliteClasses;
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 /* ---------- Cloudflare Access ---------- */
 
 export interface AccessApp {
