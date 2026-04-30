@@ -1,4 +1,5 @@
 import type { AgentRuntime } from "./core/runtime";
+import type { RuntimeIntrospection } from "./core/plugin";
 import type { SkillManager } from "./core/skills";
 import type { Env } from "./types";
 import { AppError } from "./core/errors";
@@ -44,7 +45,7 @@ function hasAnyFlag(env: Env, ...names: Array<keyof Env>): boolean {
   return names.some((n) => Boolean(env[n]));
 }
 
-export function collectStatus(env: Env, runtime: AgentRuntime): SetupStatus {
+export function collectStatus(env: Env, runtime: RuntimeIntrospection | AgentRuntime): SetupStatus {
   const enabled = new Set(runtime.listPlugins().map((p) => p.id));
   const checks: CapabilityCheck[] = [
     {

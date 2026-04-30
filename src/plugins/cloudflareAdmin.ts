@@ -318,6 +318,138 @@ export class CloudflareAdminPlugin implements AgentPlugin {
           return r.ok ? { ok: true, data: { name: secretName, scriptName } } : { ok: false, error: r.errors?.[0]?.message ?? "put-secret failed" };
         }
 
+        case "list-bindings": {
+          const acc = pickAccountId(this.ctx.env, input);
+          const scriptName = String(asObj(input).scriptName ?? "");
+          if (!acc) return { ok: false, error: "accountId required" };
+          if (!scriptName) return { ok: false, error: "input.scriptName required (e.g. \"helm\")" };
+          const r = await this.call<{ bindings?: Array<Record<string, unknown>> }>(
+            "GET",
+            `/accounts/${encodeURIComponent(acc)}/workers/scripts/${encodeURIComponent(scriptName)}/settings`
+          );
+          if (!r.ok) {
+            return { ok: false, error: r.errors?.[0]?.message ?? "list-bindings failed" };
+          }
+          // Bindings are typed objects: r2_bucket, d1, kv_namespace, ai,
+          // durable_object_namespace, plain_text, secret_text, etc. Return
+          // them as-is so the agent can introspect what's already wired.
+          return { ok: true, data: { bindings: r.data?.bindings ?? [] } };
+        }
+
+        case "list-secrets": {
+          const acc = pickAccountId(this.ctx.env, input);
+          const scriptName = String(asObj(input).scriptName ?? "");
+          if (!acc) return { ok: false, error: "accountId required" };
+          if (!scriptName) return { ok: false, error: "input.scriptName required" };
+          // CF returns secret NAMES only — values are write-only by design.
+          // This is exactly what we want: the agent can see which secrets
+          // are set without us leaking the values.
+          const r = await this.call<Array<{ name: string; type: string }>>(
+            "GET",
+            `/accounts/${encodeURIComponent(acc)}/workers/scripts/${encodeURIComponent(scriptName)}/secrets`
+          );
+          return r.ok
+            ? { ok: true, data: { secrets: r.data ?? [] } }
+            : { ok: false, error: r.errors?.[0]?.message ?? "list-secrets failed" };
+        }
+
+        case "patch-binding": {
+          // Generic "add a binding to the deployed Worker" surface.
+          // Fetches current settings, merges in the new binding (replacing
+          // any same-name entry of the same type), PATCHes back. This is
+          // what powers /setup/r2/bind and the more general "wire D1 / KV /
+          // AI / Workers AI / Queue / Hyperdrive without editing
+          // wrangler.toml" flow.
+          //
+          // Caveats surfaced in `data.warning`:
+          //   - The user's local wrangler.toml STILL doesn't have this
+          //     binding. Their next `wrangler deploy` will REMOVE it.
+          //     Always include the TOML snippet they should paste.
+          const acc = pickAccountId(this.ctx.env, input);
+          const o = asObj(input);
+          const scriptName = String(o.scriptName ?? "");
+          const type = String(o.type ?? "");
+          const name = String(o.name ?? "");
+          const config = (o.config && typeof o.config === "object")
+            ? (o.config as Record<string, unknown>)
+            : {};
+          if (!acc) return { ok: false, error: "accountId required" };
+          if (!scriptName) return { ok: false, error: "input.scriptName required (e.g. \"helm\")" };
+          if (!type || !name) {
+            return {
+              ok: false,
+              error:
+                "input.type + input.name required. type ∈ {r2_bucket, d1, kv_namespace, ai, queue, hyperdrive, plain_text, durable_object_namespace}; name = binding name (e.g. WORKSPACE)."
+            };
+          }
+          // 1. Fetch current bindings.
+          const get = await this.call<{ bindings?: Array<Record<string, unknown>> }>(
+            "GET",
+            `/accounts/${encodeURIComponent(acc)}/workers/scripts/${encodeURIComponent(scriptName)}/settings`
+          );
+          if (!get.ok) {
+            return { ok: false, error: get.errors?.[0]?.message ?? `fetch settings failed (${get.status})` };
+          }
+          const existing = get.data?.bindings ?? [];
+          // Replace any same-name+same-type entry; otherwise append.
+          const filtered = existing.filter(
+            (b) => !(b.type === type && b.name === name)
+          );
+          filtered.push({ type, name, ...config });
+          // 2. PATCH settings with the merged bindings array (multipart).
+          const url = `${CF_API_BASE}/accounts/${encodeURIComponent(acc)}/workers/scripts/${encodeURIComponent(scriptName)}/settings`;
+          const body = [
+            "--BOUNDARY",
+            'Content-Disposition: form-data; name="settings"',
+            "Content-Type: application/json",
+            "",
+            JSON.stringify({ bindings: filtered }),
+            "--BOUNDARY--",
+            ""
+          ].join("\r\n");
+          const patch = await this.ctx.fetch(url, {
+            method: "PATCH",
+            headers: {
+              Authorization: `Bearer ${this.resolveToken()}`,
+              "content-type": "multipart/form-data; boundary=BOUNDARY"
+            },
+            body
+          });
+          if (!patch.ok) {
+            const text = await patch.text();
+            return {
+              ok: false,
+              error: `patch-binding failed (${patch.status}): ${text.slice(0, 300)}`
+            };
+          }
+          // Suggest the matching wrangler.toml snippet so the user's
+          // next local deploy doesn't drop the binding.
+          let tomlSnippet = "";
+          if (type === "r2_bucket") {
+            tomlSnippet = `[[r2_buckets]]\nbinding = "${name}"\nbucket_name = "${config.bucket_name ?? "<bucket-name>"}"`;
+          } else if (type === "d1") {
+            tomlSnippet = `[[d1_databases]]\nbinding = "${name}"\ndatabase_name = "${config.database_name ?? "<db-name>"}"\ndatabase_id = "${config.database_id ?? "<uuid>"}"`;
+          } else if (type === "kv_namespace") {
+            tomlSnippet = `[[kv_namespaces]]\nbinding = "${name}"\nid = "${config.namespace_id ?? "<namespace-id>"}"`;
+          } else if (type === "ai") {
+            tomlSnippet = `[ai]\nbinding = "${name}"`;
+          } else if (type === "queue") {
+            tomlSnippet = `[[queues.producers]]\nbinding = "${name}"\nqueue = "${config.queue_name ?? "<queue-name>"}"`;
+          }
+          return {
+            ok: true,
+            data: {
+              type,
+              name,
+              scriptName,
+              bindingsCount: filtered.length,
+              tomlSnippet,
+              warning:
+                "Live Worker is updated, but your local wrangler.toml is not. Next `wrangler deploy` will REMOVE this binding unless you also paste the snippet above into wrangler.toml."
+            }
+          };
+        }
+
         case "list-access-apps": {
           const acc = pickAccountId(this.ctx.env, input);
           if (!acc) return { ok: false, error: "accountId required" };

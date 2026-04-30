@@ -333,6 +333,64 @@ const SKILL_CATALOG: SkillDefinition[] = [
     }
   },
   {
+    id: "cf-list-bindings",
+    name: "CF List Worker Bindings",
+    description:
+      "List the live Worker's bindings (R2, D1, KV, AI, DOs, secrets, etc.). USE THIS BEFORE proposing cf-patch-binding so you don't duplicate work — the binding may already be there.",
+    pluginId: "cloudflare-admin",
+    action: "list-bindings",
+    tags: ["cloudflare", "admin", "introspect"],
+    inputSchema: {
+      type: "object",
+      properties: {
+        accountId: { type: "string" },
+        scriptName: { type: "string", description: "Worker script name (default: \"helm\")" }
+      },
+      required: ["scriptName"]
+    }
+  },
+  {
+    id: "cf-list-secrets",
+    name: "CF List Worker Secrets",
+    description:
+      "List the live Worker's secret NAMES (values are write-only by design, never returned). USE THIS to see what's already configured before proposing cf-put-secret.",
+    pluginId: "cloudflare-admin",
+    action: "list-secrets",
+    tags: ["cloudflare", "admin", "introspect"],
+    inputSchema: {
+      type: "object",
+      properties: {
+        accountId: { type: "string" },
+        scriptName: { type: "string" }
+      },
+      required: ["scriptName"]
+    }
+  },
+  {
+    id: "cf-patch-binding",
+    name: "CF Patch Worker Binding",
+    description:
+      "Add or replace a binding on the LIVE Worker via CF API (no wrangler.toml edit needed). type ∈ {r2_bucket, d1, kv_namespace, ai, queue, hyperdrive}. ALSO returns the matching wrangler.toml snippet — surface it to the user verbatim, because the binding will be removed by their next `wrangler deploy` unless they commit the snippet too. DANGEROUS.",
+    pluginId: "cloudflare-admin",
+    action: "patch-binding",
+    tags: ["cloudflare", "admin", "binding", "create"],
+    dangerous: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        accountId: { type: "string" },
+        scriptName: { type: "string" },
+        type: { type: "string", enum: ["r2_bucket", "d1", "kv_namespace", "ai", "queue", "hyperdrive", "plain_text"] },
+        name: { type: "string", description: "Binding name (e.g. WORKSPACE, DB, AI)" },
+        config: {
+          type: "object",
+          description: "type-specific config: r2_bucket { bucket_name }; d1 { database_name, database_id }; kv_namespace { namespace_id }; ai {}; queue { queue_name }; hyperdrive { id }; plain_text { text }"
+        }
+      },
+      required: ["scriptName", "type", "name"]
+    }
+  },
+  {
     id: "cf-list-access-apps",
     name: "CF List Access Apps",
     description: "List Cloudflare Access applications.",
@@ -362,6 +420,61 @@ const SKILL_CATALOG: SkillDefinition[] = [
         sessionDuration: { type: "string", description: "e.g. 24h" }
       },
       required: ["name", "domain"]
+    }
+  },
+  /* ---- helm-setup: high-level setup wrappers ---- */
+  {
+    id: "helm-setup-status",
+    name: "Helm Setup Status",
+    description:
+      "Live capability matrix — for each runtime feature returns {enabled, configured, required, missing, hint, docs}. USE THIS as the FIRST step of any \"set me up\" turn so you propose the smallest set of changes.",
+    pluginId: "helm-setup",
+    action: "status",
+    tags: ["setup", "introspect"],
+    inputSchema: EMPTY_SCHEMA
+  },
+  {
+    id: "helm-setup-secrets-status",
+    name: "Helm Setup Secrets Status",
+    description:
+      "Secret-slot inventory: the canonical list of secrets the runtime knows about + whether each is currently set. Same data as /app#/settings → Manage secrets.",
+    pluginId: "helm-setup",
+    action: "secrets-status",
+    tags: ["setup", "introspect", "secrets"],
+    inputSchema: EMPTY_SCHEMA
+  },
+  {
+    id: "helm-setup-auto",
+    name: "Helm Setup Auto",
+    description:
+      "ONE-CALL full setup. Verifies CLOUDFLARE_API_TOKEN, picks an account, runs Cloudflare Access lockdown, mints HELM_INTERNAL_TOKEN, creates R2 bucket. Returns nextSteps[] showing what's done vs what's still manual (just the [[r2_buckets]] TOML edit). PREFER THIS over chaining individual cf-* skills when the user says \"set me up\". DANGEROUS.",
+    pluginId: "helm-setup",
+    action: "auto",
+    tags: ["setup", "auto", "create"],
+    dangerous: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        accountId: { type: "string" },
+        scriptName: { type: "string", description: "Worker name (default: env.AGENT_NAME or \"helm\")" },
+        appName: { type: "string", description: "Access app display name" },
+        allowedEmails: { type: "array", items: { type: "string" } }
+      }
+    }
+  },
+  {
+    id: "helm-docs",
+    name: "Helm Self-Docs",
+    description:
+      "Read curated documentation about Helm's own architecture. Topics: setup, topology, bindings, secrets, shell, skills, manual-steps. Pass {topic:\"<name>\"} to read one; pass {} to list topics. USE THIS when the user asks something where you'd otherwise say \"I don't know my own setup\" — you do, just call this.",
+    pluginId: "helm-setup",
+    action: "docs",
+    tags: ["setup", "docs", "self"],
+    inputSchema: {
+      type: "object",
+      properties: {
+        topic: { type: "string", description: "Topic name. Empty input lists available topics." }
+      }
     }
   },
   {

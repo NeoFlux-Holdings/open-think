@@ -28,7 +28,7 @@ MODEL_DEFAULT = "@cf/openai/gpt-oss-120b"
 # OPENROUTER_API_KEY at deploy time, the chat picks it up immediately
 # (auto-routes to the best model per prompt). admin + workers-ai give
 # zero-config baseline; openrouter is the strong default when keyed.
-ENABLED_PLUGINS = "admin,cloudflare-admin,workers-ai,openrouter"
+ENABLED_PLUGINS = "admin,helm-setup,cloudflare-admin,workers-ai,openrouter"
 # Outbound host allowlist enforced by the plugin bus. Defaults cover the
 # most common providers including OpenRouter; extend as you add plugins.
 ALLOWED_HOSTS = "api.cloudflare.com,mcp.cloudflare.com,api.anthropic.com,api.openai.com,openrouter.ai"

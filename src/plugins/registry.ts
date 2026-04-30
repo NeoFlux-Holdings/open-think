@@ -7,6 +7,7 @@ import { CalendarPlugin } from "./calendar";
 import { CfAiGatewayPlugin } from "./cfAiGateway";
 import { CloudflareAdminPlugin } from "./cloudflareAdmin";
 import { CloudflareApiMcpPlugin } from "./cloudflareApiMcp";
+import { HelmSetupPlugin } from "./helmSetup";
 import { CodexPlugin } from "./codex";
 import { EmailPlugin } from "./email";
 import { McpClientPlugin } from "./mcpClient";
@@ -21,6 +22,7 @@ import { WorkersAiPlugin } from "./workersAi";
 export function getPlugins(): AgentPlugin[] {
   return [
     new AdminPlugin(),
+    new HelmSetupPlugin(),
     new CloudflareAdminPlugin(),
     new CloudflareApiMcpPlugin(),
     new CfAiGatewayPlugin(),
