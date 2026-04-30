@@ -179,6 +179,51 @@ work, FUSE is the fallback when the proxy can't reach the bucket.
 > `dist`, `.cache`, `.next` to keep ops affordable. A typical
 > agent workspace costs **under $1/month** to keep persisted.
 
+## CLI auth (device-code flow)
+
+`npm run shell -- --host helm.your-domain.workers.dev` (with no other
+auth flags) does this on first run:
+
+1. POSTs `/cli-auth/start` — gets a 10-min device code + a short
+   user-code (e.g. `7XKM-Q3BD`)
+2. Prints both the verification URL and the user-code
+3. You open the URL in your browser. Cloudflare Access gates it, so
+   we know who you are. The page shows the user-code; you confirm it
+   matches what your CLI printed and click `Approve this CLI`
+4. CLI polls `/cli-auth/poll`, picks up a 30-day bearer
+5. Bearer is saved at `~/.config/open-think/auth-<host>.json` (mode `0600`)
+6. Subsequent runs use the cached bearer — no browser dance
+
+Other paths: pass `--service-token-id`/`--service-token-secret` for CI,
+or `--cf-access-jwt` for raw JWT injection. `--logout` drops the cached
+bearer; `--print-token` writes it to stdout (handy for `curl`).
+
+## Sessions panel
+
+`/app#/shell` → click `Sessions` to see every recent shell session in
+the registry: name, owner email, live/idle state, last seen.
+
+- **Attach** flips your localStorage to that session and reloads — useful
+  when you want to drop into a teammate's session (or one of your own
+  from a different device).
+- **Forget** removes the session from the registry. The container
+  itself sleeps on its own; this is just registry hygiene.
+- **Show everyone's sessions** unchecks the email filter. Anyone with
+  `/app` access can see everyone — tighten with `CF_ACCESS_ALLOWED_EMAILS`.
+
+## Manage secrets in the browser
+
+`/app#/settings` → **Manage secrets** lists every known Worker secret
+slot (auth + CF + providers + persistence + PA stack), shows whether
+each is configured, and lets you paste-and-save without `wrangler
+secret put`. Writes go through the CF API using your
+`CLOUDFLARE_API_TOKEN`. Names are bounded to a known allowlist (see
+`src/setup-secrets.ts`) — a stolen `/app` session can't set arbitrary
+env vars.
+
+After each save the Worker auto-redeploys (~15 seconds); the readiness
+panel updates automatically.
+
 ## In-shell `helm` REPL
 
 Once `HELM_INTERNAL_TOKEN` is set (auto-setup does this), the `helm`
@@ -256,17 +301,25 @@ the cost of a coffee. Heavy use (always-on `tail -f`) can climb fast —
 the `sleepAfter` setting in `ShellContainerDO` defaults to 15 min for
 this reason.
 
-## What's intentionally NOT automated
+## What's intentionally NOT automated (and what now is)
 
-These are kept manual on purpose:
+Status as of v0.10.0:
 
-1. **`[[r2_buckets]]` binding in `wrangler.toml`** — git-tracked file;
-   we won't silently rewrite it.
-2. **D1 / send_email / browser / sandbox bindings** — same reason. The
-   `Settings` tab tells you exactly what to paste.
-3. **`OPENROUTER_API_KEY`** — your money. Paste in `/app#/settings` →
-   "Manage secrets" or `wrangler secret put` it.
-4. **VAPID keys** — generated locally so the private key never touches
+| Was manual in v0.9.x | v0.10.0 status |
+|---|---|
+| `wrangler secret put` for every provider key | ✅ **Manage secrets** UI in `/app#/settings` |
+| Cached CLI bearer (had to paste JWT manually) | ✅ device-code login on first `npm run shell` |
+| "where's my container running" visibility | ✅ Sessions panel in `/app#/shell` |
+| Adding the R2 binding to wrangler.toml | ⚠️ "Patch live Worker" button (one-click on auto-setup success), but you still need to commit the `[[r2_buckets]]` block to wrangler.toml so the next `wrangler deploy` doesn't drop it |
+
+Remaining intentionally manual:
+
+1. **`[[r2_buckets]]` etc. bindings in `wrangler.toml`** — git-tracked
+   file; we won't silently rewrite it. The "Patch live Worker" button
+   updates the *deployed* Worker via CF API but the local `wrangler.toml`
+   stays in your control. Drift is surfaced in the success banner.
+2. **D1 / send_email / browser / sandbox bindings** — same reason.
+3. **VAPID keys** — generated locally so the private key never touches
    our infra (`npm run vapid:generate`).
 
 ## Where each setting lives

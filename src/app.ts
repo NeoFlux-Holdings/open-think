@@ -343,6 +343,71 @@ h1.section-title {
   .shell-bar { padding: 8px 10px; gap: 8px; }
   .shell-hint { display: none; }
 }
+/* Active-sessions registry table */
+.shell-sessions {
+  margin-top: 22px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--paper);
+  overflow: hidden;
+}
+.shell-sessions .panel-header { padding: 12px 16px; border-bottom: 1px solid var(--rule); }
+.shell-sessions-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.shell-sessions-table th { text-align: left; padding: 8px 16px; font-weight: 600; color: var(--muted); font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; border-bottom: 1px solid var(--rule); }
+.shell-sessions-table td { padding: 10px 16px; border-bottom: 1px solid var(--rule); vertical-align: middle; }
+.shell-sessions-table tr:last-child td { border-bottom: 0; }
+.shell-sessions-table .badge { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 999px; font-size: 11px; letter-spacing: 0.04em; font-family: 'JetBrains Mono', monospace; }
+.shell-sessions-table .badge.live { background: rgba(45, 140, 79, 0.12); color: #2d8c4f; border: 1px solid rgba(45, 140, 79, 0.25); }
+.shell-sessions-table .badge.idle { background: rgba(140, 140, 140, 0.08); color: var(--muted); border: 1px solid var(--rule); }
+.shell-sessions-table .ghost { font-size: 11px; padding: 3px 8px; border-radius: 4px; }
+.shell-sessions-actions { display: flex; align-items: center; gap: 14px; padding: 10px 16px; border-top: 1px solid var(--rule); background: rgba(0,0,0,0.02); font-size: 12px; }
+.shell-sessions-actions label { color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.shell-sessions-actions .spacer { flex: 1; }
+
+/* Secrets manager — grouped slots with paste-and-save UI */
+.secrets-card { padding: 22px 26px; border: 1px solid var(--rule); border-radius: 8px; }
+.secrets-group { margin-bottom: 26px; }
+.secrets-group:last-child { margin-bottom: 0; }
+.secrets-group-title {
+  font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--muted); margin-bottom: 12px; padding-bottom: 6px;
+  border-bottom: 1px solid var(--rule);
+}
+.secrets-grid { display: flex; flex-direction: column; gap: 14px; }
+.secret-row { padding: 12px 14px; border: 1px solid var(--rule); border-radius: 6px; background: var(--paper); }
+.secret-row.is-set { border-left: 3px solid #2d8c4f; }
+.secret-name { font-size: 13px; color: var(--ink); margin-bottom: 4px; display: flex; align-items: center; gap: 8px; }
+.secret-name .secret-state {
+  font-size: 10px; padding: 1px 6px; border-radius: 999px;
+  background: rgba(140,140,140,0.08); color: var(--muted);
+  border: 1px solid var(--rule);
+}
+.secret-row.is-set .secret-name .secret-state { background: rgba(45,140,79,0.12); color: #2d8c4f; border-color: rgba(45,140,79,0.25); }
+.secret-hint { font-size: 12px; color: var(--muted); margin-bottom: 10px; line-height: 1.5; }
+.secret-hint a { color: var(--accent); text-decoration: none; }
+.secret-hint a:hover { text-decoration: underline; }
+.secret-input-row { display: flex; gap: 8px; align-items: stretch; }
+.secret-input { flex: 1; font-family: 'JetBrains Mono', monospace; font-size: 12px; padding: 6px 10px; border: 1px solid var(--rule); border-radius: 4px; background: var(--paper); color: var(--ink); }
+.secret-input:focus { outline: none; border-color: var(--accent); }
+.secret-save, .secret-delete { font-size: 12px; padding: 6px 12px; border-radius: 4px; }
+.secret-delete { color: #c0392b; border-color: rgba(192,57,43,0.3); }
+
+/* CLI device-code approve page */
+.cli-auth-card { padding: 32px; border: 1px solid var(--rule); border-radius: 8px; max-width: 580px; margin: 0 auto; }
+.cli-auth-loading { color: var(--muted); text-align: center; padding: 24px 0; }
+.cli-auth-error { color: #c0392b; padding: 16px; border: 1px solid rgba(192,57,43,0.3); border-radius: 4px; background: rgba(192,57,43,0.06); }
+.cli-auth-success { color: #2d8c4f; padding: 16px; border: 1px solid rgba(45,140,79,0.3); border-radius: 4px; background: rgba(45,140,79,0.06); }
+.cli-auth-summary { display: flex; flex-direction: column; gap: 16px; }
+.cli-auth-code {
+  font-size: 32px; letter-spacing: 0.12em; font-weight: 600;
+  text-align: center; padding: 18px;
+  background: var(--paper); border: 2px dashed var(--accent);
+  border-radius: 4px; color: var(--ink);
+}
+.cli-auth-meta { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
+.cli-auth-meta strong { color: var(--ink); margin-right: 8px; }
+.cli-auth-warn { font-size: 13px; color: var(--muted); padding: 12px; background: rgba(240,198,116,0.08); border-left: 3px solid var(--accent); border-radius: 0 4px 4px 0; line-height: 1.5; }
+.cli-auth-actions { display: flex; gap: 10px; align-items: center; }
 
 .conductor-meta { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .meta-session {
@@ -1490,6 +1555,21 @@ input[type="text"]:focus, select:focus, textarea:focus { border-bottom-color: va
   </section>
 </template>
 
+<template id="tpl-cli-auth">
+  <section class="reveal d1">
+    <div class="section-ref">§13.0 · CLI auth</div>
+    <h1 class="section-title">Approve a device.</h1>
+    <p class="lede">Your CLI started a login flow. Verify the code matches what your terminal shows, then approve.</p>
+  </section>
+  <section class="reveal d2">
+    <div class="cli-auth-card">
+      <div id="cli-auth-content">
+        <div class="cli-auth-loading mono">looking up device code<span class="load-dot"></span></div>
+      </div>
+    </div>
+  </section>
+</template>
+
 <template id="tpl-shell">
   <section class="reveal d1">
     <div class="section-ref">§11.0 · Shell</div>
@@ -1504,10 +1584,27 @@ input[type="text"]:focus, select:focus, textarea:focus { border-bottom-color: va
         <span class="spacer"></span>
         <button class="ghost" id="shell-reconnect" type="button">Reconnect</button>
         <button class="ghost" id="shell-clear" type="button">Clear</button>
+        <button class="ghost" id="shell-sessions-toggle" type="button">Sessions</button>
       </div>
       <div id="shell-mount" class="shell-mount" tabindex="0" aria-label="terminal"></div>
       <div class="shell-foot">
         <span class="mono shell-hint">Tip: ⌘K clears, ⌘⇧V pastes, Ctrl-C kills the foreground process. Container sleeps after 15 min idle.</span>
+      </div>
+    </div>
+    <div id="shell-sessions" class="shell-sessions" hidden>
+      <div class="panel-header">
+        <span class="h display">Active sessions</span>
+        <span class="meta" id="shell-sessions-count">—</span>
+      </div>
+      <table class="shell-sessions-table">
+        <thead>
+          <tr><th style="width: 28%">session</th><th style="width: 22%">user</th><th style="width: 14%">live</th><th style="width: 22%">last seen</th><th style="width: 14%"></th></tr>
+        </thead>
+        <tbody id="shell-sessions-body"><tr><td colspan="5" class="mono">loading<span class="load-dot"></span></td></tr></tbody>
+      </table>
+      <div class="shell-sessions-actions">
+        <label class="mono"><input type="checkbox" id="shell-sessions-all"> Show everyone's sessions</label>
+        <button class="ghost" id="shell-sessions-refresh" type="button">Refresh</button>
       </div>
     </div>
   </section>
@@ -1769,6 +1866,21 @@ input[type="text"]:focus, select:focus, textarea:focus { border-bottom-color: va
     </div>
   </section>
 
+  <section class="reveal d3 secrets-card" id="secrets-card" style="margin-top: 36px;">
+    <div class="panel-header">
+      <span class="h display">Manage secrets</span>
+      <span class="meta" id="secrets-status">—</span>
+    </div>
+    <p style="font-size: 14px; color: var(--muted); margin-bottom: 18px; max-width: 64ch;">
+      Set / rotate / clear Worker secrets without touching <span class="mono">wrangler secret put</span>.
+      Writes go through the Cloudflare API using your <span class="mono">CLOUDFLARE_API_TOKEN</span>.
+      The Worker auto-redeploys ~15s after each change. Names are bounded to a known allowlist —
+      we don't let arbitrary env vars get set from this UI.
+    </p>
+    <div id="secrets-groups"></div>
+    <div id="secrets-error" class="lockdown-error" hidden></div>
+  </section>
+
   <section class="reveal d3" style="margin-top: 36px;">
     <div class="panel-header">
       <span class="h display">Guided setup</span>
@@ -1915,12 +2027,21 @@ const routes = {
   '/sessions': renderSessions,
   '/providers': renderProviders,
   '/settings': renderSettings,
-  '/debug': renderDebug
+  '/debug': renderDebug,
+  '/cli-auth': renderCliAuth
 };
 
 function currentRoute() {
-  const raw = location.hash.replace(/^#/, '') || '/';
+  // Hash may contain a query string (e.g. "#/cli-auth?code=ABCD-1234") —
+  // strip everything from "?" onward when matching the route table.
+  const raw = location.hash.replace(/^#/, '').split('?')[0] || '/';
   return routes[raw] ? raw : '/';
+}
+function currentRouteQuery() {
+  const hash = location.hash.replace(/^#/, '');
+  const idx = hash.indexOf('?');
+  if (idx < 0) return new URLSearchParams();
+  return new URLSearchParams(hash.slice(idx + 1));
 }
 
 async function route() {
@@ -1995,6 +2116,93 @@ function renderConductor() {
   const tpl = $('#tpl-conductor').content.cloneNode(true);
   $('#view').appendChild(tpl);
   mountConductor($('#conductor-full'), false);
+}
+
+/* ---------------- cli-auth (device-code approval) ---------------- */
+async function renderCliAuth() {
+  const tpl = $('#tpl-cli-auth').content.cloneNode(true);
+  $('#view').appendChild(tpl);
+  const container = $('#cli-auth-content');
+  const code = currentRouteQuery().get('code') || '';
+  if (!code) {
+    container.innerHTML = '<div class="cli-auth-error mono">No code in URL. Your CLI should have opened this page with <span class="mono">?code=XXXX-YYYY</span>.</div>';
+    return;
+  }
+  // Lookup device record so we can show metadata.
+  let lookup = null;
+  try {
+    const r = await j('/cli-auth/lookup?code=' + encodeURIComponent(code));
+    lookup = r.data?.data ?? r.data ?? null;
+  } catch (err) {
+    container.innerHTML = '<div class="cli-auth-error mono">Failed to look up code: ' + escapeHtml(String(err.message || err)) + '</div>';
+    return;
+  }
+  if (!lookup || lookup.status === 'expired') {
+    container.innerHTML = '<div class="cli-auth-error mono">This code has expired. Re-run your CLI to start a fresh flow.</div>';
+    return;
+  }
+  if (lookup.status === 'denied') {
+    container.innerHTML = '<div class="cli-auth-error mono">This code was already denied.</div>';
+    return;
+  }
+  if (lookup.status === 'approved') {
+    container.innerHTML = '<div class="cli-auth-success mono">This code was already approved. Your CLI should have it now.</div>';
+    return;
+  }
+  const expiresAt = new Date(lookup.expiresAt).toLocaleTimeString();
+  container.innerHTML =
+    '<div class="cli-auth-summary">' +
+    '  <div class="cli-auth-code mono">' + escapeHtml(lookup.userCode) + '</div>' +
+    '  <div class="cli-auth-meta">' +
+    '    <div><strong>App:</strong> <span class="mono">' + escapeHtml(lookup.appName || 'open-think') + '</span></div>' +
+    '    <div><strong>CLI signature:</strong> <span class="mono">' + escapeHtml(lookup.cliInfo || '(none provided)') + '</span></div>' +
+    '    <div><strong>Code expires:</strong> <span class="mono">' + escapeHtml(expiresAt) + '</span></div>' +
+    '  </div>' +
+    '  <p class="cli-auth-warn">' +
+    '    Approving will mint a 30-day bearer for this CLI. The bearer authenticates as <em>your</em> email. ' +
+    '    Only approve if the code above matches what your CLI printed.' +
+    '  </p>' +
+    '  <div class="cli-auth-actions">' +
+    '    <button id="cli-approve" class="lockdown-btn lockdown-btn-primary"><span class="lockdown-btn-text">Approve this CLI</span><span class="lockdown-btn-arrow">→</span></button>' +
+    '    <button id="cli-deny" class="ghost">Deny</button>' +
+    '  </div>' +
+    '  <div id="cli-auth-result" class="mono" style="margin-top: 14px; font-size: 12px;"></div>' +
+    '</div>';
+  $('#cli-approve').addEventListener('click', async () => {
+    const btn = $('#cli-approve');
+    const out = $('#cli-auth-result');
+    btn.disabled = true;
+    btn.querySelector('.lockdown-btn-text').textContent = 'Approving…';
+    try {
+      const r = await j('/cli-auth/approve', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ userCode: lookup.userCode })
+      });
+      const d = r.data?.data ?? r.data ?? r;
+      if (d?.status === 'approved') {
+        out.innerHTML = '<span style="color: #2d8c4f;">✓ Approved. Return to your terminal — the CLI should pick up the token within 2–4 seconds.</span>';
+        btn.querySelector('.lockdown-btn-text').textContent = 'Approved ✓';
+      } else {
+        out.innerHTML = '<span style="color: #c0392b;">' + escapeHtml(d?.error || 'unexpected response') + '</span>';
+        btn.querySelector('.lockdown-btn-text').textContent = 'Approve this CLI';
+        btn.disabled = false;
+      }
+    } catch (err) {
+      out.innerHTML = '<span style="color: #c0392b;">' + escapeHtml(String(err.message || err)) + '</span>';
+      btn.querySelector('.lockdown-btn-text').textContent = 'Approve this CLI';
+      btn.disabled = false;
+    }
+  });
+  $('#cli-deny').addEventListener('click', async () => {
+    if (!confirm('Deny this CLI login?')) return;
+    await j('/cli-auth/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ userCode: lookup.userCode, deny: true })
+    });
+    $('#cli-auth-result').innerHTML = '<span style="color: var(--muted);">Denied. Your CLI will see "denied" on its next poll.</span>';
+  });
 }
 
 /* ---------------- shell ---------------- */
@@ -2220,6 +2428,82 @@ async function mountShell() {
     clearTimeout(reconnectTimer);
     setTimeout(() => { manuallyClosed = false; connect(); }, 100);
   });
+
+  // Sessions panel — toggles on, fetches /shell/list, renders rows.
+  const sessionsCard = $('#shell-sessions');
+  const sessionsBody = $('#shell-sessions-body');
+  const sessionsCount = $('#shell-sessions-count');
+  const sessionsAll = $('#shell-sessions-all');
+  let sessionsVisible = false;
+  function fmtRelative(ts) {
+    if (!ts) return '—';
+    const ms = Date.now() - ts;
+    const s = Math.floor(ms / 1000);
+    if (s < 60) return s + 's ago';
+    const m = Math.floor(s / 60);
+    if (m < 60) return m + 'm ago';
+    const h = Math.floor(m / 60);
+    if (h < 24) return h + 'h ago';
+    return Math.floor(h / 24) + 'd ago';
+  }
+  async function loadSessions() {
+    sessionsBody.innerHTML = '<tr><td colspan="5" class="mono">loading<span class="load-dot"></span></td></tr>';
+    try {
+      const qs = sessionsAll.checked ? '?all=1' : '';
+      const r = await j('/shell/list' + qs);
+      const list = (r.data?.sessions ?? r.sessions ?? []);
+      sessionsCount.textContent = list.length === 0 ? 'no sessions' : list.length + ' session' + (list.length === 1 ? '' : 's');
+      if (list.length === 0) {
+        sessionsBody.innerHTML = '<tr><td colspan="5" class="mono muted">no recent sessions yet — connect once to populate.</td></tr>';
+        return;
+      }
+      sessionsBody.innerHTML = list.map((s) => {
+        const live = (s.connections > 0)
+          ? '<span class="badge live">live · ' + s.connections + '</span>'
+          : '<span class="badge idle">idle</span>';
+        return '<tr>' +
+          '<td class="mono">' + escapeHtml(s.session) + '</td>' +
+          '<td class="mono muted">' + escapeHtml(s.email || 'anon') + '</td>' +
+          '<td>' + live + '</td>' +
+          '<td class="mono muted">' + fmtRelative(s.lastSeen) + '</td>' +
+          '<td><button class="ghost session-attach" data-session="' + escapeHtml(s.session) + '">Attach</button> <button class="ghost session-forget" data-session="' + escapeHtml(s.session) + '">Forget</button></td>' +
+          '</tr>';
+      }).join('');
+      // Wire row buttons.
+      sessionsBody.querySelectorAll('.session-attach').forEach((b) => {
+        b.addEventListener('click', () => {
+          const name = b.dataset.session;
+          if (typeof localStorage !== 'undefined') localStorage.setItem('helm-shell-session', name);
+          location.reload();
+        });
+      });
+      sessionsBody.querySelectorAll('.session-forget').forEach((b) => {
+        b.addEventListener('click', async () => {
+          const name = b.dataset.session;
+          if (!confirm('Forget session "' + name + '" from the registry? The container itself sleeps on its own.')) return;
+          await j('/shell/forget', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ session: name })
+          });
+          loadSessions();
+        });
+      });
+    } catch (err) {
+      sessionsBody.innerHTML = '<tr><td colspan="5" class="mono muted">failed to load: ' + escapeHtml(String(err.message ?? err)) + '</td></tr>';
+    }
+  }
+  $('#shell-sessions-toggle').addEventListener('click', () => {
+    sessionsVisible = !sessionsVisible;
+    if (sessionsVisible) {
+      sessionsCard.removeAttribute('hidden');
+      loadSessions();
+    } else {
+      sessionsCard.setAttribute('hidden', '');
+    }
+  });
+  $('#shell-sessions-refresh').addEventListener('click', loadSessions);
+  sessionsAll.addEventListener('change', loadSessions);
 
   connect();
 
@@ -3140,6 +3424,126 @@ async function renderProviders() {
 }
 
 /* ---------------- settings ---------------- */
+
+/* ---------------- secrets manager ---------------- */
+async function mountSecretsManager() {
+  const card = document.getElementById('secrets-card');
+  if (!card) return;
+  const container = document.getElementById('secrets-groups');
+  const status = document.getElementById('secrets-status');
+  const errEl = document.getElementById('secrets-error');
+
+  function showError(msg) {
+    errEl.textContent = msg;
+    errEl.removeAttribute('hidden');
+    setTimeout(() => errEl.setAttribute('hidden', ''), 8000);
+  }
+
+  async function load() {
+    try {
+      const r = await j('/setup/secrets');
+      const slots = r.data?.data?.slots ?? [];
+      const configured = slots.filter((s) => s.configured).length;
+      status.textContent = configured + ' / ' + slots.length + ' configured';
+      // Group + render.
+      const groups = {
+        auth: { label: 'Auth + identity', slots: [] },
+        cf: { label: 'Cloudflare infra', slots: [] },
+        providers: { label: 'Model providers', slots: [] },
+        persistence: { label: 'Persistence + R2', slots: [] },
+        'pa-stack': { label: 'PA stack (memory, push, schedule)', slots: [] }
+      };
+      for (const s of slots) {
+        if (groups[s.group]) groups[s.group].slots.push(s);
+      }
+      container.innerHTML = '';
+      for (const key of Object.keys(groups)) {
+        const g = groups[key];
+        if (g.slots.length === 0) continue;
+        const block = document.createElement('div');
+        block.className = 'secrets-group';
+        block.innerHTML = '<div class="secrets-group-title mono">' + escapeHtml(g.label) + '</div>';
+        const grid = document.createElement('div');
+        grid.className = 'secrets-grid';
+        for (const s of g.slots) {
+          const row = document.createElement('div');
+          row.className = 'secret-row' + (s.configured ? ' is-set' : '');
+          const docs = s.docsUrl
+            ? ' · <a href="' + escapeHtml(s.docsUrl) + '" target="_blank" rel="noopener">where do I get this? ↗</a>'
+            : '';
+          const allowedHost = s.allowedHost
+            ? ' · adds <span class="mono">' + escapeHtml(s.allowedHost) + '</span> to ALLOWED_HOSTS'
+            : '';
+          row.innerHTML =
+            '<div class="secret-name mono">' + escapeHtml(s.name) +
+              ' <span class="secret-state">' + (s.configured ? 'set' : 'unset') + '</span></div>' +
+            '<div class="secret-hint">' + escapeHtml(s.hint) + allowedHost + docs + '</div>' +
+            '<div class="secret-input-row">' +
+              '<input type="' + (s.secret ? 'password' : 'text') + '" class="secret-input" data-name="' + escapeHtml(s.name) + '" placeholder="' + escapeHtml(s.placeholder || (s.configured ? '(currently set — paste new value to rotate)' : '')) + '" autocomplete="off" spellcheck="false">' +
+              '<button class="ghost secret-save" data-name="' + escapeHtml(s.name) + '">Save</button>' +
+              (s.deletable && s.configured ? '<button class="ghost secret-delete" data-name="' + escapeHtml(s.name) + '">Clear</button>' : '') +
+            '</div>';
+          grid.appendChild(row);
+        }
+        block.appendChild(grid);
+        container.appendChild(block);
+      }
+
+      // Wire save buttons.
+      container.querySelectorAll('.secret-save').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const name = btn.dataset.name;
+          const inp = container.querySelector('input[data-name="' + name + '"]');
+          const value = (inp.value || '').trim();
+          if (!value) { showError('paste a value first for ' + name); inp.focus(); return; }
+          btn.disabled = true;
+          const orig = btn.textContent;
+          btn.textContent = 'Saving…';
+          try {
+            const r = await j('/setup/secrets/' + encodeURIComponent(name), {
+              method: 'PUT',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ value })
+            });
+            if (r.data?.ok === false) {
+              showError(r.data?.error || 'failed');
+            } else {
+              btn.textContent = 'Saved ✓';
+              inp.value = '';
+              setTimeout(() => { btn.textContent = orig; btn.disabled = false; load(); }, 1500);
+              return;
+            }
+          } catch (e) {
+            showError(String(e.message || e));
+          }
+          btn.textContent = orig;
+          btn.disabled = false;
+        });
+      });
+      // Wire delete buttons.
+      container.querySelectorAll('.secret-delete').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const name = btn.dataset.name;
+          if (!confirm('Clear ' + name + '? The Worker will redeploy without this secret.')) return;
+          btn.disabled = true;
+          try {
+            await j('/setup/secrets/' + encodeURIComponent(name), { method: 'DELETE' });
+            load();
+          } catch (e) {
+            showError(String(e.message || e));
+            btn.disabled = false;
+          }
+        });
+      });
+    } catch (err) {
+      status.textContent = 'load failed';
+      showError(String(err.message || err));
+    }
+  }
+
+  load();
+}
+
 /* ---------------- lock-it-down wizard ---------------- */
 async function mountLockdownWizard() {
   const card = document.getElementById('lockdown-card');
@@ -3277,6 +3681,52 @@ async function mountLockdownWizard() {
           setStepState('verify-strict', okStrict ? 'is-done' : 'is-failed',
             okStrict ? null : 'still in progress — refresh in a moment');
           showSuccess(ld);
+          // If /setup/auto created a bucket but env.WORKSPACE binding
+          // isn't wired, offer a one-click "patch live Worker" button.
+          const r2Step = (data?.nextSteps || []).find((s) => /\\[\\[r2_buckets\\]\\]/.test(s.label));
+          const bucketName = data?.extras?.find((e) => e.kind === 'create-r2-bucket')?.detail?.match(/"([^"]+)"/)?.[1];
+          if (r2Step && !r2Step.done && bucketName) {
+            const successPanel = $('#lockdown-success');
+            const banner = document.createElement('div');
+            banner.className = 'lockdown-prefilled';
+            banner.style.marginTop = '18px';
+            banner.innerHTML =
+              '<div class="lockdown-prefilled-mark">⚡</div>' +
+              '<div class="lockdown-prefilled-text">' +
+              '  <strong>One last thing — wire R2 binding</strong>' +
+              '  <span>Bucket <span class="mono">' + escapeHtml(bucketName) + '</span> exists, but the live Worker has no <span class="mono">env.WORKSPACE</span> binding to it. Patch it now (overwritten on next <span class="mono">wrangler deploy</span> unless you also commit the [[r2_buckets]] block to wrangler.toml).</span>' +
+              '  <div style="margin-top: 12px; display: flex; gap: 10px; align-items: center;">' +
+              '    <button id="r2-patch-btn" class="lockdown-btn lockdown-btn-primary"><span class="lockdown-btn-text">Patch live Worker</span><span class="lockdown-btn-arrow">⚡</span></button>' +
+              '    <span class="mono" style="font-size: 11px; color: var(--muted);">or copy the snippet from the success panel</span>' +
+              '  </div>' +
+              '  <div id="r2-patch-result" class="mono" style="margin-top: 10px; font-size: 12px; color: var(--muted);"></div>' +
+              '</div>';
+            successPanel.appendChild(banner);
+            $('#r2-patch-btn').addEventListener('click', async () => {
+              const btn = $('#r2-patch-btn');
+              const out = $('#r2-patch-result');
+              btn.disabled = true;
+              btn.querySelector('.lockdown-btn-text').textContent = 'Patching…';
+              try {
+                const r = await j('/setup/r2/bind', {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({ bucketName })
+                });
+                const d = r.data?.data ?? r.data ?? r;
+                if (d?.ok === false) {
+                  out.innerHTML = '<span style="color: #c0392b;">' + escapeHtml(d.error || 'patch failed') + '</span>';
+                } else {
+                  out.innerHTML = '<span style="color: #2d8c4f;">✓ binding patched onto live Worker. Reload in ~10s.</span>';
+                  btn.querySelector('.lockdown-btn-text').textContent = 'Patched ✓';
+                }
+              } catch (err) {
+                out.innerHTML = '<span style="color: #c0392b;">' + escapeHtml(String(err.message || err)) + '</span>';
+                btn.querySelector('.lockdown-btn-text').textContent = 'Patch live Worker';
+                btn.disabled = false;
+              }
+            });
+          }
         } catch (err) {
           showFailure(
             'auto-setup failed',
@@ -3588,6 +4038,9 @@ async function renderSettings() {
   // creating a Cloudflare Access app + policy + persisting CF_ACCESS_*
   // secrets, all from a single token paste.
   await mountLockdownWizard();
+
+  // ---- Secrets manager ----
+  await mountSecretsManager();
 
   async function loadStatus() {
     const r = await j('/setup/status');

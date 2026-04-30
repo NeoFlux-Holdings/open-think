@@ -85,6 +85,22 @@ class_name = "ChatSessionDO"
 name = "SHELL_CONTAINER"
 class_name = "ShellContainerDO"
 
+# Singleton registry tracking active Helm Shell sessions. Lets /shell/list
+# return "who has a container alive right now" without enumerating the
+# whole DO namespace (CF doesn't support that). Always addressed via
+# idFromName("global").
+[[durable_objects.bindings]]
+name = "SHELL_REGISTRY"
+class_name = "ShellRegistryDO"
+
+# Singleton broker for the CLI device-code login flow. Tracks pending
+# (deviceCode, userCode) pairs + minted bearer tokens for the
+# `npm run shell` CLI client and any other tools that want to auth
+# without a CF Access JWT.
+[[durable_objects.bindings]]
+name = "CLI_AUTH"
+class_name = "CliAuthDO"
+
 [[containers]]
 class_name = "ShellContainerDO"
 image = "./docker/shell/Dockerfile"
@@ -110,6 +126,14 @@ new_classes = ["ChatSessionDO"]
 [[migrations]]
 tag = "v4"
 new_sqlite_classes = ["ShellContainerDO"]
+
+[[migrations]]
+tag = "v5"
+new_sqlite_classes = ["ShellRegistryDO"]
+
+[[migrations]]
+tag = "v6"
+new_sqlite_classes = ["CliAuthDO"]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # OPTIONAL: PA stack bindings

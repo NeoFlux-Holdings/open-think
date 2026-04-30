@@ -71,13 +71,11 @@ export async function verifyAccessJwt(
   request: Request,
   env: Env
 ): Promise<AuthContext | null> {
-  // --- 0. Internal-bearer path (used by the Helm Shell container's `helm`
-  //         command, scripts, etc. that run inside our own infrastructure
-  //         and can't easily mint a CF Access JWT). The token is set as a
-  //         Worker secret and forwarded into the container via envVars on
-  //         the Container DO. Constant-time-ish equality is fine here —
-  //         the token is high-entropy and strings of equal length compare
-  //         in constant time on V8 anyway. ---
+  // --- 0a. Internal-bearer path (used by the Helm Shell container's
+  //         `helm` command, scripts, etc. that run inside our own
+  //         infrastructure and can't easily mint a CF Access JWT). The
+  //         token is set as a Worker secret and forwarded into the
+  //         container via envVars on the Container DO. ---
   const internalBearer = parseBearer(request.headers.get("authorization"));
   if (internalBearer && env.HELM_INTERNAL_TOKEN && internalBearer === env.HELM_INTERNAL_TOKEN) {
     const email = env.AGENT_OWNER_EMAIL ?? "internal@helm-shell";
@@ -89,6 +87,37 @@ export async function verifyAccessJwt(
       dev: false,
       firstRun: false
     };
+  }
+
+  // --- 0b. CLI-issued bearer (cli_<hex>). Minted by the CliAuthDO when
+  //         the user approves a device-code flow at /cli-auth/approve.
+  //         We resolve the bearer to its bound email by asking the DO. ---
+  if (internalBearer && internalBearer.startsWith("cli_") && env.CLI_AUTH) {
+    try {
+      const stub = env.CLI_AUTH.get(env.CLI_AUTH.idFromName("global"));
+      const r = await stub.fetch(
+        new Request(`https://cli/verify-token?token=${encodeURIComponent(internalBearer)}`)
+      );
+      if (r.ok) {
+        const data = (await r.json()) as { ok?: boolean; data?: { email?: string } };
+        if (data.ok && data.data?.email) {
+          return {
+            email: data.data.email,
+            subject: "cli-bearer",
+            token: "cli-bearer",
+            claims: {
+              sub: "cli-bearer",
+              email: data.data.email,
+              iat: Math.floor(Date.now() / 1000)
+            } as JWTPayload,
+            dev: false,
+            firstRun: false
+          };
+        }
+      }
+    } catch {
+      // CLI_AUTH unavailable — fall through to JWT path.
+    }
   }
 
   // --- 1. Dev bypass (local only) ---
@@ -197,9 +226,17 @@ const PUBLIC_GETS = new Set([
   "/icon.svg"
 ]);
 
+/**
+ * Public POST routes — used for unauthenticated agent flows where the
+ * security comes from elsewhere. Currently only the CLI device-code
+ * leg, where security comes from the user having to approve in a
+ * browser (which IS auth-gated).
+ */
+const PUBLIC_POSTS = new Set(["/cli-auth/start", "/cli-auth/poll"]);
+
 export function isPublicRoute(method: string, pathname: string): boolean {
-  if (method !== "GET") return false;
-  if (PUBLIC_GETS.has(pathname)) return true;
+  if (method === "GET" && PUBLIC_GETS.has(pathname)) return true;
+  if (method === "POST" && PUBLIC_POSTS.has(pathname)) return true;
   return false;
 }
 

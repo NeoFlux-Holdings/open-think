@@ -29,6 +29,13 @@ import {
   probeScopes,
   runLockdown
 } from "./setup-access";
+import {
+  deleteWorkerSecret,
+  getSecretSlot,
+  KNOWN_SECRETS,
+  listSecretStatus,
+  putWorkerSecret
+} from "./setup-secrets";
 import { isPublicRoute, requireAuth, type AuthContext } from "./auth";
 import { welcomeHtml } from "./welcome";
 import type { Env, InvokeRequest } from "./types";
@@ -37,6 +44,8 @@ export { AgentSessionDO } from "./durable/agentSession";
 export { StreamHubDO } from "./durable/streamHub";
 export { ChatSessionDO } from "./durable/chatSession";
 export { ShellContainerDO } from "./durable/shellContainer";
+export { ShellRegistryDO } from "./durable/shellRegistry";
+export { CliAuthDO } from "./durable/cliAuth";
 export { MorningBriefingWorkflow } from "./workflows/morningBriefing";
 
 import {
@@ -418,6 +427,25 @@ async function handler(request: Request, env: Env, requestId: string, startedAt:
     }
     const id = env.SHELL_CONTAINER.idFromName(sessionName);
     const stub = env.SHELL_CONTAINER.get(id);
+    // Best-effort: register this session in the registry so the
+    // Sessions panel can list it. Don't await failure; the shell
+    // upgrade is the user-facing path and registry hiccups shouldn't
+    // block it.
+    if (env.SHELL_REGISTRY) {
+      const registry = env.SHELL_REGISTRY.get(env.SHELL_REGISTRY.idFromName("global"));
+      registry
+        .fetch(
+          new Request("https://reg/touch", {
+            method: "POST",
+            body: JSON.stringify({
+              session: sessionName,
+              email: auth?.email ?? "anon",
+              delta: 1
+            })
+          })
+        )
+        .catch(() => {});
+    }
     // Container DO's fetch hands the request straight to the container's
     // HTTP server (port 7681). The bridge accepts ANY path on upgrade.
     const forward = new Request(
@@ -425,6 +453,43 @@ async function handler(request: Request, env: Env, requestId: string, startedAt:
       request
     );
     return stub.fetch(forward);
+  }
+
+  // GET /shell/list — return the registry's view of active/recent
+  // sessions for the authenticated user. Operators can pass `?all=1`
+  // to see everyone's sessions (gated by the same auth — anyone with
+  // /app access can see; tighten with CF_ACCESS_ALLOWED_EMAILS).
+  if (request.method === "GET" && url.pathname === "/shell/list") {
+    if (!env.SHELL_REGISTRY) {
+      return json(
+        { ok: true, data: { sessions: [], note: "SHELL_REGISTRY binding missing" } },
+        200,
+        requestId
+      );
+    }
+    const registry = env.SHELL_REGISTRY.get(env.SHELL_REGISTRY.idFromName("global"));
+    const showAll = url.searchParams.get("all") === "1";
+    const filter = showAll ? "" : `?email=${encodeURIComponent((auth?.email ?? "").toLowerCase())}`;
+    const r = await registry.fetch(new Request(`https://reg/list${filter}`));
+    return new Response(r.body, { status: r.status, headers: r.headers });
+  }
+
+  // POST /shell/forget — drop a session from the registry. Doesn't
+  // touch the underlying container DO (which sleeps on its own); just
+  // removes it from the user-visible list.
+  if (request.method === "POST" && url.pathname === "/shell/forget") {
+    if (!env.SHELL_REGISTRY) {
+      return json({ ok: false, error: "registry not bound" }, 503, requestId);
+    }
+    const body = (await request.json().catch(() => ({}))) as { session?: string };
+    const registry = env.SHELL_REGISTRY.get(env.SHELL_REGISTRY.idFromName("global"));
+    const r = await registry.fetch(
+      new Request("https://reg/forget", {
+        method: "POST",
+        body: JSON.stringify(body)
+      })
+    );
+    return new Response(r.body, { status: r.status, headers: r.headers });
   }
 
   if (request.method === "POST" && url.pathname === "/conductor/stream-tools") {
@@ -839,6 +904,306 @@ async function handler(request: Request, env: Env, requestId: string, startedAt:
     }
 
     return new Response("method not allowed", { status: 405 });
+  }
+
+  // ---------------- CLI device-code auth ----------------
+  // POST /cli-auth/start — CLI begins the flow. Mints (deviceCode, userCode);
+  // returns userCode + verifyUrl + poll interval. NO auth required (the
+  // user has to approve in a browser, which is auth-gated).
+  if (request.method === "POST" && url.pathname === "/cli-auth/start") {
+    if (!env.CLI_AUTH) {
+      return json({ ok: false, error: "CLI_AUTH binding not configured" }, 503, requestId);
+    }
+    const body = (await request.json().catch(() => ({}))) as {
+      cliInfo?: string;
+      appName?: string;
+    };
+    const stub = env.CLI_AUTH.get(env.CLI_AUTH.idFromName("global"));
+    const r = await stub.fetch(
+      new Request("https://cli/start", {
+        method: "POST",
+        body: JSON.stringify({
+          cliInfo: body.cliInfo,
+          appName: body.appName ?? env.AGENT_NAME ?? "open-think"
+        })
+      })
+    );
+    const data = (await r.json()) as { ok?: boolean; data?: { userCode: string } };
+    const host = request.headers.get("host") ?? url.host;
+    const verifyUrl = `https://${host}/app#/cli-auth?code=${encodeURIComponent(data.data?.userCode ?? "")}`;
+    return json({ ...data, data: { ...(data.data ?? {}), verifyUrl } }, r.status, requestId);
+  }
+
+  // POST /cli-auth/poll — CLI checks if approved. NO auth required (it's
+  // bound by deviceCode, which the CLI just got from /cli-auth/start).
+  if (request.method === "POST" && url.pathname === "/cli-auth/poll") {
+    if (!env.CLI_AUTH) {
+      return json({ ok: false, error: "CLI_AUTH binding not configured" }, 503, requestId);
+    }
+    const body = await request.text();
+    const stub = env.CLI_AUTH.get(env.CLI_AUTH.idFromName("global"));
+    const r = await stub.fetch(
+      new Request("https://cli/poll", { method: "POST", body })
+    );
+    return new Response(r.body, { status: r.status, headers: r.headers });
+  }
+
+  // GET /cli-auth/lookup?code=<USER-CODE> — browser-side: resolve a user
+  // code (typed in by the user) to the device record so we can show
+  // metadata before approval. AUTH-GATED (browser-only path).
+  if (request.method === "GET" && url.pathname === "/cli-auth/lookup") {
+    if (!env.CLI_AUTH) {
+      return json({ ok: false, error: "CLI_AUTH binding not configured" }, 503, requestId);
+    }
+    const code = url.searchParams.get("code") ?? "";
+    const stub = env.CLI_AUTH.get(env.CLI_AUTH.idFromName("global"));
+    const r = await stub.fetch(
+      new Request(`https://cli/lookup?code=${encodeURIComponent(code)}`)
+    );
+    return new Response(r.body, { status: r.status, headers: r.headers });
+  }
+
+  // POST /cli-auth/approve — browser-side: user clicked "Approve". The
+  // auth.email comes from the CF Access JWT (we use the gate's auth ctx).
+  // AUTH-GATED.
+  if (request.method === "POST" && url.pathname === "/cli-auth/approve") {
+    if (!env.CLI_AUTH) {
+      return json({ ok: false, error: "CLI_AUTH binding not configured" }, 503, requestId);
+    }
+    const body = (await request.json().catch(() => ({}))) as { userCode?: string; deny?: boolean };
+    const stub = env.CLI_AUTH.get(env.CLI_AUTH.idFromName("global"));
+    const r = await stub.fetch(
+      new Request("https://cli/approve", {
+        method: "POST",
+        body: JSON.stringify({
+          userCode: body.userCode,
+          deny: body.deny,
+          email: auth?.email ?? "anon"
+        })
+      })
+    );
+    return new Response(r.body, { status: r.status, headers: r.headers });
+  }
+
+  // POST /cli-auth/revoke — drop a stored CLI bearer. Body { token }.
+  if (request.method === "POST" && url.pathname === "/cli-auth/revoke") {
+    if (!env.CLI_AUTH) {
+      return json({ ok: false, error: "CLI_AUTH binding not configured" }, 503, requestId);
+    }
+    const body = await request.text();
+    const stub = env.CLI_AUTH.get(env.CLI_AUTH.idFromName("global"));
+    const r = await stub.fetch(new Request("https://cli/revoke", { method: "POST", body }));
+    return new Response(r.body, { status: r.status, headers: r.headers });
+  }
+
+  // POST /setup/r2/bind — add an R2 binding to the live Worker without
+  // touching wrangler.toml. CF API supports updating per-script settings
+  // via PATCH; we fetch existing bindings, merge the new one, PATCH back.
+  //
+  // Trade-off (the user is told upfront): the local wrangler.toml will
+  // STILL not have this binding, so the next `wrangler deploy` from
+  // your machine will REMOVE it. We surface this clearly in the UI.
+  //
+  // The button at /app#/settings only appears after /setup/auto has
+  // already created the bucket. Body { bucketName, bindingName? }.
+  if (request.method === "POST" && url.pathname === "/setup/r2/bind") {
+    const token = env.CLOUDFLARE_API_TOKEN ?? env.CLOUDFLARE_AGENT_TOKEN ?? "";
+    if (!token) {
+      return json({ ok: false, error: "CLOUDFLARE_API_TOKEN missing", code: "E_TOKEN_MISSING" }, 400, requestId);
+    }
+    const accountId = env.CLOUDFLARE_ACCOUNT_ID;
+    if (!accountId) {
+      return json({ ok: false, error: "CLOUDFLARE_ACCOUNT_ID missing", code: "E_ACCOUNT_ID_MISSING" }, 400, requestId);
+    }
+    const body = (await request.json().catch(() => ({}))) as {
+      bucketName?: string;
+      bindingName?: string;
+    };
+    const bucketName = body.bucketName || env.R2_BUCKET || "";
+    const bindingName = body.bindingName || "WORKSPACE";
+    if (!bucketName) {
+      return json({ ok: false, error: "bucketName required (or set R2_BUCKET)" }, 400, requestId);
+    }
+    const host = request.headers.get("host") ?? url.host;
+    const scriptName = deriveScriptName(host) || "helm";
+    // 1. Fetch current settings (to merge bindings).
+    const get = await fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/workers/scripts/${encodeURIComponent(scriptName)}/settings`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    const getJson = (await get.json().catch(() => ({}))) as {
+      success?: boolean;
+      result?: { bindings?: Array<Record<string, unknown>> };
+      errors?: Array<{ message: string }>;
+    };
+    if (!get.ok || !getJson.success) {
+      return json(
+        { ok: false, error: getJson.errors?.[0]?.message ?? `fetch settings ${get.status}` },
+        400,
+        requestId
+      );
+    }
+    const bindings = getJson.result?.bindings ?? [];
+    // Replace any existing R2 binding with the same name; otherwise append.
+    const filtered = bindings.filter(
+      (b) => !(b.type === "r2_bucket" && b.name === bindingName)
+    );
+    filtered.push({ type: "r2_bucket", name: bindingName, bucket_name: bucketName });
+    // 2. PATCH settings with the merged bindings array.
+    const patch = await fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/workers/scripts/${encodeURIComponent(scriptName)}/settings`,
+      {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "content-type": "multipart/form-data; boundary=BOUNDARY"
+        },
+        // PATCH on workers/scripts/settings expects a multipart body
+        // with a `settings` JSON part. Build it inline.
+        body: [
+          "--BOUNDARY",
+          'Content-Disposition: form-data; name="settings"',
+          "Content-Type: application/json",
+          "",
+          JSON.stringify({ bindings: filtered }),
+          "--BOUNDARY--",
+          ""
+        ].join("\r\n")
+      }
+    );
+    const patchText = await patch.text();
+    if (!patch.ok) {
+      return json(
+        {
+          ok: false,
+          error: `patch settings ${patch.status}: ${patchText.slice(0, 300)}`,
+          hint:
+            "If this fails, fall back to adding the [[r2_buckets]] block to wrangler.toml manually + redeploying."
+        },
+        400,
+        requestId
+      );
+    }
+    return json(
+      {
+        ok: true,
+        data: {
+          bindingName,
+          bucketName,
+          scriptName,
+          warning:
+            "The live Worker now has this binding, but your local wrangler.toml does NOT. The next `wrangler deploy` from your machine will REMOVE this binding unless you also paste it into wrangler.toml. Snippet:\n\n[[r2_buckets]]\nbinding = \"" +
+            bindingName + "\"\nbucket_name = \"" + bucketName + "\""
+        }
+      },
+      200,
+      requestId
+    );
+  }
+
+  // GET /setup/secrets — list every known secret slot + whether it's
+  // currently configured. Values themselves are NEVER returned (env
+  // already redacts them; we just check truthiness).
+  if (request.method === "GET" && url.pathname === "/setup/secrets") {
+    return json(
+      { ok: true, data: { slots: listSecretStatus(env) } },
+      200,
+      requestId
+    );
+  }
+
+  // PUT /setup/secrets/<NAME> — body { value: string }. Writes the
+  // secret to the live Worker via the CF API. Name MUST be in our
+  // allowlist (KNOWN_SECRETS) or we 400 — protects against an
+  // /app session being used to set arbitrary env vars.
+  if (request.method === "PUT" && url.pathname.startsWith("/setup/secrets/")) {
+    const name = decodeURIComponent(url.pathname.slice("/setup/secrets/".length));
+    if (!getSecretSlot(name)) {
+      return json(
+        {
+          ok: false,
+          error: `Unknown secret "${name}". Known: ${KNOWN_SECRETS.map((s) => String(s.name)).join(", ")}`,
+          code: "E_UNKNOWN_SECRET"
+        },
+        400,
+        requestId
+      );
+    }
+    const token = env.CLOUDFLARE_API_TOKEN ?? env.CLOUDFLARE_AGENT_TOKEN ?? "";
+    if (!token) {
+      return json(
+        { ok: false, error: "CLOUDFLARE_API_TOKEN not set on this Worker", code: "E_TOKEN_MISSING" },
+        400,
+        requestId
+      );
+    }
+    const accountId = env.CLOUDFLARE_ACCOUNT_ID;
+    if (!accountId) {
+      return json(
+        {
+          ok: false,
+          error:
+            "CLOUDFLARE_ACCOUNT_ID not set. Run /setup/auto or set it via this same endpoint first.",
+          code: "E_ACCOUNT_ID_MISSING"
+        },
+        400,
+        requestId
+      );
+    }
+    const body = (await request.json().catch(() => ({}))) as { value?: unknown };
+    if (typeof body.value !== "string" || body.value.length === 0) {
+      return json({ ok: false, error: "body.value (non-empty string) required" }, 400, requestId);
+    }
+    const host = request.headers.get("host") ?? url.host;
+    const scriptName = deriveScriptName(host) || "helm";
+    const result = await putWorkerSecret({
+      apiToken: token,
+      accountId,
+      scriptName,
+      name,
+      value: body.value
+    });
+    return json(
+      {
+        ok: result.ok,
+        ...(result.ok
+          ? { data: { name, scriptName, hint: "Worker auto-redeploys in ~15s; refresh after." } }
+          : { error: result.error })
+      },
+      result.ok ? 200 : 400,
+      requestId
+    );
+  }
+
+  // DELETE /setup/secrets/<NAME>
+  if (request.method === "DELETE" && url.pathname.startsWith("/setup/secrets/")) {
+    const name = decodeURIComponent(url.pathname.slice("/setup/secrets/".length));
+    const slot = getSecretSlot(name);
+    if (!slot) {
+      return json({ ok: false, error: `unknown secret "${name}"` }, 400, requestId);
+    }
+    const token = env.CLOUDFLARE_API_TOKEN ?? env.CLOUDFLARE_AGENT_TOKEN ?? "";
+    if (!token) return json({ ok: false, error: "CLOUDFLARE_API_TOKEN missing" }, 400, requestId);
+    const accountId = env.CLOUDFLARE_ACCOUNT_ID;
+    if (!accountId) return json({ ok: false, error: "CLOUDFLARE_ACCOUNT_ID missing" }, 400, requestId);
+    const host = request.headers.get("host") ?? url.host;
+    const scriptName = deriveScriptName(host) || "helm";
+    const result = await deleteWorkerSecret({
+      apiToken: token,
+      accountId,
+      scriptName,
+      name
+    });
+    return json(
+      {
+        ok: result.ok,
+        ...(result.ok
+          ? { data: { name, deleted: true } }
+          : { error: result.error })
+      },
+      result.ok ? 200 : 400,
+      requestId
+    );
   }
 
   // POST /setup/auto — one-click full setup. Picks the account

@@ -96,6 +96,10 @@ export interface Env {
    * Each session name resolves to its own container instance with ephemeral disk.
    */
   SHELL_CONTAINER?: DurableObjectNamespace;
+  /** Singleton registry tracking active shell sessions for /shell/list. */
+  SHELL_REGISTRY?: DurableObjectNamespace;
+  /** Singleton DO that brokers the CLI device-code login flow. */
+  CLI_AUTH?: DurableObjectNamespace;
   /** OpenRouter API key (optional). When set, OR is the default provider. */
   OPENROUTER_API_KEY?: string;
   /** Optional override for OpenRouter base URL. Defaults to https://openrouter.ai/api/v1 */
