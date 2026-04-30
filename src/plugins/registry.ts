@@ -8,6 +8,7 @@ import { CfAiGatewayPlugin } from "./cfAiGateway";
 import { CloudflareAdminPlugin } from "./cloudflareAdmin";
 import { CloudflareApiMcpPlugin } from "./cloudflareApiMcp";
 import { HelmSetupPlugin } from "./helmSetup";
+import { HelmTomlPlugin } from "./helmToml";
 import { CodexPlugin } from "./codex";
 import { EmailPlugin } from "./email";
 import { McpClientPlugin } from "./mcpClient";
@@ -23,6 +24,7 @@ export function getPlugins(): AgentPlugin[] {
   return [
     new AdminPlugin(),
     new HelmSetupPlugin(),
+    new HelmTomlPlugin(),
     new CloudflareAdminPlugin(),
     new CloudflareApiMcpPlugin(),
     new CfAiGatewayPlugin(),

@@ -455,6 +455,59 @@ async function handler(request: Request, env: Env, requestId: string, startedAt:
     return stub.fetch(forward);
   }
 
+  // POST /shell/exec — one-shot bash command runner inside a per-user
+  // shell container. Same auth gate as the rest of /shell — the
+  // internal bearer or a CF Access JWT.
+  //
+  // Body: { cmd, cwd?, timeoutMs?, stdin?, session? }
+  // Returns: { ok, stdout, stderr, code, signal, durationMs, truncated, timedOut }
+  //
+  // The agent's helm-exec skill is the primary caller — lets the
+  // conductor run `git clone`, `sed`, `wrangler deploy`, etc. without
+  // a persistent terminal. Output is capped at 256 KB so a runaway
+  // process doesn't dump megabytes of logs into the agent's context.
+  if (request.method === "POST" && url.pathname === "/shell/exec") {
+    if (!env.SHELL_CONTAINER) {
+      return json({ ok: false, error: "SHELL_CONTAINER binding missing" }, 503, requestId);
+    }
+    const body = (await request.json().catch(() => ({}))) as {
+      cmd?: string;
+      cwd?: string;
+      timeoutMs?: number;
+      stdin?: string;
+      session?: string;
+    };
+    if (!body.cmd) {
+      return json({ ok: false, error: "body.cmd required" }, 400, requestId);
+    }
+    const explicit = body.session?.trim() ?? "";
+    let sessionName = explicit;
+    if (!sessionName) {
+      const email = (auth?.email ?? "anon").toLowerCase();
+      let h = 0x811c9dc5;
+      for (let i = 0; i < email.length; i++) {
+        h ^= email.charCodeAt(i);
+        h = Math.imul(h, 0x01000193) >>> 0;
+      }
+      sessionName = `u-${h.toString(16).padStart(8, "0")}`;
+    }
+    const id = env.SHELL_CONTAINER.idFromName(sessionName);
+    const stub = env.SHELL_CONTAINER.get(id);
+    // Forward to the bridge's /exec endpoint inside the container.
+    const forward = new Request("https://shell-do/exec", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        cmd: body.cmd,
+        cwd: body.cwd,
+        timeoutMs: body.timeoutMs,
+        stdin: body.stdin
+      })
+    });
+    const r = await stub.fetch(forward);
+    return new Response(r.body, { status: r.status, headers: r.headers });
+  }
+
   // GET /shell/list — return the registry's view of active/recent
   // sessions for the authenticated user. Operators can pass `?all=1`
   // to see everyone's sessions (gated by the same auth — anyone with

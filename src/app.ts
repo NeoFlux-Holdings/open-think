@@ -291,57 +291,90 @@ h1.section-title {
 @keyframes dot-pulse-live { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
 @keyframes dot-pulse-connecting { 0%,100% { transform: scale(1); } 50% { transform: scale(0.6); } }
 
-/* ---- Shell tab (CF-Container-backed bash session) ---- */
+/* ---- Shell tab (CF-Container-backed bash session) ----
+   Two-tone card: dark canvas with a subtle frame so the terminal
+   reads as "elevated console" against the editorial background.
+   The mount uses fixed pixel padding (not vh) to keep terminal
+   reflow predictable across tab switches and resizes. */
 .shell-card {
   background: #0b0b0d;
   border: 1px solid var(--rule);
-  border-radius: 10px;
+  border-radius: 12px;
   overflow: hidden;
   display: flex; flex-direction: column;
   margin-top: 18px;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.18);
 }
 .shell-bar {
-  display: flex; align-items: center; gap: 10px;
-  padding: 10px 14px;
-  background: rgba(255,255,255,0.02);
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 16px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.01));
   border-bottom: 1px solid var(--rule);
 }
 .shell-bar .spacer { flex: 1; }
 .shell-title {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
+  font-size: 12.5px;
   color: var(--muted);
   letter-spacing: 0.04em;
+  display: flex; align-items: baseline; gap: 4px;
 }
-.shell-title span { color: var(--ink); }
+.shell-title span { color: #f0eee6; font-weight: 500; }
 .shell-bar .ghost {
   font-size: 12px;
-  padding: 4px 10px;
+  padding: 5px 11px;
   border-radius: 6px;
+  background: rgba(255,255,255,0.02);
+  border-color: rgba(255,255,255,0.08);
+  color: #cfcfc7;
+}
+.shell-bar .ghost:hover {
+  background: rgba(255,255,255,0.05);
+  border-color: rgba(255,255,255,0.16);
+  color: #f0eee6;
 }
 .shell-mount {
-  height: 64vh;
-  min-height: 360px;
-  padding: 10px 12px;
+  /* Fixed-height terminal canvas — mobile gets less. xterm.js needs
+     a stable container size to compute cols/rows correctly; using vh
+     here would cause refits on virtual-keyboard show/hide on iOS. */
+  height: clamp(360px, 60vh, 720px);
+  padding: 12px 14px;
   background: #0b0b0d;
   outline: none;
+  position: relative;
+  overflow: hidden;
 }
-.shell-mount .xterm { height: 100%; }
+.shell-mount .xterm { height: 100%; padding: 0; }
 .shell-mount .xterm-viewport { background-color: #0b0b0d !important; }
+.shell-mount .xterm-screen { background-color: #0b0b0d; }
 .shell-foot {
-  padding: 8px 14px;
+  padding: 10px 16px;
   border-top: 1px solid var(--rule);
   background: rgba(255,255,255,0.02);
+  display: flex; align-items: center; gap: 16px;
 }
+.shell-foot .spacer { flex: 1; }
 .shell-hint {
   font-size: 11px;
   color: var(--muted);
-  letter-spacing: 0.04em;
+  letter-spacing: 0.03em;
 }
-@media (max-width: 600px) {
-  .shell-mount { height: 56vh; min-height: 280px; padding: 6px 8px; }
-  .shell-bar { padding: 8px 10px; gap: 8px; }
-  .shell-hint { display: none; }
+.shell-hint kbd {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10.5px;
+  padding: 1px 5px;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 3px;
+  background: rgba(255,255,255,0.04);
+  color: #cfcfc7;
+  margin: 0 2px;
+}
+@media (max-width: 700px) {
+  .shell-mount { height: clamp(320px, 56vh, 560px); padding: 8px 10px; }
+  .shell-bar { padding: 10px 12px; gap: 8px; }
+  .shell-bar .ghost { padding: 4px 8px; font-size: 11px; }
+  .shell-foot { padding: 8px 12px; }
+  .shell-hint { font-size: 10px; }
 }
 /* Active-sessions registry table */
 .shell-sessions {
@@ -1718,7 +1751,14 @@ input[type="text"]:focus, select:focus, textarea:focus { border-bottom-color: va
       </div>
       <div id="shell-mount" class="shell-mount" tabindex="0" aria-label="terminal"></div>
       <div class="shell-foot">
-        <span class="mono shell-hint">Tip: ⌘K clears, ⌘⇧V pastes, Ctrl-C kills the foreground process. Container sleeps after 15 min idle.</span>
+        <span class="shell-hint">
+          <kbd>⌘K</kbd>clear ·
+          <kbd>⌘⇧V</kbd>paste ·
+          <kbd>Ctrl-C</kbd>SIGINT ·
+          <kbd>Ctrl-D</kbd>EOF
+        </span>
+        <span class="spacer"></span>
+        <span class="shell-hint">Container sleeps after 15 min idle</span>
       </div>
     </div>
     <div id="shell-sessions" class="shell-sessions" hidden>
@@ -2676,7 +2716,7 @@ async function mountShell() {
   try {
     await loadXterm();
   } catch (err) {
-    mount.innerHTML = '<pre class="run-output">Failed to load xterm.js from CDN. Check your network or self-host the assets.</pre>';
+    mount.innerHTML = '<pre class="run-output">Failed to load terminal assets. Reload the page; if it persists, check the browser console.</pre>';
     setState('error');
     return;
   }
@@ -2702,7 +2742,31 @@ async function mountShell() {
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
   term.open(mount);
-  fit.fit();
+
+  // Robust fit sequence — the original \`fit.fit()\` immediately after
+  // \`term.open()\` was racing the layout pass and the JetBrains Mono web
+  // font, so the column count was computed against the fallback monospace
+  // metric (wider). Result: a 65-col MOTD got measured as fitting in
+  // ~50 cols and wrapped horribly.
+  //
+  // Wait for fonts → wait two frames so layout settles → fit. Then keep
+  // a ResizeObserver alive for window/panel resize.
+  async function refit() {
+    try { fit.fit(); } catch { /* mount detached */ }
+  }
+  async function initialFit() {
+    if (document.fonts && document.fonts.ready) {
+      try { await document.fonts.ready; } catch { /* noop */ }
+    }
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    await refit();
+    // Belt-and-suspenders: a final fit a beat later in case some lazy
+    // CSS / web font kicked in after the RAFs.
+    setTimeout(refit, 250);
+  }
+  initialFit();
+  const ro = new ResizeObserver(() => { refit(); sendResize(); });
+  ro.observe(mount);
 
   let ws = null;
   let pingTimer = 0;
@@ -2981,7 +3045,7 @@ function mountConductor(host, compact) {
           <button type="button" role="tab" data-mode="plan" class="seg-btn" aria-selected="\${savedMode === 'plan'}">Plan</button>
           <button type="button" role="tab" data-mode="execute" class="seg-btn" aria-selected="\${savedMode === 'execute'}">Execute</button>
         </div>
-        <span class="composer-hint mono" aria-hidden="true">⌘↵ to send</span>
+        <span class="composer-hint mono" aria-hidden="true">↵ send · ⇧↵ newline</span>
       </div>
     </div>
   \`;
@@ -3048,8 +3112,13 @@ function mountConductor(host, compact) {
 
   btn.addEventListener('click', send);
   input.addEventListener('keydown', (e) => {
-    // Cmd/Ctrl-Enter sends. Plain Enter inserts a newline (textarea default).
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); }
+    // Enter sends; Shift+Enter inserts a newline. Cmd/Ctrl+Enter also
+    // sends (carry-over for muscle memory).
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      send();
+      return;
+    }
     // Escape interrupts an active stream.
     if (e.key === 'Escape' && isStreaming) { e.preventDefault(); chat.interrupt(); }
   });

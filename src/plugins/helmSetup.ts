@@ -95,6 +95,53 @@ export class HelmSetupPlugin implements AgentPlugin {
       return { ok: true, data: { topic, content: doc } };
     }
 
+    if (action === "exec") {
+      // helm-exec — run a bash command inside the per-session shell
+      // container and get stdout/stderr/exit-code back. We talk to the
+      // Container DO directly (DO RPC) instead of going through the
+      // public Worker URL, so HELM_WORKER_HOST isn't required.
+      const env = this.ctx.env as Env;
+      const o = asObj(input) as {
+        cmd?: string;
+        cwd?: string;
+        timeoutMs?: number;
+        stdin?: string;
+        session?: string;
+      };
+      if (!o.cmd || typeof o.cmd !== "string") {
+        return { ok: false, error: "input.cmd (string) required" };
+      }
+      if (!env.SHELL_CONTAINER) {
+        return {
+          ok: false,
+          error: "SHELL_CONTAINER binding missing. Redeploy with the v0.8+ wrangler.toml."
+        };
+      }
+      // Default session: a stable name so repeated helm-exec calls hit
+      // the same /workspace. We use "agent-default" so it's
+      // distinguishable from per-user shell sessions in the registry.
+      const sessionName = o.session && o.session.trim() ? o.session.trim() : "agent-default";
+      const id = env.SHELL_CONTAINER.idFromName(sessionName);
+      const stub = env.SHELL_CONTAINER.get(id);
+      const resp = await stub.fetch(
+        new Request("https://shell-do/exec", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            cmd: o.cmd,
+            cwd: o.cwd,
+            timeoutMs: o.timeoutMs,
+            stdin: o.stdin
+          })
+        })
+      );
+      const data = (await resp.json().catch(() => ({}))) as Record<string, unknown>;
+      if (!resp.ok) {
+        return { ok: false, error: `helm-exec failed (${resp.status})`, data };
+      }
+      return { ok: true, data: { ...data, session: sessionName } };
+    }
+
     if (action === "deploy") {
       // Full deploy-everything chain. The agent's "set me up" button.
       // Does what helm-setup-auto does PLUS:

@@ -1,20 +1,20 @@
 
-  ╭─────────────────────────────────────────────────────────────╮
-  │ Helm Shell · Cloudflare Container · two-disk model          │
-  ╰─────────────────────────────────────────────────────────────╯
+  ╭─────────────────────────────────────────────────────╮
+  │ Helm Shell · Cloudflare Container · two-disk model  │
+  ╰─────────────────────────────────────────────────────╯
 
-  /workspace   ephemeral SSD (fast, wiped on sleep ~15 min idle)
-  /persist     R2-mounted FUSE (durable, slower) — when R2_* env set
+  /workspace   ephemeral SSD (15 min idle sleep)
+  /persist     R2-mounted FUSE (durable; when R2_* set)
 
   Built-ins:
-    helm "..."      send a prompt to your own conductor
-    helm-save       snapshot /workspace → /persist (R2)
-    helm-load       restore the latest snapshot
-    helm-fetch K    pull a file from the Files tab into /workspace
-    helm-fetch --list           list every file you've uploaded
-    helm-fetch --search <s>     find files by substring
-    helm --plan ".."  describe what helm would do without running it
+    helm "..."           → conductor REPL
+    helm-save            → snapshot /workspace → R2
+    helm-load            → restore latest snapshot
+    helm-fetch <key>     → pull a Files-tab file → /workspace
+    helm-fetch --list    → list every file you've uploaded
+    helm-fetch --search  → find files by substring
+    helm --plan "..."    → describe without running
 
-  Pre-installed: bash, git, curl, jq, vim, tmux, htop, node, python3,
-  rclone (R2 mount), tini (signal forwarding).
+  Pre-installed: bash, git, curl, jq, vim, tmux, htop,
+  node, python3, rclone, tini.
 

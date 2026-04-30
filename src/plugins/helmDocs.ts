@@ -214,22 +214,116 @@ See \`admin-introspect\` for the live list of enabled plugins.
 
   /* --------------------- intentionally manual --------------------- */
   "manual-steps": `
-WHAT'S INTENTIONALLY MANUAL (the agent should not promise to do these).
+WHAT THE AGENT CAN AND CAN'T DO ANYMORE — updated.
 
-Editing wrangler.toml: the file is git-tracked. We don't silently rewrite
-it. The agent can:
-  - Patch the LIVE Worker via cf-patch-binding (drift on next deploy)
-  - Show the user the exact TOML snippet to paste
+CAN do (via skills):
+  - Patch live Worker bindings (cf-patch-binding): R2, D1, KV, AI, queues,
+    plain_text vars (e.g. ENABLED_PLUGINS). CF auto-redeploys ~15s later.
+  - Set/rotate Worker secrets (cf-put-secret).
+  - Provision new infra (cf-create-d1/kv/r2, helm-setup-deploy).
+  - Edit files + run shell commands inside the container (helm-exec).
+    Pre-installed: bash, git, vim, sed, jq, node, python3, gh, WRANGLER.
+  - Edit wrangler.toml DURABLY: helm-exec to git clone the user's repo,
+    sed/python the file, then \`wrangler deploy --cwd /workspace/repo\`.
+    Wrangler picks up CLOUDFLARE_API_TOKEN from env automatically.
+  - Open a PR with \`gh pr create\` instead of direct deploy.
 
-Triggering 'wrangler deploy' from the user's machine: needs CI/local.
-The agent can advise and verify post-deploy state.
+GENUINELY MANUAL (still on the user):
+  - VAPID keys: crypto material that should never leave the user's machine.
+    Tell them to run \`npm run vapid:generate\` locally and paste the keys
+    via cf-put-secret.
+  - Provider keys (OpenRouter / Anthropic / OpenAI): the user pays. Suggest
+    where to get them (helm-secrets-status returns docsUrl per slot), then
+    cf-put-secret once pasted.
+`.trim(),
 
-Generating VAPID keys: these are crypto material; we do it locally
-(\`npm run vapid:generate\`) so the private key never touches our
-server. Agent should advise the user to run that command.
+  /* --------------------- keep-in-sync (drift) --------------------- */
+  "keep-in-sync": `
+THE WRANGLER.TOML DRIFT PROBLEM (and how to avoid it).
 
-Provider keys (OpenRouter, Anthropic, OpenAI): the user pays for these.
-Agent should suggest where to get them (URL) and offer to set the
-secret via cf-put-secret AFTER the user pastes it.
+What happens without sync:
+  1. Agent calls cf-patch-binding to add an R2 bucket binding live
+  2. Live Worker now has env.WORKSPACE wired ✓
+  3. User's local wrangler.toml does NOT have [[r2_buckets]]
+  4. User runs \`wrangler deploy\` from local for an unrelated change
+  5. wrangler reads local wrangler.toml, sees no R2 binding, REMOVES IT
+     from the live Worker
+  6. Silent regression
+
+The agent's job: keep wrangler.toml in sync. Three skills:
+
+  helm-toml-status — checks if user's repo is cloned at /workspace/repo
+                     (or env.HELM_REPO_PATH) and wrangler.toml exists.
+
+  helm-toml-sync   — diffs LIVE Worker bindings vs repo's wrangler.toml.
+                     Returns: missingFromToml[], missingFromLive[].
+                     Read-only.
+
+  helm-toml-patch  — adds/replaces a TOML block in wrangler.toml +
+                     commits + (optionally) pushes. Use the same
+                     tomlSnippet returned by cf-patch-binding.
+
+Canonical sequence after ANY binding mutation:
+  1. cf-patch-binding {type, name, config}      ← updates live Worker
+  2. capture result.tomlSnippet                  ← exact 3-line block
+  3. helm-toml-patch {snippet, push: true}       ← syncs to repo
+  4. (optional) helm-toml-sync                   ← verify zero drift
+
+First-time setup (one-time per fresh container):
+  helm-exec \`git clone https://github.com/<user>/<repo> /workspace/repo\`
+  helm-exec \`cd /workspace/repo && git config user.email helm@open-think && git config user.name Helm\`
+  (If pushing: ensure git remote uses a token URL or gh auth login was run.)
+
+Env var overrides:
+  HELM_REPO_PATH         where to look for the repo (default /workspace/repo)
+  HELM_WRANGLER_TOML_PATH path within the repo (default wrangler.toml)
+`.trim(),
+
+  /* --------------------- agent-can-deploy playbook --------------------- */
+  "deploy-from-agent": `
+HOW THE AGENT DEPLOYS CODE/CONFIG CHANGES DURABLY.
+
+Three patterns, in order of preference:
+
+1. Live patch (no wrangler.toml change needed):
+   When the change is purely bindings/secrets/vars, use cf-patch-binding
+   or cf-put-secret. CF auto-redeploys. The user's local wrangler.toml
+   should EVENTUALLY get the same change (otherwise their next local
+   deploy will drop your patches), but the live Worker is correct now.
+   Surface the wranglerTomlAdditions for them to commit at leisure.
+
+2. Edit + deploy via helm-exec (durable, automatic):
+   When the user wants the change reflected in their git-tracked
+   wrangler.toml AND deployed, do this in helm-exec:
+
+     # Once per fresh container — clone (idempotent if already there):
+     git -C /workspace/repo pull || git clone <repo> /workspace/repo
+
+     # Edit (use python or node for non-trivial TOML):
+     python3 -c "
+     import re, sys, pathlib
+     p = pathlib.Path('/workspace/repo/wrangler.toml')
+     s = p.read_text()
+     # ... insert / modify blocks ...
+     p.write_text(new_s)
+     "
+
+     # Verify:
+     cat /workspace/repo/wrangler.toml | head -50
+
+     # Deploy:
+     cd /workspace/repo && wrangler deploy
+
+   Wrangler reads CLOUDFLARE_API_TOKEN from env (already forwarded).
+
+3. PR-only (when you want review before deploy):
+   git -C /workspace/repo checkout -b helm/<change-name>
+   git -C /workspace/repo add wrangler.toml
+   git -C /workspace/repo -c user.name=Helm -c user.email=helm@... commit -m "..."
+   git -C /workspace/repo push -u origin helm/<change-name>
+   gh -R /workspace/repo pr create --title "..." --body "..."
+
+When choosing: 1 for binding/var changes the user will accept on faith;
+2 when you have authority and the user said "deploy"; 3 when reviewing.
 `.trim()
 };

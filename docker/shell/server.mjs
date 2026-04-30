@@ -35,6 +35,7 @@ import pty from "node-pty";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { spawn } from "node:child_process";
 import http from "node:http";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -51,18 +52,141 @@ try {
 
 // --- HTTP server (also serves /healthz so the Container platform can
 //     health-check before sending traffic). The WSS attaches to upgrades.
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
   if (req.url === "/healthz" || req.url === "/health") {
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ ok: true, shell: SHELL, ts: new Date().toISOString() }));
     return;
   }
+
+  // POST /exec — one-shot command runner the Worker proxies into for
+  // the helm-exec skill. Lets the agent do things like:
+  //   git clone https://github.com/user/repo /workspace/repo
+  //   sed -i 's/.../.../' /workspace/repo/wrangler.toml
+  //   wrangler deploy --cwd /workspace/repo
+  // Output is captured (not streamed), capped at 256 KB, with a default
+  // 60s timeout. Auth is the Worker proxy's responsibility — by the
+  // time a request reaches port 7681, it's already passed through the
+  // Worker's auth gate.
+  if (req.method === "POST" && (req.url === "/exec" || req.url === "/exec/")) {
+    const chunks = [];
+    let total = 0;
+    const MAX_BODY = 256 * 1024;
+    for await (const c of req) {
+      total += c.length;
+      if (total > MAX_BODY) {
+        res.writeHead(413, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "request body > 256 KB" }));
+        return;
+      }
+      chunks.push(c);
+    }
+    let body;
+    try {
+      body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    } catch {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "invalid JSON body" }));
+      return;
+    }
+    const cmd = typeof body.cmd === "string" ? body.cmd : "";
+    if (!cmd) {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "body.cmd required" }));
+      return;
+    }
+    const cwd = typeof body.cwd === "string" && body.cwd ? body.cwd : HOME;
+    const timeoutMs = Number.isFinite(body.timeoutMs)
+      ? Math.min(Math.max(1000, body.timeoutMs), 600_000)
+      : 60_000;
+    const stdin = typeof body.stdin === "string" ? body.stdin : "";
+
+    const startedAt = Date.now();
+    const child = spawn("bash", ["-l", "-c", cmd], {
+      cwd,
+      env: {
+        ...process.env,
+        TERM: "dumb",
+        // Pass the in-shell helpers along.
+        HELM_INTERNAL_TOKEN: process.env.HELM_INTERNAL_TOKEN ?? "",
+        HELM_WORKER_HOST: process.env.HELM_WORKER_HOST ?? "",
+        HELM_SESSION: process.env.HELM_SESSION ?? "default"
+      }
+    });
+
+    let stdout = "";
+    let stderr = "";
+    const MAX_OUT = 256 * 1024;
+    let truncated = false;
+    child.stdout.on("data", (d) => {
+      if (stdout.length < MAX_OUT) {
+        stdout += d.toString("utf8");
+        if (stdout.length > MAX_OUT) {
+          stdout = stdout.slice(0, MAX_OUT);
+          truncated = true;
+        }
+      }
+    });
+    child.stderr.on("data", (d) => {
+      if (stderr.length < MAX_OUT) {
+        stderr += d.toString("utf8");
+        if (stderr.length > MAX_OUT) {
+          stderr = stderr.slice(0, MAX_OUT);
+          truncated = true;
+        }
+      }
+    });
+    if (stdin) {
+      try { child.stdin.write(stdin); } catch { /* noop */ }
+    }
+    try { child.stdin.end(); } catch { /* noop */ }
+
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      try { child.kill("SIGTERM"); } catch { /* noop */ }
+      // Hard-kill if SIGTERM doesn't take after 5s.
+      setTimeout(() => { try { child.kill("SIGKILL"); } catch { /* noop */ } }, 5000).unref();
+    }, timeoutMs);
+
+    child.on("close", (code, signal) => {
+      clearTimeout(timeout);
+      const durationMs = Date.now() - startedAt;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          ok: !timedOut && code === 0,
+          stdout,
+          stderr,
+          code,
+          signal: signal ?? null,
+          durationMs,
+          truncated,
+          timedOut,
+          cwd,
+          cmd: cmd.length > 200 ? cmd.slice(0, 200) + "…" : cmd
+        })
+      );
+    });
+    child.on("error", (err) => {
+      clearTimeout(timeout);
+      res.writeHead(500, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          ok: false,
+          error: err instanceof Error ? err.message : String(err)
+        })
+      );
+    });
+    return;
+  }
+
   if (req.url === "/" || req.url === "/index.html") {
     // A tiny "you reached the bridge directly" hint. Browsers don't see
     // this normally — the Worker rewrites paths so /shell goes through
     // the WS upgrade only.
     res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
-    res.end("Helm Shell bridge — WebSocket only at /ws\n");
+    res.end("Helm Shell bridge — WS at /ws, exec at POST /exec\n");
     return;
   }
   res.writeHead(404);

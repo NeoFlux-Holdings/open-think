@@ -480,6 +480,83 @@ const SKILL_CATALOG: SkillDefinition[] = [
     }
   },
   {
+    id: "helm-toml-status",
+    name: "Helm TOML Status",
+    description:
+      "Check whether the user's repo (with wrangler.toml) is cloned in /workspace/repo (or env.HELM_REPO_PATH) and ready for sync. Use this BEFORE helm-toml-sync / helm-toml-patch to verify setup.",
+    pluginId: "helm-toml",
+    action: "status",
+    tags: ["setup", "toml", "introspect"],
+    inputSchema: {
+      type: "object",
+      properties: {
+        repoPath: { type: "string", description: "Optional override; defaults to /workspace/repo" },
+        tomlPath: { type: "string", description: "Optional; defaults to wrangler.toml relative to repoPath" }
+      }
+    }
+  },
+  {
+    id: "helm-toml-sync",
+    name: "Helm TOML Sync (drift detector)",
+    description:
+      "Compare live Worker bindings against the repo's wrangler.toml. Returns drift report: which bindings are on the live Worker but missing from TOML (will be DROPPED on next `wrangler deploy` from local), and which are in TOML but missing from live (will be ADDED on next deploy). Read-only — does not modify anything.",
+    pluginId: "helm-toml",
+    action: "sync",
+    tags: ["setup", "toml", "drift", "introspect"],
+    inputSchema: {
+      type: "object",
+      properties: {
+        repoPath: { type: "string" },
+        tomlPath: { type: "string" },
+        scriptName: { type: "string" }
+      }
+    }
+  },
+  {
+    id: "helm-toml-patch",
+    name: "Helm TOML Patch (write + commit)",
+    description:
+      "Add or replace a TOML block in the user's wrangler.toml + commit (and optionally push). Idempotent — repeated calls with the same {type,binding} replace the existing block. Use this AFTER cf-patch-binding to keep the local TOML in sync with the live Worker, so the user's next `wrangler deploy` doesn't drop the binding. DANGEROUS — modifies user's git-tracked files.",
+    pluginId: "helm-toml",
+    action: "patch",
+    tags: ["setup", "toml", "create"],
+    dangerous: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        snippet: {
+          type: "string",
+          description: "The TOML block to add (e.g. `[[r2_buckets]]\\nbinding = \"WORKSPACE\"\\nbucket_name = \"helm-persist\"`). Same string returned in cf-patch-binding's tomlSnippet field."
+        },
+        commitMessage: { type: "string", description: "Default: \"wrangler.toml: helm-toml-patch sync\"" },
+        push: { type: "boolean", description: "Run `git push` after committing. Default false." },
+        repoPath: { type: "string" },
+        tomlPath: { type: "string" }
+      },
+      required: ["snippet"]
+    }
+  },
+  {
+    id: "helm-exec",
+    name: "Helm Exec (run bash in shell container)",
+    description:
+      "Run a one-shot bash command inside the per-user Helm Shell container. Returns {stdout, stderr, code, durationMs}. Pre-installed: bash, git, curl, jq, vim, tmux, htop, node, python3, rclone, github-cli, wrangler. USE THIS to: edit wrangler.toml in a cloned repo, run `wrangler deploy`, drive `gh pr create`, sed/awk/jq pipelines, etc. Output capped at 256 KB; default timeout 60s. DANGEROUS — runs arbitrary code in the user's shell environment.",
+    pluginId: "helm-setup",
+    action: "exec",
+    tags: ["shell", "exec", "deploy"],
+    dangerous: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        cmd: { type: "string", description: "bash command to run, e.g. \"git clone https://github.com/user/repo /workspace/repo\"" },
+        cwd: { type: "string", description: "working directory (default: /workspace)" },
+        timeoutMs: { type: "number", description: "max runtime (default 60000, max 600000)" },
+        stdin: { type: "string", description: "optional stdin content piped to the command" }
+      },
+      required: ["cmd"]
+    }
+  },
+  {
     id: "helm-docs",
     name: "Helm Self-Docs",
     description:

@@ -216,6 +216,11 @@ export class ChatSessionDO extends DurableObject<Env> {
             mode: "execute",
             provider: result.provider,
             ts: new Date().toISOString(),
+            // CRITICAL: tell the client this content was already streamed
+            // via text-delta events. Without this flag, the UI renders
+            // the full text TWICE — once from the stream bubble and
+            // again from the final-message frame.
+            streamed: true,
             ...(result.cancelled ? { halted: "cancelled" } : {})
           }
         });

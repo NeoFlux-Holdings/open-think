@@ -43,7 +43,17 @@ RUN apk add --no-cache \
     gzip \
     sudo \
     tini \
+    github-cli \
     && rm -rf /var/cache/apk/*
+
+# `wrangler` is a Node CLI; install globally so it's in PATH for the
+# helm user. We put it in /opt/wrangler so it survives the user-switch.
+# `--ignore-scripts` skips post-install hooks we don't need (Cloudflare's
+# notification banner) and trims a few hundred ms off the build.
+RUN npm install --prefix /opt/wrangler --omit=dev --no-audit --no-fund \
+      --ignore-scripts wrangler@latest \
+    && ln -s /opt/wrangler/node_modules/.bin/wrangler /usr/local/bin/wrangler \
+    && npm cache clean --force
 
 # Allow non-root user to use FUSE (needed for rclone mount inside the
 # helm user's session). `user_allow_other` is intentionally NOT set so

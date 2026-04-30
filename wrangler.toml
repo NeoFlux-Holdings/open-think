@@ -33,7 +33,7 @@ MODEL_DEFAULT = "@cf/openai/gpt-oss-120b"
 # 2,500+ endpoints behind two tools, code-mode style). The plugin
 # auto-defaults to that URL when no MCP_DEFAULT_URL is pinned and a
 # CF token exists. See src/plugins/mcpClient.ts.
-ENABLED_PLUGINS = "admin,helm-setup,cloudflare-admin,mcp-client,workers-ai,openrouter"
+ENABLED_PLUGINS = "admin,helm-setup,helm-toml,cloudflare-admin,mcp-client,workers-ai,openrouter"
 # Outbound host allowlist enforced by the plugin bus. Defaults cover the
 # most common providers including OpenRouter; extend as you add plugins.
 ALLOWED_HOSTS = "api.cloudflare.com,mcp.cloudflare.com,api.anthropic.com,api.openai.com,openrouter.ai"

@@ -31,7 +31,24 @@ CRITICAL — ACCOUNT ID + SCRIPT NAME ARE AUTO-RESOLVED
 CRITICAL — "DEPLOY" MEANS PATCH BINDINGS, NOT 'wrangler deploy'
 - When the user says "deploy" or "enable the plugins", USE helm-setup-deploy or cf-patch-binding directly. The CF API lets you change Worker settings live; CF auto-redeploys in ~15s. You do NOT need the user to run wrangler.
 - ENABLED_PLUGINS, OWNER_EMAIL, etc. are also patchable as plain_text bindings via cf-patch-binding {type:"plain_text", name:"ENABLED_PLUGINS", config:{text:"…"}}. Same auto-redeploy semantics.
-- The ONLY things still manual: editing wrangler.toml on the user's machine (so the next local 'wrangler deploy' doesn't drop your patches), generating VAPID keys (private key never touches our infra), and provider keys the user has to pay for.
+
+YOU CAN EDIT FILES + RUN WRANGLER (via helm-exec)
+- The shell container has bash, git, vim, sed, jq, node, python3, GitHub CLI (\`gh\`), AND \`wrangler\` pre-installed. The helm-exec skill runs ANY bash command inside the per-user container and returns stdout/stderr/exit-code.
+- Default cwd is /workspace. R2-mounted /persist (when enabled) survives container sleep. Output capped at 256 KB; default timeout 60s.
+
+KEEP wrangler.toml IN SYNC — THE BIG ONE
+- THE DRIFT PROBLEM: when you change a binding via cf-patch-binding (live, no wrangler edit), the user's local wrangler.toml doesn't have it. The user's next \`wrangler deploy\` from their machine reads their TOML, sees no such binding, and DROPS it from the live Worker — silent regression.
+- THE FIX: every time you call cf-patch-binding (or cf-create-d1/r2/kv with a binding), ALSO call helm-toml-patch with the returned tomlSnippet. The skill commits the change to the user's repo so their local TOML stays aligned with the live Worker.
+- Pre-flight check: helm-toml-status. If repoPath isn't cloned yet, helm-exec to git-clone it first (env.HELM_REPO_PATH controls where; defaults to /workspace/repo).
+- Ongoing drift: helm-toml-sync produces a diff between live Worker bindings and the repo's wrangler.toml. Run it before any deploy to catch out-of-band changes.
+- The ONLY things still genuinely manual: generating VAPID keys (private key never touches our infra; tell user to run \`npm run vapid:generate\` locally), and provider keys the user pays for.
+
+KEEP-IN-SYNC PLAYBOOK (call this exact sequence when a binding change is requested)
+1. helm-toml-status        — confirm repo is cloned + reachable
+2. cf-patch-binding {…}    — change live Worker; capture returned tomlSnippet
+3. helm-toml-patch {snippet, push:true} — commit the same change to wrangler.toml
+4. (optional) helm-toml-sync — verify zero drift afterwards
+If step 1 reports NOT_CLONED: helm-exec \`git clone <user's repo> /workspace/repo\` first. Ask the user for the repo URL if env.HELM_REPO_PATH and any prior helm-exec hasn't cloned it.
 
 DEFAULT NAMING (canonical — use these unless the user explicitly overrides)
 - R2 bucket  → \${scriptName}-persist  bound as env.WORKSPACE
