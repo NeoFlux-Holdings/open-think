@@ -49,19 +49,95 @@ interface CfResponse<T> {
   raw?: string;
 }
 
-interface InputAccount {
-  accountId?: string;
-}
-
 function asObj(input: unknown): Record<string, unknown> {
   if (!input || typeof input !== "object") return {};
   return input as Record<string, unknown>;
 }
 
-function pickAccountId(env: Env, input: unknown): string | undefined {
+/**
+ * Isolate-level cache for the resolved CF account id. We populate this on
+ * the first auto-resolution (via /accounts) and reuse for the lifetime of
+ * the V8 isolate. New isolates re-resolve, which is fine — at most one
+ * extra /accounts call per cold start.
+ *
+ * This is the fix for "agent forgets accountId mid-conversation": once
+ * any cf-* skill resolves the account, every subsequent call in the same
+ * (or another) request reuses it without the model having to thread it
+ * through inputs.
+ */
+let _cachedAccountId: string | null = null;
+
+/**
+ * Resolve the CF account id with this priority:
+ *   1. Explicit input.accountId (overrides cache)
+ *   2. env.CLOUDFLARE_ACCOUNT_ID (operator-pinned)
+ *   3. In-memory cache from a previous resolution
+ *   4. /accounts auto-fetch (caches the first result)
+ *
+ * Returns { id } on success; throws AppError otherwise so the caller can
+ * surface a single coherent error to the model. The model NEVER has to
+ * pass accountId — we just need the token.
+ */
+async function resolveAccountId(
+  env: Env,
+  fetchImpl: typeof globalThis.fetch,
+  input: unknown
+): Promise<string> {
   const fromInput = asObj(input).accountId;
+  if (typeof fromInput === "string" && fromInput.length > 0) {
+    _cachedAccountId = fromInput;
+    return fromInput;
+  }
+  if (env.CLOUDFLARE_ACCOUNT_ID) {
+    _cachedAccountId = env.CLOUDFLARE_ACCOUNT_ID;
+    return env.CLOUDFLARE_ACCOUNT_ID;
+  }
+  if (_cachedAccountId) return _cachedAccountId;
+
+  const token = env.CLOUDFLARE_API_TOKEN ?? env.CLOUDFLARE_AGENT_TOKEN;
+  if (!token) {
+    throw new AppError(
+      "E_CF_TOKEN_MISSING",
+      "CLOUDFLARE_API_TOKEN missing. Set it via /app#/settings → Manage secrets, or wrangler secret put CLOUDFLARE_API_TOKEN.",
+      400
+    );
+  }
+  const r = await fetchImpl(
+    "https://api.cloudflare.com/client/v4/accounts?per_page=10",
+    { headers: { Authorization: `Bearer ${token}`, accept: "application/json" } }
+  );
+  const j = (await r.json().catch(() => ({}))) as {
+    success?: boolean;
+    result?: Array<{ id: string }>;
+    errors?: Array<{ message: string }>;
+  };
+  if (!r.ok || !j.success) {
+    throw new AppError(
+      "E_LIST_ACCOUNTS_FAILED",
+      `auto-resolve account failed (${r.status}): ${j.errors?.[0]?.message ?? "unknown"}. Set CLOUDFLARE_ACCOUNT_ID explicitly to skip auto-resolve.`,
+      r.status || 500
+    );
+  }
+  const first = j.result?.[0];
+  if (!first?.id) {
+    throw new AppError("E_NO_ACCOUNTS", "No accounts visible to this token.", 400);
+  }
+  _cachedAccountId = first.id;
+  return first.id;
+}
+
+/**
+ * Resolve the Worker script name. Priority:
+ *   1. Explicit input.scriptName
+ *   2. env.AGENT_NAME (operator-pinned; same field that brands the agent)
+ *   3. "helm" — the canonical default from wrangler.toml
+ *
+ * Helm should NEVER ask the user for this; it's our own infrastructure.
+ */
+function resolveScriptName(env: Env, input: unknown): string {
+  const fromInput = asObj(input).scriptName;
   if (typeof fromInput === "string" && fromInput.length > 0) return fromInput;
-  return env.CLOUDFLARE_ACCOUNT_ID;
+  return env.AGENT_NAME || "helm";
 }
 
 export class CloudflareAdminPlugin implements AgentPlugin {
@@ -149,7 +225,7 @@ export class CloudflareAdminPlugin implements AgentPlugin {
         }
 
         case "list-workers": {
-          const acc = pickAccountId(this.ctx.env, input);
+          const acc = await resolveAccountId(this.ctx.env, this.ctx.fetch, input);
           if (!acc) return { ok: false, error: "accountId required (input.accountId or CLOUDFLARE_ACCOUNT_ID)" };
           const r = await this.call<Array<Record<string, unknown>>>(
             "GET",
@@ -159,7 +235,7 @@ export class CloudflareAdminPlugin implements AgentPlugin {
         }
 
         case "list-d1": {
-          const acc = pickAccountId(this.ctx.env, input);
+          const acc = await resolveAccountId(this.ctx.env, this.ctx.fetch, input);
           if (!acc) return { ok: false, error: "accountId required" };
           const r = await this.call<Array<{ uuid: string; name: string; created_at: string }>>(
             "GET",
@@ -169,7 +245,7 @@ export class CloudflareAdminPlugin implements AgentPlugin {
         }
 
         case "create-d1": {
-          const acc = pickAccountId(this.ctx.env, input);
+          const acc = await resolveAccountId(this.ctx.env, this.ctx.fetch, input);
           if (!acc) return { ok: false, error: "accountId required" };
           const name = String(asObj(input).name ?? "");
           if (!name) return { ok: false, error: "input.name required (D1 database name)" };
@@ -184,7 +260,7 @@ export class CloudflareAdminPlugin implements AgentPlugin {
         }
 
         case "query-d1": {
-          const acc = pickAccountId(this.ctx.env, input);
+          const acc = await resolveAccountId(this.ctx.env, this.ctx.fetch, input);
           const o = asObj(input);
           const databaseId = String(o.databaseId ?? "");
           const sql = String(o.sql ?? "");
@@ -201,7 +277,7 @@ export class CloudflareAdminPlugin implements AgentPlugin {
         }
 
         case "list-kv": {
-          const acc = pickAccountId(this.ctx.env, input);
+          const acc = await resolveAccountId(this.ctx.env, this.ctx.fetch, input);
           if (!acc) return { ok: false, error: "accountId required" };
           const r = await this.call<Array<{ id: string; title: string }>>(
             "GET",
@@ -211,7 +287,7 @@ export class CloudflareAdminPlugin implements AgentPlugin {
         }
 
         case "create-kv": {
-          const acc = pickAccountId(this.ctx.env, input);
+          const acc = await resolveAccountId(this.ctx.env, this.ctx.fetch, input);
           if (!acc) return { ok: false, error: "accountId required" };
           const title = String(asObj(input).title ?? "");
           if (!title) return { ok: false, error: "input.title required" };
@@ -226,7 +302,7 @@ export class CloudflareAdminPlugin implements AgentPlugin {
         }
 
         case "kv-put": {
-          const acc = pickAccountId(this.ctx.env, input);
+          const acc = await resolveAccountId(this.ctx.env, this.ctx.fetch, input);
           const o = asObj(input);
           const namespaceId = String(o.namespaceId ?? "");
           const key = String(o.key ?? "");
@@ -243,7 +319,7 @@ export class CloudflareAdminPlugin implements AgentPlugin {
         }
 
         case "kv-get": {
-          const acc = pickAccountId(this.ctx.env, input);
+          const acc = await resolveAccountId(this.ctx.env, this.ctx.fetch, input);
           const o = asObj(input);
           const namespaceId = String(o.namespaceId ?? "");
           const key = String(o.key ?? "");
@@ -264,7 +340,7 @@ export class CloudflareAdminPlugin implements AgentPlugin {
         }
 
         case "kv-delete": {
-          const acc = pickAccountId(this.ctx.env, input);
+          const acc = await resolveAccountId(this.ctx.env, this.ctx.fetch, input);
           const o = asObj(input);
           const namespaceId = String(o.namespaceId ?? "");
           const key = String(o.key ?? "");
@@ -278,7 +354,7 @@ export class CloudflareAdminPlugin implements AgentPlugin {
         }
 
         case "list-r2": {
-          const acc = pickAccountId(this.ctx.env, input);
+          const acc = await resolveAccountId(this.ctx.env, this.ctx.fetch, input);
           if (!acc) return { ok: false, error: "accountId required" };
           const r = await this.call<{ buckets: Array<{ name: string; creation_date: string }> }>(
             "GET",
@@ -288,7 +364,7 @@ export class CloudflareAdminPlugin implements AgentPlugin {
         }
 
         case "create-r2": {
-          const acc = pickAccountId(this.ctx.env, input);
+          const acc = await resolveAccountId(this.ctx.env, this.ctx.fetch, input);
           if (!acc) return { ok: false, error: "accountId required" };
           const name = String(asObj(input).name ?? "");
           if (!name) return { ok: false, error: "input.name required" };
@@ -301,14 +377,13 @@ export class CloudflareAdminPlugin implements AgentPlugin {
         }
 
         case "put-secret": {
-          const acc = pickAccountId(this.ctx.env, input);
+          const acc = await resolveAccountId(this.ctx.env, this.ctx.fetch, input);
           const o = asObj(input);
-          const scriptName = String(o.scriptName ?? "");
+          const scriptName = resolveScriptName(this.ctx.env, input);
           const secretName = String(o.name ?? "");
           const text = String(o.text ?? "");
-          if (!acc) return { ok: false, error: "accountId required" };
-          if (!scriptName || !secretName || !text) {
-            return { ok: false, error: "input.scriptName + input.name + input.text required" };
+          if (!secretName || !text) {
+            return { ok: false, error: "input.name + input.text required" };
           }
           const r = await this.call(
             "PUT",
@@ -319,10 +394,8 @@ export class CloudflareAdminPlugin implements AgentPlugin {
         }
 
         case "list-bindings": {
-          const acc = pickAccountId(this.ctx.env, input);
-          const scriptName = String(asObj(input).scriptName ?? "");
-          if (!acc) return { ok: false, error: "accountId required" };
-          if (!scriptName) return { ok: false, error: "input.scriptName required (e.g. \"helm\")" };
+          const acc = await resolveAccountId(this.ctx.env, this.ctx.fetch, input);
+          const scriptName = resolveScriptName(this.ctx.env, input);
           const r = await this.call<{ bindings?: Array<Record<string, unknown>> }>(
             "GET",
             `/accounts/${encodeURIComponent(acc)}/workers/scripts/${encodeURIComponent(scriptName)}/settings`
@@ -337,10 +410,8 @@ export class CloudflareAdminPlugin implements AgentPlugin {
         }
 
         case "list-secrets": {
-          const acc = pickAccountId(this.ctx.env, input);
-          const scriptName = String(asObj(input).scriptName ?? "");
-          if (!acc) return { ok: false, error: "accountId required" };
-          if (!scriptName) return { ok: false, error: "input.scriptName required" };
+          const acc = await resolveAccountId(this.ctx.env, this.ctx.fetch, input);
+          const scriptName = resolveScriptName(this.ctx.env, input);
           // CF returns secret NAMES only — values are write-only by design.
           // This is exactly what we want: the agent can see which secrets
           // are set without us leaking the values.
@@ -365,16 +436,14 @@ export class CloudflareAdminPlugin implements AgentPlugin {
           //   - The user's local wrangler.toml STILL doesn't have this
           //     binding. Their next `wrangler deploy` will REMOVE it.
           //     Always include the TOML snippet they should paste.
-          const acc = pickAccountId(this.ctx.env, input);
+          const acc = await resolveAccountId(this.ctx.env, this.ctx.fetch, input);
           const o = asObj(input);
-          const scriptName = String(o.scriptName ?? "");
+          const scriptName = resolveScriptName(this.ctx.env, input);
           const type = String(o.type ?? "");
           const name = String(o.name ?? "");
           const config = (o.config && typeof o.config === "object")
             ? (o.config as Record<string, unknown>)
             : {};
-          if (!acc) return { ok: false, error: "accountId required" };
-          if (!scriptName) return { ok: false, error: "input.scriptName required (e.g. \"helm\")" };
           if (!type || !name) {
             return {
               ok: false,
@@ -451,7 +520,7 @@ export class CloudflareAdminPlugin implements AgentPlugin {
         }
 
         case "list-access-apps": {
-          const acc = pickAccountId(this.ctx.env, input);
+          const acc = await resolveAccountId(this.ctx.env, this.ctx.fetch, input);
           if (!acc) return { ok: false, error: "accountId required" };
           const r = await this.call<Array<Record<string, unknown>>>(
             "GET",
@@ -461,7 +530,7 @@ export class CloudflareAdminPlugin implements AgentPlugin {
         }
 
         case "create-access-app": {
-          const acc = pickAccountId(this.ctx.env, input);
+          const acc = await resolveAccountId(this.ctx.env, this.ctx.fetch, input);
           const o = asObj(input);
           const name = String(o.name ?? "");
           const domain = String(o.domain ?? "");

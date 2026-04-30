@@ -2620,12 +2620,17 @@ async function renderShell() {
   await mountShell();
 }
 
-// Lazy-load xterm.js from a CDN so the static /app HTML stays small.
-// xterm-fit-addon resizes the terminal to fill its container.
-const XTERM_VERSION = '5.5.0';
-const XTERM_CSS = \`https://cdn.jsdelivr.net/npm/xterm@\${XTERM_VERSION}/css/xterm.min.css\`;
-const XTERM_JS = \`https://cdn.jsdelivr.net/npm/xterm@\${XTERM_VERSION}/lib/xterm.min.js\`;
-const XTERM_FIT = \`https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.10.0/lib/xterm-addon-fit.min.js\`;
+// Lazy-load xterm.js from our own /assets/xterm/ proxy so the static /app
+// HTML stays small AND we don't depend on the CDN being reachable from
+// the user's network. The proxy fetches from jsdelivr the first time and
+// caches forever (see src/index.ts /assets/xterm route).
+//
+// Pinning specific versions of @xterm/xterm + @xterm/addon-fit so an
+// upstream breaking change can't silently hose this tab. Bump in
+// lock-step with the proxy's allowlist.
+const XTERM_CSS = '/assets/xterm/xterm.css';
+const XTERM_JS = '/assets/xterm/xterm.js';
+const XTERM_FIT = '/assets/xterm/addon-fit.js';
 
 let _xtermLoaded = null;
 function loadXterm() {

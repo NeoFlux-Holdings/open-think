@@ -95,6 +95,20 @@ export class HelmSetupPlugin implements AgentPlugin {
       return { ok: true, data: { topic, content: doc } };
     }
 
+    if (action === "deploy") {
+      // Full deploy-everything chain. The agent's "set me up" button.
+      // Does what helm-setup-auto does PLUS:
+      //   - Creates D1 PA-stack database (open-think-pa) if missing
+      //   - Creates KV cache namespace if missing
+      //   - PATCHes Worker bindings live (DB d1, WORKSPACE r2, CACHE kv)
+      //   - PATCHes ENABLED_PLUGINS plain_text binding to add memory,
+      //     scheduler, cost-tracking, mcp-client
+      // No `wrangler deploy` needed — the live Worker has it all.
+      // The user only has to commit the matching wrangler.toml additions
+      // afterwards so their next local deploy doesn't drop the bindings.
+      return await this.runDeploy(input);
+    }
+
     if (action === "auto") {
       // Mirror of POST /setup/auto — we run the same chain inline so
       // the agent can call this as a single skill instead of orchestrating
@@ -230,5 +244,306 @@ export class HelmSetupPlugin implements AgentPlugin {
     }
 
     return { ok: false, error: `Unknown action: ${action}` };
+  }
+
+  /* ---------------- helpers for deploy-everything ---------------- */
+
+  private async runDeploy(input: unknown): Promise<PluginResult> {
+    if (!this.ctx) return { ok: false, error: "Plugin not initialized" };
+    const env = this.ctx.env as Env;
+    const o = asObj(input) as InvokeInput & { skipAccess?: boolean };
+    const token = env.CLOUDFLARE_API_TOKEN ?? env.CLOUDFLARE_AGENT_TOKEN ?? "";
+    if (!token) {
+      return { ok: false, error: "CLOUDFLARE_API_TOKEN missing — paste it in /app#/settings → Manage secrets first." };
+    }
+
+    // ---- 1. Resolve account + scriptName ----
+    const accountId = await this.resolveAccount(token, o.accountId || env.CLOUDFLARE_ACCOUNT_ID);
+    if (!accountId.ok) return { ok: false, error: accountId.error };
+    const acc = accountId.id;
+    const scriptName = o.scriptName || env.AGENT_NAME || "helm";
+
+    const steps: Array<{ kind: string; ok: boolean; detail?: string }> = [];
+    const tomlSnippets: string[] = [];
+
+    // ---- 2. Lockdown (Access) — only if not already done ----
+    if (!o.skipAccess && !(env.CF_ACCESS_TEAM_DOMAIN && env.CF_ACCESS_AUD)) {
+      const allowedEmails = (o.allowedEmails && o.allowedEmails.length > 0)
+        ? o.allowedEmails
+        : (env.AGENT_OWNER_EMAIL || env.OWNER_EMAIL)
+          ? [(env.AGENT_OWNER_EMAIL || env.OWNER_EMAIL) as string]
+          : [];
+      if (allowedEmails.length === 0) {
+        steps.push({
+          kind: "lockdown",
+          ok: false,
+          detail: "skipped — no AGENT_OWNER_EMAIL/OWNER_EMAIL set. Set one and re-run, or pass allowedEmails."
+        });
+      } else {
+        const lockdown = await runLockdown({
+          token,
+          accountId: acc,
+          scriptName,
+          appName: `Helm — ${scriptName}`,
+          workerHost: `${scriptName}.workers.dev`,
+          allowedEmails
+        });
+        steps.push({
+          kind: "lockdown",
+          ok: lockdown.ok,
+          detail: lockdown.ok ? `Access app ${lockdown.aud?.slice(0, 12)}…` : lockdown.error
+        });
+      }
+    } else {
+      steps.push({ kind: "lockdown", ok: true, detail: "already configured (CF_ACCESS_* set)" });
+    }
+
+    // ---- 3. HELM_INTERNAL_TOKEN ----
+    if (!env.HELM_INTERNAL_TOKEN) {
+      const tok = this.randomHex(32);
+      const r = await this.cfPutSecret(token, acc, scriptName, "HELM_INTERNAL_TOKEN", tok);
+      steps.push({ kind: "secret HELM_INTERNAL_TOKEN", ok: r.ok, detail: r.detail });
+    } else {
+      steps.push({ kind: "secret HELM_INTERNAL_TOKEN", ok: true, detail: "already set" });
+    }
+
+    // ---- 4. R2 bucket + WORKSPACE binding ----
+    const bucketName = env.R2_BUCKET || `${scriptName}-persist`;
+    const bucketCreate = await this.cfCreateR2(token, acc, bucketName);
+    steps.push({ kind: `r2 bucket ${bucketName}`, ok: bucketCreate.ok, detail: bucketCreate.detail });
+    if (bucketCreate.ok) {
+      const patch = await this.cfPatchBinding(token, acc, scriptName, {
+        type: "r2_bucket", name: "WORKSPACE", config: { bucket_name: bucketName }
+      });
+      steps.push({ kind: "binding WORKSPACE (r2)", ok: patch.ok, detail: patch.detail });
+      tomlSnippets.push(`[[r2_buckets]]\nbinding = "WORKSPACE"\nbucket_name = "${bucketName}"`);
+      if (!env.R2_BUCKET) {
+        const r = await this.cfPutSecret(token, acc, scriptName, "R2_BUCKET", bucketName);
+        steps.push({ kind: "secret R2_BUCKET", ok: r.ok, detail: r.detail });
+      }
+    }
+
+    // ---- 5. D1 PA-stack + DB binding ----
+    const d1Name = `${scriptName}-pa`;
+    const d1Create = await this.cfCreateD1(token, acc, d1Name);
+    steps.push({ kind: `d1 ${d1Name}`, ok: d1Create.ok, detail: d1Create.detail });
+    if (d1Create.uuid) {
+      const patch = await this.cfPatchBinding(token, acc, scriptName, {
+        type: "d1", name: "DB", config: { database_name: d1Name, database_id: d1Create.uuid }
+      });
+      steps.push({ kind: "binding DB (d1)", ok: patch.ok, detail: patch.detail });
+      tomlSnippets.push(`[[d1_databases]]\nbinding = "DB"\ndatabase_name = "${d1Name}"\ndatabase_id = "${d1Create.uuid}"`);
+    }
+
+    // ---- 6. KV cache namespace + CACHE binding ----
+    const kvTitle = `${scriptName}-cache`;
+    const kvCreate = await this.cfCreateKv(token, acc, kvTitle);
+    steps.push({ kind: `kv ${kvTitle}`, ok: kvCreate.ok, detail: kvCreate.detail });
+    if (kvCreate.id) {
+      const patch = await this.cfPatchBinding(token, acc, scriptName, {
+        type: "kv_namespace", name: "CACHE", config: { namespace_id: kvCreate.id }
+      });
+      steps.push({ kind: "binding CACHE (kv)", ok: patch.ok, detail: patch.detail });
+      tomlSnippets.push(`[[kv_namespaces]]\nbinding = "CACHE"\nid = "${kvCreate.id}"`);
+    }
+
+    // ---- 7. ENABLED_PLUGINS plain_text binding (merge in PA-stack plugins) ----
+    const currentPlugins = (env.ENABLED_PLUGINS || "")
+      .split(",").map((s) => s.trim()).filter(Boolean);
+    const wantPlugins = new Set([
+      ...currentPlugins,
+      "admin", "helm-setup", "cloudflare-admin",
+      "workers-ai", "openrouter",
+      "memory", "mcp-client",
+      "notifier", "email", "calendar", "scheduler"
+    ]);
+    const newPluginsList = Array.from(wantPlugins).join(",");
+    if (newPluginsList !== env.ENABLED_PLUGINS) {
+      const patch = await this.cfPatchBinding(token, acc, scriptName, {
+        type: "plain_text", name: "ENABLED_PLUGINS", config: { text: newPluginsList }
+      });
+      steps.push({
+        kind: "var ENABLED_PLUGINS",
+        ok: patch.ok,
+        detail: patch.ok ? `set to ${newPluginsList}` : patch.detail
+      });
+    } else {
+      steps.push({ kind: "var ENABLED_PLUGINS", ok: true, detail: "already includes all PA plugins" });
+    }
+
+    // ---- 8. CLOUDFLARE_ACCOUNT_ID secret (so future requests skip /accounts) ----
+    if (!env.CLOUDFLARE_ACCOUNT_ID) {
+      const r = await this.cfPutSecret(token, acc, scriptName, "CLOUDFLARE_ACCOUNT_ID", acc);
+      steps.push({ kind: "secret CLOUDFLARE_ACCOUNT_ID", ok: r.ok, detail: r.detail });
+    } else {
+      steps.push({ kind: "secret CLOUDFLARE_ACCOUNT_ID", ok: true, detail: "already set" });
+    }
+
+    return {
+      ok: steps.every((s) => s.ok),
+      data: {
+        accountId: acc,
+        scriptName,
+        steps,
+        wranglerTomlAdditions: tomlSnippets.join("\n\n"),
+        notes: [
+          "Live Worker is now provisioned + bound. CF auto-redeploys on settings change (~15s); wait that long before testing.",
+          "Commit the wranglerTomlAdditions to your wrangler.toml so the next `wrangler deploy` from your machine doesn't drop the bindings.",
+          "Provider keys (OpenRouter / Anthropic / OpenAI) and VAPID keys remain manual — paste in /app#/settings → Manage secrets."
+        ]
+      }
+    };
+  }
+
+  private randomHex(bytes: number): string {
+    const buf = new Uint8Array(bytes);
+    crypto.getRandomValues(buf);
+    return Array.from(buf, (b) => b.toString(16).padStart(2, "0")).join("");
+  }
+
+  private async resolveAccount(token: string, override?: string): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
+    if (override) return { ok: true, id: override };
+    if (!this.ctx) return { ok: false, error: "no ctx" };
+    const r = await this.ctx.fetch(
+      "https://api.cloudflare.com/client/v4/accounts?per_page=10",
+      { headers: { Authorization: `Bearer ${token}`, accept: "application/json" } }
+    );
+    const j = (await r.json().catch(() => ({}))) as {
+      success?: boolean; result?: Array<{ id: string }>; errors?: Array<{ message: string }>;
+    };
+    if (!r.ok || !j.success || !j.result?.[0]) {
+      return { ok: false, error: j.errors?.[0]?.message ?? `list-accounts failed (${r.status})` };
+    }
+    return { ok: true, id: j.result[0].id };
+  }
+
+  private async cfCreateR2(token: string, accId: string, name: string): Promise<{ ok: boolean; detail: string }> {
+    if (!this.ctx) return { ok: false, detail: "no ctx" };
+    const r = await this.ctx.fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accId)}/r2/buckets`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ name })
+      }
+    );
+    const text = await r.text();
+    const exists = !r.ok && text.toLowerCase().includes("already exists");
+    if (r.ok) return { ok: true, detail: "created" };
+    if (exists) return { ok: true, detail: "already exists — reusing" };
+    return { ok: false, detail: `failed (${r.status}): ${text.slice(0, 200)}` };
+  }
+
+  private async cfCreateD1(token: string, accId: string, name: string): Promise<{ ok: boolean; uuid?: string; detail: string }> {
+    if (!this.ctx) return { ok: false, detail: "no ctx" };
+    const r = await this.ctx.fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accId)}/d1/database`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ name })
+      }
+    );
+    const text = await r.text();
+    if (r.ok) {
+      try {
+        const j = JSON.parse(text) as { result?: { uuid?: string } };
+        return { ok: true, uuid: j.result?.uuid, detail: "created" };
+      } catch {/* noop */}
+    }
+    if (text.toLowerCase().includes("already")) {
+      // Look it up by name.
+      const lookup = await this.ctx.fetch(
+        `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accId)}/d1/database?name=${encodeURIComponent(name)}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      const lj = (await lookup.json().catch(() => ({}))) as { result?: Array<{ uuid: string }> };
+      const existing = lj.result?.[0]?.uuid;
+      if (existing) return { ok: true, uuid: existing, detail: "already exists — reusing" };
+    }
+    return { ok: false, detail: `failed (${r.status}): ${text.slice(0, 200)}` };
+  }
+
+  private async cfCreateKv(token: string, accId: string, title: string): Promise<{ ok: boolean; id?: string; detail: string }> {
+    if (!this.ctx) return { ok: false, detail: "no ctx" };
+    const r = await this.ctx.fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accId)}/storage/kv/namespaces`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ title })
+      }
+    );
+    const text = await r.text();
+    if (r.ok) {
+      try {
+        const j = JSON.parse(text) as { result?: { id?: string } };
+        return { ok: true, id: j.result?.id, detail: "created" };
+      } catch {/* noop */}
+    }
+    if (text.toLowerCase().includes("already exists") || text.toLowerCase().includes("duplicate")) {
+      // List + find by title.
+      const list = await this.ctx.fetch(
+        `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accId)}/storage/kv/namespaces?per_page=100`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      const lj = (await list.json().catch(() => ({}))) as { result?: Array<{ id: string; title: string }> };
+      const existing = lj.result?.find((n) => n.title === title)?.id;
+      if (existing) return { ok: true, id: existing, detail: "already exists — reusing" };
+    }
+    return { ok: false, detail: `failed (${r.status}): ${text.slice(0, 200)}` };
+  }
+
+  private async cfPutSecret(token: string, accId: string, scriptName: string, name: string, text: string): Promise<{ ok: boolean; detail: string }> {
+    if (!this.ctx) return { ok: false, detail: "no ctx" };
+    const r = await this.ctx.fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accId)}/workers/scripts/${encodeURIComponent(scriptName)}/secrets`,
+      {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ name, text, type: "secret_text" })
+      }
+    );
+    return { ok: r.ok, detail: r.ok ? "set" : `failed (${r.status})` };
+  }
+
+  /**
+   * PATCH the script's settings to add/replace one binding. Multipart
+   * because that's what CF expects. We fetch existing, merge, push back.
+   */
+  private async cfPatchBinding(
+    token: string,
+    accId: string,
+    scriptName: string,
+    binding: { type: string; name: string; config: Record<string, unknown> }
+  ): Promise<{ ok: boolean; detail: string }> {
+    if (!this.ctx) return { ok: false, detail: "no ctx" };
+    const settingsUrl = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accId)}/workers/scripts/${encodeURIComponent(scriptName)}/settings`;
+    const get = await this.ctx.fetch(settingsUrl, { headers: { Authorization: `Bearer ${token}` } });
+    if (!get.ok) return { ok: false, detail: `fetch settings failed (${get.status})` };
+    const gj = (await get.json().catch(() => ({}))) as { result?: { bindings?: Array<Record<string, unknown>> } };
+    const existing = gj.result?.bindings ?? [];
+    // Replace any same-name+same-type entry; otherwise append.
+    const filtered = existing.filter((b) => !(b.type === binding.type && b.name === binding.name));
+    filtered.push({ type: binding.type, name: binding.name, ...binding.config });
+    const body = [
+      "--BOUNDARY",
+      'Content-Disposition: form-data; name="settings"',
+      "Content-Type: application/json",
+      "",
+      JSON.stringify({ bindings: filtered }),
+      "--BOUNDARY--",
+      ""
+    ].join("\r\n");
+    const patch = await this.ctx.fetch(settingsUrl, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${token}`, "content-type": "multipart/form-data; boundary=BOUNDARY" },
+      body
+    });
+    if (!patch.ok) {
+      const t = await patch.text();
+      return { ok: false, detail: `patch failed (${patch.status}): ${t.slice(0, 200)}` };
+    }
+    return { ok: true, detail: "patched" };
   }
 }

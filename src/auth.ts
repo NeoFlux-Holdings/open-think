@@ -236,6 +236,9 @@ const PUBLIC_POSTS = new Set(["/cli-auth/start", "/cli-auth/poll"]);
 
 export function isPublicRoute(method: string, pathname: string): boolean {
   if (method === "GET" && PUBLIC_GETS.has(pathname)) return true;
+  // Static asset proxy (xterm.js et al.) — purely public CDN content,
+  // no user data, browsers fetch before any session cookie exists.
+  if (method === "GET" && pathname.startsWith("/assets/")) return true;
   if (method === "POST" && PUBLIC_POSTS.has(pathname)) return true;
   return false;
 }

@@ -56,11 +56,23 @@ describe("CloudflareAdminPlugin", () => {
     expect((r.data as { id: string }).id).toBe("tok-123");
   });
 
-  it("requires accountId for list-d1 if no env CLOUDFLARE_ACCOUNT_ID", async () => {
+  it("auto-resolves accountId from /accounts when CLOUDFLARE_ACCOUNT_ID unset", async () => {
+    let listAccountsCalls = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" || input instanceof URL ? String(input) : input.url;
+      if (url.includes("/accounts?per_page=10")) {
+        listAccountsCalls += 1;
+        return jsonResponse({ success: true, result: [{ id: "auto-acc-1", name: "first" }] });
+      }
+      if (url.includes("/accounts/auto-acc-1/d1/database")) {
+        return jsonResponse({ success: true, result: [] });
+      }
+      throw new Error("unexpected url: " + url);
+    });
     const plugin = new CloudflareAdminPlugin();
     await plugin.initialize({
       config: baseConfig(),
-      fetch: globalThis.fetch,
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
       env: {
         ENABLED_PLUGINS: "cloudflare-admin",
         ALLOWED_HOSTS: "api.cloudflare.com",
@@ -68,8 +80,12 @@ describe("CloudflareAdminPlugin", () => {
       }
     });
     const r = await plugin.invoke("list-d1", {});
-    expect(r.ok).toBe(false);
-    expect(r.error).toMatch(/accountId required/);
+    expect(r.ok).toBe(true);
+    expect(listAccountsCalls).toBe(1);
+    // Subsequent calls reuse the cached id — no second /accounts hit.
+    const r2 = await plugin.invoke("list-d1", {});
+    expect(r2.ok).toBe(true);
+    expect(listAccountsCalls).toBe(1);
   });
 
   it("create-d1 POSTs to the right path with name body", async () => {

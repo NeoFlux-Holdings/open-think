@@ -60,24 +60,42 @@ export class McpClientPlugin implements AgentPlugin {
     this.ctx = context;
   }
 
+  /**
+   * Resolve the MCP server URL. Priority:
+   *   1. Explicit `serverUrl` on the call
+   *   2. env.MCP_DEFAULT_URL (operator-pinned override)
+   *   3. https://mcp.cloudflare.com/mcp — Cloudflare's hosted "API MCP"
+   *      that collapses 2,500+ CF dashboard endpoints into search()/execute()
+   *      via Code Mode. Falls back to this default when CLOUDFLARE_API_TOKEN
+   *      is set, since the MCP requires that token as bearer.
+   */
   private resolveServerUrl(provided?: string): string {
-    const url = provided ?? this.ctx?.env.MCP_DEFAULT_URL;
-    if (!url) {
-      throw new AppError(
-        "E_MCP_URL_MISSING",
-        "serverUrl not provided and MCP_DEFAULT_URL env var is not set",
-        400
-      );
-    }
-    return url;
+    const explicit = provided ?? this.ctx?.env.MCP_DEFAULT_URL;
+    if (explicit) return explicit;
+    const cfToken = this.ctx?.env.CLOUDFLARE_API_TOKEN ?? this.ctx?.env.CLOUDFLARE_AGENT_TOKEN;
+    if (cfToken) return "https://mcp.cloudflare.com/mcp";
+    throw new AppError(
+      "E_MCP_URL_MISSING",
+      "No MCP server URL: pass serverUrl, set MCP_DEFAULT_URL, or set CLOUDFLARE_API_TOKEN to default to mcp.cloudflare.com.",
+      400
+    );
   }
 
+  /**
+   * Auth headers for MCP. Priority:
+   *   1. Explicit `headers.Authorization` on the call
+   *   2. env.MCP_BEARER_TOKEN (operator-pinned)
+   *   3. env.CLOUDFLARE_API_TOKEN — used as bearer for mcp.cloudflare.com
+   *      and any other server that accepts CF tokens
+   */
   private buildHeaders(extra?: Record<string, string>): Record<string, string> {
     const headers: Record<string, string> = {
       "content-type": "application/json",
       accept: "application/json, text/event-stream"
     };
-    const token = this.ctx?.env.MCP_BEARER_TOKEN;
+    const explicitBearer = this.ctx?.env.MCP_BEARER_TOKEN;
+    const cfToken = this.ctx?.env.CLOUDFLARE_API_TOKEN ?? this.ctx?.env.CLOUDFLARE_AGENT_TOKEN;
+    const token = explicitBearer || cfToken;
     if (token) {
       headers.Authorization = `Bearer ${token}`;
     }

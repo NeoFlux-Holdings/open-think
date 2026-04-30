@@ -906,6 +906,63 @@ async function handler(request: Request, env: Env, requestId: string, startedAt:
     return new Response("method not allowed", { status: 405 });
   }
 
+  // /assets/xterm/* — Worker-proxied + edge-cached xterm.js bundle.
+  // Browsers load these directly from the SPA; we never re-fetch from
+  // jsdelivr after the first request to a colo. Public route (no
+  // user data; the assets ARE the static distro of @xterm/xterm).
+  if (request.method === "GET" && url.pathname.startsWith("/assets/xterm/")) {
+    const file = url.pathname.slice("/assets/xterm/".length);
+    // Pinned versions. Bump in src/app.ts at the same time.
+    const XTERM_VER = "5.5.0";
+    const FIT_VER = "0.10.0";
+    type Source = { url: string; type: string };
+    const SOURCES: Record<string, Source> = {
+      "xterm.js": {
+        url: `https://cdn.jsdelivr.net/npm/@xterm/xterm@${XTERM_VER}/lib/xterm.js`,
+        type: "application/javascript; charset=utf-8"
+      },
+      "xterm.css": {
+        url: `https://cdn.jsdelivr.net/npm/@xterm/xterm@${XTERM_VER}/css/xterm.css`,
+        type: "text/css; charset=utf-8"
+      },
+      "addon-fit.js": {
+        url: `https://cdn.jsdelivr.net/npm/@xterm/addon-fit@${FIT_VER}/lib/addon-fit.js`,
+        type: "application/javascript; charset=utf-8"
+      }
+    };
+    const source = SOURCES[file];
+    if (!source) {
+      return new Response("not found", { status: 404 });
+    }
+    // CF Cache API. The `default` cache isn't on the standard CacheStorage
+    // type; cast to the CF-specific shape.
+    const cache = (caches as unknown as { default: Cache }).default;
+    // Cache key is namespaced so we don't collide with anything else.
+    const cacheKey = new Request(`https://open-think-asset-cache.local/${file}?v=${XTERM_VER}-${FIT_VER}`);
+    let cached = await cache.match(cacheKey);
+    if (!cached) {
+      const upstream = await fetch(source.url);
+      if (!upstream.ok) {
+        return new Response(`upstream fetch failed (${upstream.status})`, { status: 502 });
+      }
+      const body = await upstream.arrayBuffer();
+      cached = new Response(body, {
+        headers: {
+          "content-type": source.type,
+          // 1y immutable — version is in the upstream URL, so any bump
+          // is a different file and the cache is rebuilt naturally.
+          "cache-control": "public, max-age=31536000, immutable",
+          "x-asset-source": source.url
+        }
+      });
+      // Fire-and-forget the cache write. The first request pays the
+      // cold-start cost; every subsequent request hits cache. Awaiting
+      // would add ~1ms but keeps the code ctx-free.
+      await cache.put(cacheKey, cached.clone());
+    }
+    return cached;
+  }
+
   // GET /me — return the authenticated identity. Used by the Files
   // tab to derive the per-user prefix without re-implementing the
   // hash on the client. Cheap, no side effects.

@@ -316,7 +316,7 @@ const SKILL_CATALOG: SkillDefinition[] = [
     id: "cf-put-secret",
     name: "CF Put Worker Secret",
     description:
-      "Set a secret on a Worker script. {scriptName, name, text}. DANGEROUS — handles secret material.",
+      "Set a secret on the live Worker. accountId + scriptName auto-resolve. DANGEROUS — handles secret material; never echo secret values back to the user.",
     pluginId: "cloudflare-admin",
     action: "put-secret",
     tags: ["cloudflare", "admin", "secret", "worker"],
@@ -329,31 +329,30 @@ const SKILL_CATALOG: SkillDefinition[] = [
         name: { type: "string" },
         text: { type: "string" }
       },
-      required: ["scriptName", "name", "text"]
+      required: ["name", "text"]
     }
   },
   {
     id: "cf-list-bindings",
     name: "CF List Worker Bindings",
     description:
-      "List the live Worker's bindings (R2, D1, KV, AI, DOs, secrets, etc.). USE THIS BEFORE proposing cf-patch-binding so you don't duplicate work — the binding may already be there.",
+      "List the live Worker's bindings (R2, D1, KV, AI, DOs, etc.). accountId + scriptName auto-resolve from env — DO NOT pass them unless overriding. USE THIS BEFORE proposing cf-patch-binding so you don't duplicate work.",
     pluginId: "cloudflare-admin",
     action: "list-bindings",
     tags: ["cloudflare", "admin", "introspect"],
     inputSchema: {
       type: "object",
       properties: {
-        accountId: { type: "string" },
-        scriptName: { type: "string", description: "Worker script name (default: \"helm\")" }
-      },
-      required: ["scriptName"]
+        accountId: { type: "string", description: "Optional override; auto-resolves from token" },
+        scriptName: { type: "string", description: "Optional override; defaults to env.AGENT_NAME or \"helm\"" }
+      }
     }
   },
   {
     id: "cf-list-secrets",
     name: "CF List Worker Secrets",
     description:
-      "List the live Worker's secret NAMES (values are write-only by design, never returned). USE THIS to see what's already configured before proposing cf-put-secret.",
+      "List the live Worker's secret NAMES (values are write-only by design, never returned). accountId + scriptName auto-resolve. USE THIS to see what's configured before proposing cf-put-secret.",
     pluginId: "cloudflare-admin",
     action: "list-secrets",
     tags: ["cloudflare", "admin", "introspect"],
@@ -362,15 +361,14 @@ const SKILL_CATALOG: SkillDefinition[] = [
       properties: {
         accountId: { type: "string" },
         scriptName: { type: "string" }
-      },
-      required: ["scriptName"]
+      }
     }
   },
   {
     id: "cf-patch-binding",
     name: "CF Patch Worker Binding",
     description:
-      "Add or replace a binding on the LIVE Worker via CF API (no wrangler.toml edit needed). type ∈ {r2_bucket, d1, kv_namespace, ai, queue, hyperdrive}. ALSO returns the matching wrangler.toml snippet — surface it to the user verbatim, because the binding will be removed by their next `wrangler deploy` unless they commit the snippet too. DANGEROUS.",
+      "Add or replace a binding on the LIVE Worker via CF API (no wrangler.toml edit needed). type ∈ {r2_bucket, d1, kv_namespace, ai, queue, hyperdrive, plain_text}. accountId + scriptName auto-resolve. ALSO returns the matching wrangler.toml snippet — surface it verbatim so the user can commit it. DANGEROUS.",
     pluginId: "cloudflare-admin",
     action: "patch-binding",
     tags: ["cloudflare", "admin", "binding", "create"],
@@ -384,10 +382,10 @@ const SKILL_CATALOG: SkillDefinition[] = [
         name: { type: "string", description: "Binding name (e.g. WORKSPACE, DB, AI)" },
         config: {
           type: "object",
-          description: "type-specific config: r2_bucket { bucket_name }; d1 { database_name, database_id }; kv_namespace { namespace_id }; ai {}; queue { queue_name }; hyperdrive { id }; plain_text { text }"
+          description: "type-specific: r2_bucket { bucket_name }; d1 { database_name, database_id }; kv_namespace { namespace_id }; ai {}; queue { queue_name }; hyperdrive { id }; plain_text { text }"
         }
       },
-      required: ["scriptName", "type", "name"]
+      required: ["type", "name"]
     }
   },
   {
@@ -447,7 +445,7 @@ const SKILL_CATALOG: SkillDefinition[] = [
     id: "helm-setup-auto",
     name: "Helm Setup Auto",
     description:
-      "ONE-CALL full setup. Verifies CLOUDFLARE_API_TOKEN, picks an account, runs Cloudflare Access lockdown, mints HELM_INTERNAL_TOKEN, creates R2 bucket. Returns nextSteps[] showing what's done vs what's still manual (just the [[r2_buckets]] TOML edit). PREFER THIS over chaining individual cf-* skills when the user says \"set me up\". DANGEROUS.",
+      "ONE-CALL minimal setup. Verifies CLOUDFLARE_API_TOKEN, picks an account, runs Cloudflare Access lockdown, mints HELM_INTERNAL_TOKEN, creates R2 bucket. Light path — just lockdown + bucket. For \"set me up completely\" use helm-setup-deploy instead. DANGEROUS.",
     pluginId: "helm-setup",
     action: "auto",
     tags: ["setup", "auto", "create"],
@@ -459,6 +457,25 @@ const SKILL_CATALOG: SkillDefinition[] = [
         scriptName: { type: "string", description: "Worker name (default: env.AGENT_NAME or \"helm\")" },
         appName: { type: "string", description: "Access app display name" },
         allowedEmails: { type: "array", items: { type: "string" } }
+      }
+    }
+  },
+  {
+    id: "helm-setup-deploy",
+    name: "Helm Setup Deploy (full)",
+    description:
+      "DEPLOY-EVERYTHING in one call — what \"set me up\" should mean. Auto-resolves accountId + scriptName (no need to pass them). Creates D1 PA-stack + R2 bucket + KV cache, PATCHES the live Worker bindings (DB, WORKSPACE, CACHE), updates ENABLED_PLUGINS, sets HELM_INTERNAL_TOKEN + CLOUDFLARE_ACCOUNT_ID secrets, runs Access lockdown if needed. NO `wrangler deploy` required afterwards — CF auto-redeploys on settings change. Returns the matching wrangler.toml additions for the user to commit so their next local deploy doesn't drop the bindings. PREFER THIS over chaining cf-* skills. DANGEROUS.",
+    pluginId: "helm-setup",
+    action: "deploy",
+    tags: ["setup", "deploy", "create", "auto"],
+    dangerous: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        accountId: { type: "string", description: "Optional override; auto-resolves from token otherwise" },
+        scriptName: { type: "string", description: "Optional override; defaults to env.AGENT_NAME or \"helm\"" },
+        skipAccess: { type: "boolean", description: "Skip the Access lockdown step (e.g. when re-running)" },
+        allowedEmails: { type: "array", items: { type: "string" }, description: "Override Access policy emails" }
       }
     }
   },

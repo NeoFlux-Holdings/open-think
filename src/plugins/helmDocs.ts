@@ -16,32 +16,40 @@
 export const HELM_DOCS: Record<string, string> = {
   /* --------------------- canonical setup flow --------------------- */
   "setup": `
-SETUP FLOW (one-click, when CLOUDFLARE_API_TOKEN + AGENT_OWNER_EMAIL are set):
+DEPLOY-EVERYTHING IN ONE CALL: helm-setup-deploy.
 
-  helm-setup-auto — runs the entire chain in one call:
-    1. Verifies token
-    2. Picks the account (env override → first visible)
-    3. Runs runLockdown: creates Access app + email-allowlist policy,
-       persists CF_ACCESS_TEAM_DOMAIN + CF_ACCESS_AUD as secrets
-    4. Mints HELM_INTERNAL_TOKEN (32-byte secret) if missing
-    5. Auto-creates R2 bucket "<scriptName>-persist" if missing,
-       sets R2_BUCKET secret
-    6. Returns nextSteps[] showing what's done vs what's still manual
+What "set me up" means:
+  helm-setup-deploy — full provisioning in a single skill call:
+    1. Auto-resolves accountId from /accounts (cached after first call)
+    2. Auto-resolves scriptName from env.AGENT_NAME or "helm"
+    3. Runs Access lockdown if CF_ACCESS_* not yet set (creates app +
+       email-allowlist policy, persists team-domain + aud secrets)
+    4. Mints HELM_INTERNAL_TOKEN if missing
+    5. Creates D1 \${scriptName}-pa, R2 \${scriptName}-persist, KV \${scriptName}-cache
+       (idempotent — reuses if any already exist)
+    6. PATCHES live Worker bindings: DB (d1), WORKSPACE (r2), CACHE (kv)
+    7. PATCHES ENABLED_PLUGINS plain_text binding to merge in memory,
+       mcp-client, notifier, email, calendar, scheduler
+    8. Sets CLOUDFLARE_ACCOUNT_ID secret so future requests skip /accounts
+    9. Returns wranglerTomlAdditions: the snippet for the user to commit
+       (so their next 'wrangler deploy' doesn't drop the patches)
 
-ONLY MANUAL STEP after helm-setup-auto: pasting the [[r2_buckets]]
-binding into wrangler.toml + running 'wrangler deploy' once. The
-binding can ALSO be patched into the live Worker via cf-patch-binding,
-but that drift gets clobbered on next 'wrangler deploy' from the user's
-machine, so committing to wrangler.toml is the durable path.
+NO 'wrangler deploy' needed — CF auto-redeploys on settings change (~15s).
+THE ONLY THING THE USER MUST DO: paste the wranglerTomlAdditions into
+their local wrangler.toml when they're ready to make it durable.
 
-Default naming conventions (use these unless the user overrides):
+Lighter path: helm-setup-auto — only does Access lockdown + R2 bucket +
+HELM_INTERNAL_TOKEN. Use only if helm-setup-deploy is overkill.
+
+Default naming conventions:
   R2 bucket        \${scriptName}-persist     (mounted as env.WORKSPACE)
   D1 PA stack      \${scriptName}-pa          (mounted as env.DB)
   D1 memory        \${scriptName}-memory      (mounted as env.MEMORY_DB)
   KV cache         \${scriptName}-cache       (mounted as env.CACHE)
   Access app name  Helm — \${scriptName}
 
-scriptName defaults to env.AGENT_NAME ?? "helm".
+scriptName defaults to env.AGENT_NAME ?? "helm". You should NEVER need
+to ask the user for it.
 `.trim(),
 
   /* --------------------- topology --------------------- */
