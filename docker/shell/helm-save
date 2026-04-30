@@ -1,36 +1,84 @@
 #!/bin/bash
-# helm-save — tar+gzip /workspace into /persist/sessions/<id>/.
-# Skips heavy directories (node_modules, .git/objects, target, dist) so
-# you don't pay R2 ops to upload caches. If you DO want a full snapshot,
-# pass --full.
+# helm-save — snapshot /workspace and stash it.
+#
+# Default path is the Worker-proxied /persist API: zero R2 creds needed
+# in the container, just an internal bearer. The Worker writes the tarball
+# straight into env.WORKSPACE (R2 binding).
+#
+# Power-user fallback: when /persist is FUSE-mounted (R2_* env set) we
+# write a copy locally too so `helm-load` can read it offline.
+#
+# Excludes node_modules / .git/objects / target / dist / .cache / .next
+# to keep R2 ops affordable. Pass --full to include caches.
 
 set -e
 
 SESSION="${HELM_SESSION:-default}"
-DEST_DIR="/persist/sessions/${SESSION}"
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
-TAR="${DEST_DIR}/workspace-${TS}.tar.gz"
-
-# Soft-fail if /persist isn't a real mount — most likely R2_* env vars
-# weren't set, so save would just stuff bytes into ephemeral disk.
-if ! mountpoint -q /persist 2>/dev/null; then
-  echo "helm-save: /persist is not mounted — set R2_* secrets on the Worker first." >&2
-  echo "  helm-save will not snapshot to ephemeral /persist." >&2
-  exit 2
-fi
+SNAPSHOT_KEY="sessions/${SESSION}/workspace-${TS}.tar.gz"
+LATEST_KEY="sessions/${SESSION}/latest.tar.gz"
 
 EXCLUDE_OPTS="--exclude=workspace/node_modules --exclude=workspace/.git/objects \
               --exclude=workspace/target --exclude=workspace/dist \
               --exclude=workspace/.cache --exclude=workspace/.next"
 if [ "${1:-}" = "--full" ]; then
   EXCLUDE_OPTS=""
-  echo "helm-save: --full → including caches (this may upload a lot to R2)"
+  echo "helm-save: --full → including caches (slower, more R2 ops)"
 fi
 
-mkdir -p "$DEST_DIR"
-echo "helm-save: snapshotting /workspace → ${TAR}"
+# Build the tarball locally first so we know the size.
+TAR_LOCAL="/tmp/helm-save-${TS}.tar.gz"
+echo "helm-save: building snapshot…"
 # shellcheck disable=SC2086
-tar -C / $EXCLUDE_OPTS -czf "$TAR" workspace
-ln -sf "workspace-${TS}.tar.gz" "${DEST_DIR}/latest.tar.gz"
-SIZE="$(du -h "$TAR" | cut -f1)"
-echo "helm-save: ${SIZE} written to R2 (latest → ${TAR})"
+tar -C / $EXCLUDE_OPTS -czf "$TAR_LOCAL" workspace
+SIZE_BYTES="$(stat -c%s "$TAR_LOCAL" 2>/dev/null || stat -f%z "$TAR_LOCAL")"
+SIZE_HUMAN="$(du -h "$TAR_LOCAL" | cut -f1)"
+
+# Path A — Worker-proxied (preferred, requires HELM_INTERNAL_TOKEN).
+if [ -n "${HELM_WORKER_HOST:-}" ] && [ -n "${HELM_INTERNAL_TOKEN:-}" ]; then
+  echo "helm-save: uploading ${SIZE_HUMAN} to /persist/${SNAPSHOT_KEY} via Worker proxy"
+  STATUS="$(curl -fsS -o /dev/null -w '%{http_code}' \
+    -X PUT \
+    -H "Authorization: Bearer ${HELM_INTERNAL_TOKEN}" \
+    -H "content-type: application/gzip" \
+    --data-binary "@${TAR_LOCAL}" \
+    "https://${HELM_WORKER_HOST}/persist/${SNAPSHOT_KEY}")"
+  if [ "$STATUS" != "200" ]; then
+    echo "helm-save: upload failed (HTTP $STATUS)" >&2
+    rm -f "$TAR_LOCAL"
+    exit 1
+  fi
+  # Update "latest" pointer (small JSON file with the timestamp).
+  curl -fsS -o /dev/null \
+    -X PUT \
+    -H "Authorization: Bearer ${HELM_INTERNAL_TOKEN}" \
+    -H "content-type: text/plain" \
+    --data "${SNAPSHOT_KEY}" \
+    "https://${HELM_WORKER_HOST}/persist/${LATEST_KEY}.pointer" || true
+  echo "helm-save: ${SIZE_HUMAN} → r2:${SNAPSHOT_KEY}"
+  rm -f "$TAR_LOCAL"
+  exit 0
+fi
+
+# Path B — FUSE-mounted /persist (rclone path). Requires R2_* creds.
+if mountpoint -q /persist 2>/dev/null; then
+  DEST_DIR="/persist/sessions/${SESSION}"
+  TAR="${DEST_DIR}/workspace-${TS}.tar.gz"
+  mkdir -p "$DEST_DIR"
+  mv "$TAR_LOCAL" "$TAR"
+  ln -sf "workspace-${TS}.tar.gz" "${DEST_DIR}/latest.tar.gz"
+  echo "helm-save: ${SIZE_HUMAN} → ${TAR} (FUSE mount)"
+  exit 0
+fi
+
+# Neither path available. Snapshot is in /tmp; tell user how to wire persistence.
+echo "helm-save: no persistence wired up yet — snapshot kept at $TAR_LOCAL" >&2
+echo "  ${SIZE_HUMAN}; will be lost when this container sleeps" >&2
+echo "" >&2
+echo "  Enable Worker-proxied (preferred):" >&2
+echo "    1. Visit /app#/settings → Auto-setup with CF API ⚡" >&2
+echo "    2. Add [[r2_buckets]] binding = \"WORKSPACE\" to wrangler.toml" >&2
+echo "    3. Redeploy" >&2
+echo "" >&2
+echo "  Or enable FUSE: set R2_ACCOUNT_ID/R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY/R2_BUCKET" >&2
+exit 2

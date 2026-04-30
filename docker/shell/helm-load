@@ -1,20 +1,55 @@
 #!/bin/bash
-# helm-load — restore /workspace from the latest snapshot in /persist.
-# Pass a specific snapshot path as the first arg to load that one instead.
+# helm-load — restore /workspace from the latest snapshot.
+#
+# Resolution order:
+#   1. Path arg ($1) on the local filesystem
+#   2. Worker-proxied /persist via the latest.tar.gz.pointer file
+#   3. FUSE-mounted /persist/sessions/<id>/latest.tar.gz
 
 set -e
 
 SESSION="${HELM_SESSION:-default}"
-SNAPSHOT="${1:-/persist/sessions/${SESSION}/latest.tar.gz}"
 
-if [ ! -e "$SNAPSHOT" ]; then
-  echo "helm-load: no snapshot found at ${SNAPSHOT}" >&2
-  echo "  Available:" >&2
-  ls -1 "/persist/sessions/${SESSION}/" 2>/dev/null | sed 's/^/    /' >&2 \
-    || echo "    (no /persist/sessions/${SESSION}/ — is /persist mounted?)" >&2
-  exit 2
+# Path A — explicit local path
+if [ -n "${1:-}" ] && [ -e "$1" ]; then
+  echo "helm-load: restoring from explicit path $1"
+  tar -C / -xzf "$1"
+  echo "helm-load: restore complete"
+  exit 0
 fi
 
-echo "helm-load: restoring /workspace from ${SNAPSHOT}"
-tar -C / -xzf "$SNAPSHOT"
-echo "helm-load: restore complete"
+# Path B — Worker-proxied
+if [ -n "${HELM_WORKER_HOST:-}" ] && [ -n "${HELM_INTERNAL_TOKEN:-}" ]; then
+  POINTER_KEY="sessions/${SESSION}/latest.tar.gz.pointer"
+  KEY="$(curl -fsS -H "Authorization: Bearer ${HELM_INTERNAL_TOKEN}" \
+       "https://${HELM_WORKER_HOST}/persist/${POINTER_KEY}" 2>/dev/null || true)"
+  if [ -n "$KEY" ]; then
+    TMP="/tmp/helm-load-$(date +%s).tar.gz"
+    echo "helm-load: downloading r2:${KEY} via Worker proxy"
+    curl -fsS -H "Authorization: Bearer ${HELM_INTERNAL_TOKEN}" \
+      -o "$TMP" \
+      "https://${HELM_WORKER_HOST}/persist/${KEY}"
+    tar -C / -xzf "$TMP"
+    rm -f "$TMP"
+    echo "helm-load: restore complete (from ${KEY})"
+    exit 0
+  fi
+fi
+
+# Path C — FUSE-mounted
+SNAPSHOT="/persist/sessions/${SESSION}/latest.tar.gz"
+if [ -e "$SNAPSHOT" ]; then
+  echo "helm-load: restoring from $SNAPSHOT (FUSE mount)"
+  tar -C / -xzf "$SNAPSHOT"
+  echo "helm-load: restore complete"
+  exit 0
+fi
+
+# Nothing available.
+echo "helm-load: no snapshot found." >&2
+echo "  Tried:" >&2
+[ -n "${HELM_WORKER_HOST:-}" ] && \
+  echo "    Worker proxy: r2 key sessions/${SESSION}/latest.tar.gz.pointer" >&2
+echo "    FUSE: /persist/sessions/${SESSION}/latest.tar.gz" >&2
+echo "  Pass an explicit path to helm-load <file> to restore from a different snapshot." >&2
+exit 2

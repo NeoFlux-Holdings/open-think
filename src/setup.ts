@@ -159,6 +159,58 @@ export function collectStatus(env: Env, runtime: AgentRuntime): SetupStatus {
       hint: "Added in Phase 15 — apply migration v2 (`new_classes = [\"StreamHubDO\"]`).",
       docs: "docs/HELM.md#streaming-sse-over-a-codex-app-server-websocket"
     },
+    {
+      id: "shell-container",
+      label: "Helm Shell container (bash @ /app#/shell + npm run shell)",
+      group: "runtime",
+      enabled: true,
+      configured: Boolean(env.SHELL_CONTAINER),
+      required: ["SHELL_CONTAINER DO binding", "[[containers]] block in wrangler.toml"],
+      missing: env.SHELL_CONTAINER
+        ? []
+        : ["SHELL_CONTAINER DO binding (run wrangler deploy with v0.8.0+)"],
+      hint:
+        "Auto-provisioned by the shipped wrangler.toml. First request wakes a fresh container in ~10s.",
+      docs: "docs/WORKER_VS_CONTAINER.md"
+    },
+    {
+      id: "shell-helm-repl",
+      label: "In-shell `helm` REPL (bearer auth)",
+      group: "runtime",
+      enabled: true,
+      configured: Boolean(env.HELM_INTERNAL_TOKEN),
+      required: ["HELM_INTERNAL_TOKEN secret"],
+      missing: env.HELM_INTERNAL_TOKEN ? [] : ["HELM_INTERNAL_TOKEN"],
+      hint:
+        "Run /setup/auto (Settings → Auto-setup ⚡) to mint one automatically — no manual `wrangler secret put` needed.",
+      docs: "docs/SETUP.md#in-shell-helm-repl"
+    },
+    {
+      id: "shell-persist-proxy",
+      label: "Helm Shell persistence (Worker-proxied R2)",
+      group: "runtime",
+      enabled: true,
+      configured: Boolean(env.WORKSPACE),
+      required: ["WORKSPACE R2 binding (env.WORKSPACE)"],
+      missing: env.WORKSPACE
+        ? []
+        : ["[[r2_buckets]] binding=\"WORKSPACE\" bucket_name=\"<bucket>\" in wrangler.toml"],
+      hint:
+        "Run /setup/auto to auto-create the bucket; then add the binding to wrangler.toml + redeploy.",
+      docs: "docs/SETUP.md#persistence"
+    },
+    {
+      id: "cloudflare-admin",
+      label: "cloudflare-admin (agent provisions own infra via CF API)",
+      group: "tooling",
+      enabled: enabled.has("cloudflare-admin"),
+      configured: Boolean(env.CLOUDFLARE_API_TOKEN),
+      required: ["CLOUDFLARE_API_TOKEN"],
+      missing: env.CLOUDFLARE_API_TOKEN ? [] : ["CLOUDFLARE_API_TOKEN"],
+      hint:
+        "Same token used by the deploy wizard. Lets the agent run cf-create-d1, cf-put-secret, cf-create-r2, etc. as skills.",
+      docs: "docs/HELM.md"
+    },
     /* ---------------- PA stack capability checks ---------------- */
     {
       id: "auth",

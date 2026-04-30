@@ -49,12 +49,40 @@ else
 fi
 
 # ---- 2. Auto-restore previous workspace snapshot (best effort) ----
-SNAPSHOT="/persist/sessions/${HELM_SESSION:-default}/latest.tar.gz"
-if [ -e "$SNAPSHOT" ] && [ -z "$(ls -A /workspace 2>/dev/null)" ]; then
-  log "auto-restoring /workspace from $SNAPSHOT"
+# Two paths, in order of preference:
+#   A. Worker-proxied /persist (zero R2 creds needed)
+#   B. FUSE-mounted /persist (when R2_* env set)
+SESSION="${HELM_SESSION:-default}"
+RESTORED=0
+
+if [ "$RESTORED" = "0" ] && [ -n "${HELM_WORKER_HOST:-}" ] && \
+   [ -n "${HELM_INTERNAL_TOKEN:-}" ] && \
+   [ -z "$(ls -A /workspace 2>/dev/null)" ]; then
+  POINTER_KEY="sessions/${SESSION}/latest.tar.gz.pointer"
+  KEY="$(curl -fsS -m 5 -H "Authorization: Bearer ${HELM_INTERNAL_TOKEN}" \
+       "https://${HELM_WORKER_HOST}/persist/${POINTER_KEY}" 2>/dev/null || true)"
+  if [ -n "$KEY" ]; then
+    log "auto-restoring /workspace from r2:${KEY} (Worker proxy)"
+    if curl -fsS -m 30 -H "Authorization: Bearer ${HELM_INTERNAL_TOKEN}" \
+         -o /tmp/restore.tar.gz \
+         "https://${HELM_WORKER_HOST}/persist/${KEY}" 2>>/tmp/helm-restore.log; then
+      tar -C / -xzf /tmp/restore.tar.gz 2>>/tmp/helm-restore.log \
+        && log "restore complete (Worker proxy)" \
+        && RESTORED=1
+      rm -f /tmp/restore.tar.gz
+    else
+      log "Worker-proxy restore FAILED (see /tmp/helm-restore.log)"
+    fi
+  fi
+fi
+
+SNAPSHOT="/persist/sessions/${SESSION}/latest.tar.gz"
+if [ "$RESTORED" = "0" ] && [ -e "$SNAPSHOT" ] && \
+   [ -z "$(ls -A /workspace 2>/dev/null)" ]; then
+  log "auto-restoring /workspace from $SNAPSHOT (FUSE mount)"
   tar -C / -xzf "$SNAPSHOT" 2>>/tmp/helm-restore.log \
-    && log "restore complete" \
-    || log "restore FAILED (see /tmp/helm-restore.log)"
+    && log "restore complete (FUSE)" \
+    || log "FUSE restore FAILED (see /tmp/helm-restore.log)"
 fi
 
 # ---- 3. Exec the bridge. PID 1 from now on. ----

@@ -754,6 +754,93 @@ async function handler(request: Request, env: Env, requestId: string, startedAt:
     return json(result, 400, requestId);
   }
 
+  // /persist/* — Worker-proxied R2 access for the Helm Shell container.
+  // Auth gated like the rest of the app (CF Access JWT for browsers, the
+  // internal bearer for the in-container `helm-save`/`helm-load` scripts
+  // that don't carry a JWT). Routes through env.WORKSPACE so the
+  // container never sees R2 credentials — eliminates two manual secret-puts
+  // (R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY) for the common case.
+  //
+  //   GET    /persist/<key>     → object body (404 if missing)
+  //   PUT    /persist/<key>     → store request body, returns {etag,size}
+  //   DELETE /persist/<key>     → drop object
+  //   GET    /persist/?prefix=  → list keys (max 1000)
+  if (url.pathname === "/persist" || url.pathname.startsWith("/persist/")) {
+    if (!env.WORKSPACE) {
+      return json(
+        {
+          ok: false,
+          error:
+            "WORKSPACE R2 binding missing. Run /setup/auto to create the bucket, then add to wrangler.toml:\n  [[r2_buckets]]\n  binding = \"WORKSPACE\"\n  bucket_name = \"<your-bucket>\"",
+          code: "E_WORKSPACE_BINDING_MISSING"
+        },
+        503,
+        requestId
+      );
+    }
+    const rawKey = url.pathname === "/persist" ? "" : url.pathname.slice("/persist/".length);
+    const key = decodeURIComponent(rawKey).replace(/^\/+/, "");
+
+    // List
+    if (!key && request.method === "GET") {
+      const prefix = url.searchParams.get("prefix") ?? "";
+      const list = await env.WORKSPACE.list({ prefix, limit: 1000 });
+      return json(
+        {
+          ok: true,
+          data: {
+            keys: list.objects.map((o) => ({
+              key: o.key,
+              size: o.size,
+              uploaded: o.uploaded.toISOString(),
+              etag: o.etag
+            })),
+            truncated: list.truncated
+          }
+        },
+        200,
+        requestId
+      );
+    }
+
+    if (!key) {
+      return json({ ok: false, error: "key required" }, 400, requestId);
+    }
+    if (key.length > 1024) {
+      return json({ ok: false, error: "key too long (max 1024 bytes)" }, 400, requestId);
+    }
+
+    if (request.method === "GET") {
+      const obj = await env.WORKSPACE.get(key);
+      if (!obj) return new Response("not found", { status: 404 });
+      const headers = new Headers();
+      obj.writeHttpMetadata(headers);
+      headers.set("etag", obj.httpEtag);
+      // Stream the body straight back to caller. CF auto-handles ranges.
+      return new Response(obj.body, { status: 200, headers });
+    }
+
+    if (request.method === "PUT") {
+      const obj = await env.WORKSPACE.put(key, request.body, {
+        httpMetadata: {
+          contentType: request.headers.get("content-type") ?? "application/octet-stream"
+        }
+      });
+      return json(
+        { ok: true, data: { key, size: obj.size, etag: obj.httpEtag } },
+        200,
+        requestId
+      );
+    }
+
+    if (request.method === "DELETE") {
+      await env.WORKSPACE.delete(key);
+      return json({ ok: true, data: { deleted: key } }, 200, requestId);
+    }
+
+    return new Response("method not allowed", { status: 405 });
+  }
+
   // POST /setup/auto — one-click full setup. Picks the account
   // automatically (env override → only-account → first-account), reads
   // owner email from env, runs lockdown end-to-end. Body is optional
@@ -846,6 +933,144 @@ async function handler(request: Request, env: Env, requestId: string, startedAt:
       allowedEmails,
       sessionDuration: body.sessionDuration
     });
+
+    // 4. Auto-mint a HELM_INTERNAL_TOKEN if the Worker doesn't have one
+    //    yet. This is the bearer the in-shell `helm` REPL uses, so without
+    //    it the container's `helm` command is a dead button. We generate
+    //    32 random bytes (256 bits) of entropy and persist as a secret.
+    const extras: Array<{ kind: string; ok: boolean; detail?: string }> = [];
+    if (!env.HELM_INTERNAL_TOKEN) {
+      const buf = new Uint8Array(32);
+      crypto.getRandomValues(buf);
+      const internalToken = Array.from(buf, (b) => b.toString(16).padStart(2, "0")).join("");
+      const r = await fetch(
+        `https://api.cloudflare.com/client/v4/accounts/${pickedAccount.id}/workers/scripts/${encodeURIComponent(
+          scriptName
+        )}/secrets`,
+        {
+          method: "PUT",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "content-type": "application/json"
+          },
+          body: JSON.stringify({
+            name: "HELM_INTERNAL_TOKEN",
+            text: internalToken,
+            type: "secret_text"
+          })
+        }
+      );
+      extras.push({
+        kind: "set-helm-internal-token",
+        ok: r.ok,
+        detail: r.ok
+          ? "auto-generated 32-byte secret; the in-shell `helm` REPL works after CF redeploys (~15s)"
+          : `cf-put-secret HELM_INTERNAL_TOKEN failed (${r.status})`
+      });
+    } else {
+      extras.push({
+        kind: "set-helm-internal-token",
+        ok: true,
+        detail: "already set, leaving as-is"
+      });
+    }
+
+    // 5. Auto-create R2 bucket for /persist if env doesn't have one.
+    //    Default name = "${scriptName}-persist". Creating a bucket is
+    //    cheap and reversible; we don't gate behind explicit opt-in.
+    const r2BucketName = env.R2_BUCKET || `${scriptName}-persist`;
+    if (!env.R2_BUCKET) {
+      const r = await fetch(
+        `https://api.cloudflare.com/client/v4/accounts/${pickedAccount.id}/r2/buckets`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "content-type": "application/json"
+          },
+          body: JSON.stringify({ name: r2BucketName })
+        }
+      );
+      const bodyText = await r.text();
+      const alreadyExists = !r.ok && bodyText.toLowerCase().includes("already exists");
+      extras.push({
+        kind: "create-r2-bucket",
+        ok: r.ok || alreadyExists,
+        detail: r.ok
+          ? `bucket "${r2BucketName}" created`
+          : alreadyExists
+          ? `bucket "${r2BucketName}" already exists — reusing`
+          : `failed (${r.status}): ${bodyText.slice(0, 200)}`
+      });
+      if (r.ok || alreadyExists) {
+        // Persist the bucket name as a Worker secret so future requests
+        // know which bucket to proxy /persist/* against.
+        const setR = await fetch(
+          `https://api.cloudflare.com/client/v4/accounts/${pickedAccount.id}/workers/scripts/${encodeURIComponent(
+            scriptName
+          )}/secrets`,
+          {
+            method: "PUT",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "content-type": "application/json"
+            },
+            body: JSON.stringify({
+              name: "R2_BUCKET",
+              text: r2BucketName,
+              type: "secret_text"
+            })
+          }
+        );
+        extras.push({
+          kind: "set-r2-bucket-secret",
+          ok: setR.ok,
+          detail: setR.ok ? "R2_BUCKET secret set" : `failed (${setR.status})`
+        });
+      }
+    } else {
+      extras.push({
+        kind: "create-r2-bucket",
+        ok: true,
+        detail: `R2_BUCKET="${env.R2_BUCKET}" already configured, leaving as-is`
+      });
+    }
+
+    // 6. Build the next-steps list. We prefer Worker-proxied R2 (no
+    //    R2 access keys needed in the container) and only nudge the user
+    //    toward FUSE creds if they explicitly want filesystem semantics.
+    const nextSteps: Array<{ done: boolean; label: string; hint?: string }> = [
+      {
+        done: lockdown.ok,
+        label: "Cloudflare Access locked down",
+        hint: lockdown.ok ? undefined : lockdown.error
+      },
+      {
+        done: extras[0]?.ok ?? false,
+        label: "HELM_INTERNAL_TOKEN auto-generated",
+        hint: extras[0]?.detail
+      },
+      {
+        done: (extras[1]?.ok ?? false) && (extras[2]?.ok ?? true),
+        label: `R2 bucket for /persist (${r2BucketName})`,
+        hint: extras[2]?.detail ?? extras[1]?.detail
+      },
+      {
+        done: !!env.WORKSPACE,
+        label: "[[r2_buckets]] binding (env.WORKSPACE) wired in wrangler.toml",
+        hint: env.WORKSPACE
+          ? "binding present"
+          : `Add to wrangler.toml + redeploy:\n  [[r2_buckets]]\n  binding = "WORKSPACE"\n  bucket_name = "${r2BucketName}"`
+      },
+      {
+        done: !!env.OPENROUTER_API_KEY,
+        label: "OPENROUTER_API_KEY (recommended for chat)",
+        hint: env.OPENROUTER_API_KEY
+          ? undefined
+          : "Get one at https://openrouter.ai/settings/keys, paste in /app#/settings"
+      }
+    ];
+
     return json(
       {
         ok: lockdown.ok,
@@ -855,6 +1080,8 @@ async function handler(request: Request, env: Env, requestId: string, startedAt:
           scriptName,
           host,
           lockdown,
+          extras,
+          nextSteps,
           recommended: {
             wranglerVars: {
               CF_ACCESS_TEAM_DOMAIN: lockdown.teamDomain,
