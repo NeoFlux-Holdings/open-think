@@ -536,6 +536,119 @@ const SKILL_CATALOG: SkillDefinition[] = [
       required: ["snippet"]
     }
   },
+  /* ---- helm-github: container-free repo ops via GitHub REST API ---- */
+  {
+    id: "helm-github-status",
+    name: "Helm GitHub Status",
+    description:
+      "Verify GITHUB_TOKEN + GITHUB_REPO are set and the token can read the repo. Returns {hasToken, hasRepo, accessible, defaultBranch}. Read-only.",
+    pluginId: "helm-github",
+    action: "status",
+    tags: ["github", "introspect"],
+    inputSchema: {
+      type: "object",
+      properties: { repo: { type: "string", description: "Optional override; \"owner/repo\"" } }
+    }
+  },
+  {
+    id: "helm-github-read-file",
+    name: "Helm GitHub Read File",
+    description:
+      "Fetch any file from the repo via GitHub API — no container needed. Defaults to wrangler.toml on the default branch.",
+    pluginId: "helm-github",
+    action: "read-file",
+    tags: ["github", "read"],
+    inputSchema: {
+      type: "object",
+      properties: {
+        repo: { type: "string", description: "Optional; defaults to env.GITHUB_REPO" },
+        path: { type: "string", description: "Optional; defaults to env.HELM_WRANGLER_TOML_PATH or \"wrangler.toml\"" },
+        branch: { type: "string", description: "Optional; defaults to env.GITHUB_DEFAULT_BRANCH or \"main\"" }
+      }
+    }
+  },
+  {
+    id: "helm-github-write-file",
+    name: "Helm GitHub Write File",
+    description:
+      "Commit a file change directly via GitHub API. Looks up the file's current sha, commits with the new content. NO container needed. DANGEROUS — modifies the user's repo.",
+    pluginId: "helm-github",
+    action: "write-file",
+    tags: ["github", "write", "create"],
+    dangerous: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        repo: { type: "string" },
+        path: { type: "string" },
+        branch: { type: "string", description: "Branch to commit to (default: env.GITHUB_DEFAULT_BRANCH or main)" },
+        content: { type: "string", description: "Full file content (UTF-8). Replaces the existing file." },
+        message: { type: "string", description: "Commit message (default: \"helm: update <path>\")" },
+        committerName: { type: "string" },
+        committerEmail: { type: "string" }
+      },
+      required: ["content"]
+    }
+  },
+  {
+    id: "helm-github-create-branch",
+    name: "Helm GitHub Create Branch",
+    description: "Create a new branch from another (default: from main). Idempotent — already-existing branches return ok=true with alreadyExisted=true.",
+    pluginId: "helm-github",
+    action: "create-branch",
+    tags: ["github", "branch", "create"],
+    dangerous: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        repo: { type: "string" },
+        branch: { type: "string", description: "New branch name" },
+        from: { type: "string", description: "Base branch (default: env.GITHUB_DEFAULT_BRANCH)" }
+      },
+      required: ["branch"]
+    }
+  },
+  {
+    id: "helm-github-open-pr",
+    name: "Helm GitHub Open PR",
+    description: "Open a pull request from `head` branch into `base` branch. DANGEROUS.",
+    pluginId: "helm-github",
+    action: "open-pr",
+    tags: ["github", "pr", "create"],
+    dangerous: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        repo: { type: "string" },
+        head: { type: "string", description: "Source branch with the changes" },
+        base: { type: "string", description: "Target branch (default: env.GITHUB_DEFAULT_BRANCH)" },
+        title: { type: "string" },
+        body: { type: "string" }
+      },
+      required: ["head"]
+    }
+  },
+  {
+    id: "helm-github-sync-toml",
+    name: "Helm GitHub Sync TOML (drift fix without container)",
+    description:
+      "ONE-CALL drift fix that doesn't need the Helm Shell container. Fetches wrangler.toml from GitHub, diffs against live Worker bindings, and either reports or applies the missing-from-toml ones. Pass apply:true to commit; pass targetBranch to commit to a feature branch + open PR. Idempotent.",
+    pluginId: "helm-github",
+    action: "sync-toml",
+    tags: ["github", "toml", "drift", "auto"],
+    dangerous: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        repo: { type: "string" },
+        path: { type: "string" },
+        scriptName: { type: "string", description: "Worker name; auto-resolves from env.AGENT_NAME" },
+        apply: { type: "boolean", description: "Default false (dry-run). Pass true to commit." },
+        targetBranch: { type: "string", description: "If set, commits to this branch and opens a PR. Otherwise commits to base." },
+        openPR: { type: "boolean", description: "Default true when targetBranch is set." }
+      }
+    }
+  },
   {
     id: "helm-exec",
     name: "Helm Exec (run bash in shell container)",

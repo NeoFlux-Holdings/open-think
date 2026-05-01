@@ -7,6 +7,7 @@ import { CalendarPlugin } from "./calendar";
 import { CfAiGatewayPlugin } from "./cfAiGateway";
 import { CloudflareAdminPlugin } from "./cloudflareAdmin";
 import { CloudflareApiMcpPlugin } from "./cloudflareApiMcp";
+import { HelmGithubPlugin } from "./helmGithub";
 import { HelmSetupPlugin } from "./helmSetup";
 import { HelmTomlPlugin } from "./helmToml";
 import { CodexPlugin } from "./codex";
@@ -25,6 +26,7 @@ export function getPlugins(): AgentPlugin[] {
     new AdminPlugin(),
     new HelmSetupPlugin(),
     new HelmTomlPlugin(),
+    new HelmGithubPlugin(),
     new CloudflareAdminPlugin(),
     new CloudflareApiMcpPlugin(),
     new CfAiGatewayPlugin(),

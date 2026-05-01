@@ -46,6 +46,19 @@ export interface Env {
    * "Worker does not exist" error after first setup.
    */
   WORKER_SCRIPT_NAME?: string;
+  /**
+   * GitHub PAT for helm-github (container-free repo ops). Fine-grained
+   * tokens with repo: contents + pull-requests scopes are sufficient.
+   */
+  GITHUB_TOKEN?: string;
+  /** "owner/repo" — the user's git repo for wrangler.toml syncing. */
+  GITHUB_REPO?: string;
+  /** Default branch for commits + PR base (default "main"). */
+  GITHUB_DEFAULT_BRANCH?: string;
+  /** Path within the repo where wrangler.toml lives (default "wrangler.toml"). */
+  HELM_WRANGLER_TOML_PATH?: string;
+  /** Where the Helm Shell container clones the repo by default (default /workspace/repo). */
+  HELM_REPO_PATH?: string;
   ENABLED_PLUGINS: string;
   ALLOWED_HOSTS: string;
   MODEL_DEFAULT?: string;

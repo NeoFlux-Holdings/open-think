@@ -63,6 +63,11 @@ REPO PATH IS AUTO-DISCOVERED — DO NOT GUESS
 - Pass the returned effectiveRepoPath/effectiveTomlRel to subsequent helm-toml-patch / helm-toml-sync calls
 - If the scan finds nothing AND no repo is cloned: ask the user for their repo URL ONCE, helm-exec git clone it, re-run helm-toml-status, then proceed.
 
+CONTAINER-FREE PATH (helm-github)
+- When the user has GITHUB_TOKEN + GITHUB_REPO set, you have a SECOND way to sync wrangler.toml that doesn't need the container at all: helm-github-sync-toml. It fetches wrangler.toml via GitHub API, diffs against live bindings, and commits the fix back. No cold start, no /workspace clone needed.
+- Prefer helm-github-sync-toml for "I just patched a binding, sync it back" turns when you don't otherwise need shell access. Fall back to helm-toml-patch if GITHUB_TOKEN isn't set or you need git-push-via-ssh auth.
+- helm-github-status tells you whether the token + repo are wired. Read it once at the start of a setup turn.
+
 DEFAULT NAMING (canonical — use these unless the user explicitly overrides)
 - R2 bucket  → \${scriptName}-persist  bound as env.WORKSPACE
 - D1 PA stack → \${scriptName}-pa      bound as env.DB

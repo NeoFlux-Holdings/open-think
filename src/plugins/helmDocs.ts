@@ -279,6 +279,46 @@ Env var overrides:
   HELM_WRANGLER_TOML_PATH path within the repo (default wrangler.toml)
 `.trim(),
 
+  /* --------------------- container-free repo ops --------------------- */
+  "github": `
+HELM-GITHUB — container-free wrangler.toml sync.
+
+When the Helm Shell container is asleep (15 min idle), helm-toml-* costs
+a cold start (~10s). For drift checks + occasional reads, use helm-github
+instead — runs in the Worker isolate, no container wake-up.
+
+Setup (one-time):
+  1. Create a fine-grained PAT at https://github.com/settings/personal-access-tokens
+     Scopes needed: Contents (read+write), Pull requests (read+write)
+  2. Set GITHUB_TOKEN as a Worker secret (cf-put-secret)
+  3. Set GITHUB_REPO ("owner/repo") as a Worker secret or var
+  4. Optional: GITHUB_DEFAULT_BRANCH (default "main"),
+              HELM_WRANGLER_TOML_PATH (default "wrangler.toml")
+
+Skills:
+  helm-github-status        verify token + repo accessibility
+  helm-github-read-file     fetch wrangler.toml (or any file) via API
+  helm-github-write-file    commit a file change (creates branch if --branch)
+  helm-github-create-branch idempotent branch creation
+  helm-github-open-pr       open a PR from head→base
+  helm-github-sync-toml     ONE-CALL drift fix:
+                             - apply:false (default) → dry-run drift report
+                             - apply:true            → commit fixes
+                             - targetBranch:"helm/sync-N" → branch + PR
+
+Container-vs-GitHub trade-off:
+  Container (helm-toml-patch): full-fidelity (any file, complex edits,
+                                runs \`wrangler deploy\`, pushes via git).
+                                Costs cold-start when asleep.
+  GitHub API (helm-github-*):   binding sync only, no shell tools, no
+                                wrangler invocation. ~50ms per call,
+                                no cold start. Best for cron drift checks.
+
+Use helm-github when: agent-driven sync, no other shell work needed.
+Use helm-toml-patch when: same turn already touches the container,
+                          or push-via-git needs a non-token auth flow.
+`.trim(),
+
   /* --------------------- agent-can-deploy playbook --------------------- */
   "deploy-from-agent": `
 HOW THE AGENT DEPLOYS CODE/CONFIG CHANGES DURABLY.
