@@ -141,7 +141,12 @@ describe("runLockdown · full happy path", () => {
         accountId: "acc-1",
         scriptName: "tomtom-agent",
         appName: "Helm — tomtom-agent",
-        workerHost: "tomtom-agent.acct.workers.dev",
+        // NB: tests the create-success path. Use a custom domain — the
+        // CF public API rejects workers.dev URLs ("domain does not
+        // belong to zone"), and our runLockdown short-circuits on
+        // workers.dev to avoid that 400. See the dedicated workers.dev
+        // skip test below.
+        workerHost: "agent.example.com",
         allowedEmails: ["tom@example.com"]
       },
       { fetchImpl: wrappedFetch }
@@ -172,7 +177,7 @@ describe("runLockdown · full happy path", () => {
     expect(secretCalls.find((s) => s.name === "CF_ACCESS_ALLOWED_EMAILS")?.text).toBe("tom@example.com");
   });
 
-  it("POSTs the modern destinations array (NOT the legacy domain field) so workers.dev URLs go through", async () => {
+  it("POSTs the modern destinations array (NOT the legacy domain field)", async () => {
     let appBody = "";
     const baseFetch = routedFetch({
       [`${CF}/accounts/acc-1/access/organizations`]: () =>
@@ -195,7 +200,9 @@ describe("runLockdown · full happy path", () => {
         accountId: "acc-1",
         scriptName: "h",
         appName: "Helm — h",
-        workerHost: "h.acct.workers.dev",
+        // Use a custom domain — workers.dev triggers the upfront skip
+        // (see the dedicated test below).
+        workerHost: "h.example.com",
         allowedEmails: ["a@x.com"]
       },
       { fetchImpl: f }
@@ -203,12 +210,55 @@ describe("runLockdown · full happy path", () => {
     const body = JSON.parse(appBody) as Record<string, unknown>;
     expect(body.type).toBe("self_hosted");
     // Modern format: destinations array. The legacy `domain` field
-    // historically rejected workers.dev URLs with "domain does not
-    // belong to zone".
+    // is what historically rejected `*.workers.dev` URLs with
+    // "domain does not belong to zone" (and even the modern format
+    // runs the same check — that's why we short-circuit on workers.dev
+    // upfront — but we still send the modern shape for zoned domains).
     expect(body.domain).toBeUndefined();
     expect(body.destinations).toEqual([
-      { type: "public", uri: "https://h.acct.workers.dev" }
+      { type: "public", uri: "https://h.example.com" }
     ]);
+  });
+
+  it("short-circuits on workers.dev URLs without calling the API", async () => {
+    // CF's public Access API can't create apps for *.workers.dev (the
+    // domain has to be on a zone you own). We detect this upfront and
+    // skip with a clean error result + recovery copy, instead of
+    // making an API call we know will 400.
+    let appsCallCount = 0;
+    const f: typeof fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url.includes("/access/apps") && init?.method === "POST") appsCallCount += 1;
+      // Mock the org lookup so we get past step 1.
+      if (url.includes("/access/organizations")) {
+        return new Response(
+          JSON.stringify({ success: true, result: { auth_domain: "x.cloudflareaccess.com", name: "x" } }),
+          { status: 200 }
+        );
+      }
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+    const r = await runLockdown(
+      {
+        token: "tok",
+        accountId: "acc-1",
+        scriptName: "h",
+        appName: "Helm — h",
+        workerHost: "h.acct.workers.dev",
+        allowedEmails: ["a@x.com"]
+      },
+      { fetchImpl: f }
+    );
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/workers\.dev/i);
+    expect(r.recovery).toMatch(/custom domain|dashboard/i);
+    // Crucially: we did NOT call POST /access/apps. The skip happens
+    // before any create attempt.
+    expect(appsCallCount).toBe(0);
+    // The skipped step is recorded with the workers.dev limitation marker.
+    const skipStep = r.steps.find((s) => s.kind === "create-app");
+    expect(skipStep).toBeDefined();
+    expect((skipStep?.data as { skippedReason?: string })?.skippedReason).toBe("workers.dev limitation");
   });
 
   it("joins multiple emails into the allow-list secret", async () => {

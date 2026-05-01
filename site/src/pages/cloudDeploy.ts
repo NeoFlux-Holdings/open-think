@@ -107,7 +107,7 @@ export function renderCloudDeploy(): string {
         <select id="cf-account"></select>
       </div>
       <div class="field">
-        <label for="cf-worker">Worker name <span style="color: var(--muted); font-size: 12px;">— becomes &lt;name&gt;.workers.dev</span></label>
+        <label for="cf-worker">Worker name <span style="color: var(--muted); font-size: 12px;">— deploys at &lt;name&gt;.&lt;your-account-subdomain&gt;.workers.dev</span></label>
         <input id="cf-worker" type="text" placeholder="helm" maxlength="48" />
       </div>
       <div class="field">
@@ -488,8 +488,12 @@ export function renderCloudDeploy(): string {
         out.removeAttribute('hidden');
         wranglerPre.textContent = data.wranglerToml || '';
         cmdsPre.textContent = (data.commands || []).join('\\n');
-        urlSpan.textContent = workerName + '.workers.dev';
+        // Prefer the actual worker host the server resolved
+        // (<name>.<account-subdomain>.workers.dev). The fallback is the
+        // legacy "<name>.workers.dev" pattern, which doesn't actually
+        // resolve — only used if the server didn't return workerUrl.
         const fullUrl = data.workerUrl || ('https://' + workerName + '.workers.dev');
+        urlSpan.textContent = fullUrl.replace(/^https?:\/\//, '');
         // Three result states:
         //   1. directDeployed=true → green "live" panel
         //   2. attempted but failed → orange "almost there" panel + open fallback

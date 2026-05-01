@@ -416,10 +416,10 @@ export async function getWorkerSettings(
 
 /**
  * `POST /accounts/{id}/workers/scripts/{name}/subdomain` — enable the
- * `<name>.<account>.workers.dev` URL for the script. CF leaves it
- * disabled on fresh uploads in many account configurations, which means
- * the deploy succeeds but the URL the UI advertises is dead (522). Idempotent
- * — calling on an already-enabled subdomain is a no-op.
+ * `<name>.<account-subdomain>.workers.dev` URL for the script. CF leaves
+ * this disabled on fresh uploads in many account configurations, which
+ * means the deploy succeeds but the URL the UI advertises is dead (522).
+ * Idempotent — calling on an already-enabled subdomain is a no-op.
  */
 export async function enableWorkersDevSubdomain(
   token: string,
@@ -435,6 +435,28 @@ export async function enableWorkersDevSubdomain(
       body: JSON.stringify({ enabled: true }),
       ...options
     }
+  );
+}
+
+/**
+ * `GET /accounts/{id}/workers/subdomain` — fetch the account's workers.dev
+ * subdomain (e.g. "thomas-zarebczan"). CF Workers live at
+ *   <script-name>.<account-subdomain>.workers.dev
+ * NOT just `<script-name>.workers.dev` — that pattern doesn't resolve.
+ *
+ * On a brand-new account that's never had a Worker, this can return an
+ * empty `subdomain`. The caller should treat that as "user must visit
+ * dash → Workers & Pages → set up subdomain" and surface the link.
+ */
+export async function getAccountWorkersSubdomain(
+  token: string,
+  accountId: string,
+  options: FetchOptions = {}
+): Promise<CfApiResult<{ subdomain: string }>> {
+  return call<{ subdomain: string }>(
+    token,
+    `/accounts/${accountId}/workers/subdomain`,
+    { method: "GET", ...options }
   );
 }
 

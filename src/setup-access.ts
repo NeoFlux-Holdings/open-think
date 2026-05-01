@@ -329,11 +329,39 @@ export async function runLockdown(
 
   // 2. Create the Self-hosted Access app for this Worker's domain.
   //
-  // We send the modern `destinations` array (CF added it in 2024) instead
-  // of the legacy `domain` string. `destinations` doesn't run the
-  // zone-ownership validation that historically rejected `*.workers.dev`
-  // URLs with "domain does not belong to zone" — it just gates the URI.
+  // Hard CF limitation: the public Access apps API requires the
+  // destination to be on a zone you own. workers.dev is CF's shared
+  // free zone, so any `*.workers.dev` destination fails with "domain
+  // does not belong to zone" — both with the legacy `domain` string
+  // AND the modern `destinations[]` array (validation runs for
+  // type:"public" destinations either way). The dashboard uses an
+  // internal mechanism that bypasses this; the public API doesn't.
   //
+  // We detect workers.dev upfront and short-circuit with a clean
+  // "skipped — here's how to add Access later" result instead of
+  // sending an API call we know will 400.
+  const isWorkersDev = /\.workers\.dev$/i.test(input.workerHost);
+  if (isWorkersDev) {
+    steps.push(
+      step(
+        "create-app",
+        false,
+        `Access skipped — workers.dev URLs aren't supported by the public Access API`,
+        { skippedReason: "workers.dev limitation", workerHost: input.workerHost },
+        `Cloudflare's public Access API requires the destination to belong to a zone you own. workers.dev is CF's shared free zone, so the API rejects ${input.workerHost} with "domain does not belong to zone".\n\nTwo ways to lock down:\n  1. Add a custom domain to your Worker (cleanest). Dash → Workers & Pages → ${input.scriptName} → Settings → Triggers → "Add Custom Domain". Then re-run this wizard with that domain.\n  2. Create the Access app manually in the dashboard. Zero Trust → Access → Applications → Add → Self-hosted → enter "${input.workerHost}" as the application domain. Then set CF_ACCESS_AUD + CF_ACCESS_TEAM_DOMAIN via /app#/settings → Manage secrets.`
+      )
+    );
+    return {
+      ok: false,
+      steps,
+      error: "Access skipped: workers.dev URLs aren't supported by the public API",
+      recovery:
+        "Add a custom domain to the Worker, then re-run this wizard. Or create the Access app manually in the dashboard. Until one of those is done, the Worker runs in first-run permissive mode.",
+      teamDomain
+    };
+  }
+  //
+  // For zoned domains: try create with modern destinations format.
   // Dedupe: before creating, list existing apps and reuse one whose
   // destinations point at our worker host. This makes the wizard
   // idempotent across re-runs, AND avoids creating duplicate Access apps

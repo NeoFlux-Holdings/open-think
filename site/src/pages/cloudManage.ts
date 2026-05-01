@@ -61,7 +61,16 @@ export function renderCloudManage(input: ManagePageInput): string {
   <div class="section-ref"><span>§11.1 · Status</span><span class="rule"></span></div>
   <dl class="manage-dl">
     <dt>Subscriber</dt><dd>${escapeHtml(email ?? deployment.customerId)}</dd>
-    <dt>Worker</dt><dd class="mono">${escapeHtml(deployment.workerName)}.workers.dev</dd>
+    <dt>Worker</dt><dd class="mono">${
+      // workerUrl is the resolved <name>.<account-subdomain>.workers.dev
+      // (or a custom domain). Older rows may not have it — fall back to
+      // the legacy <name>.workers.dev display in that case.
+      escapeHtml(
+        deployment.workerUrl
+          ? deployment.workerUrl.replace(/^https?:\/\//, "")
+          : `${deployment.workerName}.workers.dev`
+      )
+    }</dd>
     <dt>Account</dt><dd class="mono">${escapeHtml(deployment.accountId.slice(0, 12))}…</dd>
     <dt>Created</dt><dd class="mono">${escapeHtml(deployment.createdAt)}</dd>
     <dt>Last pushed</dt><dd class="mono">${escapeHtml(lastPushed)}</dd>

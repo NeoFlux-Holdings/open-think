@@ -25,6 +25,7 @@ import {
   ensureD1Database,
   flattenMigrationsForCfApi,
   getAccessOrganization,
+  getAccountWorkersSubdomain,
   listAccounts,
   putWorkerSecret,
   uploadWorkerScript,
@@ -141,6 +142,30 @@ export async function runDeploy(
     expiresOn: verify.result?.expires_on
   }));
 
+  // --- 1.5. Resolve the account's workers.dev subdomain ---
+  // CF Workers live at <script>.<account-subdomain>.workers.dev — NOT
+  // <script>.workers.dev (a common bug we used to ship). Look it up once
+  // here and reuse the full host downstream for: the Access destination
+  // URI, the success message, the workerUrl response field, the wrangler.toml
+  // we hand back, and the post-deploy "visit it at" link.
+  const subRes = await getAccountWorkersSubdomain(req.token, acc, options);
+  let workerHost = `${name}.workers.dev`; // pessimistic fallback
+  let workerSubdomain = "";
+  if (subRes.success && subRes.result?.subdomain) {
+    workerSubdomain = subRes.result.subdomain;
+    workerHost = `${name}.${workerSubdomain}.workers.dev`;
+  } else {
+    // Account hasn't initialized its workers.dev subdomain yet (rare on
+    // an account that's deployed Workers before; common on fresh CF
+    // accounts). Surface a clear pointer; deploy continues and the URL
+    // we advertise may need a manual subdomain init via the dash.
+    steps.push(step("verify-token", true,
+      `couldn't resolve account workers.dev subdomain — using fallback`,
+      { fallback: workerHost },
+      `GET /accounts/${acc}/workers/subdomain returned no subdomain. Visit dash → Workers & Pages → click any worker → Settings → Triggers and pick a subdomain. Then redeploy or open ${name}.<your-subdomain>.workers.dev directly.`
+    ));
+  }
+
   // --- 2. Optional: create a D1 database for the PA stack ---
   let d1Id: string | undefined;
   let d1Name: string | undefined;
@@ -197,32 +222,42 @@ export async function runDeploy(
       // Don't abort — Access is optional. Continue without it.
     } else {
       accessTeamDomain = `https://${org.result.auth_domain}`;
-      // Worker URL we'll gate. workers.dev is the default.
-      const workerDomain = `${name}.workers.dev`;
+      // Hard reality: CF's public Access apps API requires the destination
+      // to belong to a zone YOU own. workers.dev is Cloudflare's shared
+      // free zone, so any *.workers.dev URL fails with "domain does not
+      // belong to zone" — both with the legacy `domain` string AND the
+      // modern `destinations[]` array (the validation runs for
+      // type:"public" destinations either way). The dashboard uses an
+      // internal mechanism that bypasses this; the public API doesn't
+      // expose it.
+      //
+      // We detect workers.dev upfront and skip the API call entirely
+      // with a clean "skipped, here's how to add Access later" message.
+      // The Worker still deploys and runs in first-run permissive mode.
+      const isWorkersDev = /\.workers\.dev$/i.test(workerHost);
+      if (isWorkersDev) {
+        steps.push(step("create-access-app", true,
+          `Access skipped — workers.dev URLs aren't supported by the public Access API`,
+          { skippedReason: "workers.dev limitation", workerHost },
+          `Cloudflare's public Access API requires the destination to belong to a zone you own. workers.dev is CF's shared free zone, so the API rejects ${workerHost} with "domain does not belong to zone".\n\nTwo ways to lock down /app:\n  1. Add a custom domain to your Worker (cleanest). Dash → Workers & Pages → ${name} → Settings → Triggers → "Add Custom Domain". Then re-run the lockdown wizard at /app#/settings.\n  2. Create the Access app manually in the dashboard. Zero Trust → Access → Applications → Add → Self-hosted → enter "${workerHost}" as the application domain. Then set CF_ACCESS_AUD + CF_ACCESS_TEAM_DOMAIN via /app#/settings → Manage secrets.\n\nUntil one of those is wired, the Worker runs in first-run permissive mode (yellow banner at /app reminds you).`
+        ));
+        // Don't set accessAud / accessTeamDomain — caller continues
+        // without Access wired. Worker still uploads + deploys fine.
+      } else {
       const app = await createAccessApp(
         req.token,
         acc,
-        { name: `Helm — ${name}`, domain: workerDomain, sessionDuration: "24h" },
+        { name: `Helm — ${name}`, domain: workerHost, sessionDuration: "24h" },
         options
       );
       if (!app.success || !app.result?.aud) {
         const apiMsg = app.errors?.[0]?.message ?? "unknown";
         const apiCode = app.errors?.[0]?.code;
-        // We send the modern `destinations` array, which doesn't run the
-        // zone-ownership validation that used to block workers.dev URLs.
-        // The "domain does not belong to zone" failure should be rare
-        // now (only seen on accounts not yet on the new Access API),
-        // but we still surface actionable recovery if it happens.
         const isDomainZoneError = /domain does not belong to zone/i.test(apiMsg);
         const recovery = isDomainZoneError
           ? [
-              `Cloudflare returned "domain does not belong to zone" for ${name}.workers.dev. We send the modern destinations-array payload, so this is unexpected — usually it means your account hasn't been migrated to the new Access apps API yet.`,
-              ``,
-              `Two paths forward:`,
-              `  1. Add a custom domain to your Worker (cleanest). Dash → Workers & Pages → ${name} → Settings → Triggers → "Add Custom Domain". Re-run with that domain.`,
-              `  2. Create the Access app manually in the dashboard. Zero Trust → Access → Applications → Add → Self-hosted → enter "${name}.workers.dev" as the application domain. Then set CF_ACCESS_AUD + CF_ACCESS_TEAM_DOMAIN as Worker secrets via /app#/settings → Manage secrets.`,
-              ``,
-              `Skipping for now leaves the Worker running in first-run permissive mode (yellow banner reminds you).`
+              `Cloudflare returned "domain does not belong to zone" for ${workerHost}.`,
+              `This usually means the domain isn't on a zone in your account — verify ${workerHost} is added as a zone before Access can gate it.`
             ].join("\n")
           : explainCfError(apiMsg, apiCode, "Access: Apps and Policies:Edit", acc);
         steps.push(step("create-access-app", false, `Access app create failed · ${apiMsg}`, undefined,
@@ -236,9 +271,10 @@ export async function runDeploy(
             appId: app.result.id,
             aud: accessAud,
             teamDomain: accessTeamDomain,
-            domain: workerDomain
+            domain: workerHost
           }));
       }
+      } // close: !isWorkersDev
     }
   }
 
@@ -297,7 +333,8 @@ export async function runDeploy(
       fromEmail: req.secrets?.FROM_EMAIL,
       fetchImpl: options.fetchImpl,
       openRouterDefaultModel: req.openRouterDefaultModel,
-      skipSelfAdminToken: req.skipSelfAdminToken
+      skipSelfAdminToken: req.skipSelfAdminToken,
+      workerHost
     });
     steps.push(...directResult.steps);
     if (directResult.ok) {
@@ -323,7 +360,7 @@ export async function runDeploy(
         workerName: name,
         encryptedTokenB64: encrypted.ciphertextB64,
         encryptionIvB64: encrypted.ivB64,
-        workerUrl: `https://${name}.workers.dev`,
+        workerUrl: `https://${workerHost}`,
         // When direct-deploy succeeded, seed last_pushed_at + build_sha so
         // the cron knows this customer is already on the latest bundle
         // and won't re-push within the next hour.
@@ -360,7 +397,7 @@ export async function runDeploy(
     deploymentId: persistedDeploymentId,
     manageToken,
     directDeployed,
-    workerUrl: `https://${name}.workers.dev`,
+    workerUrl: `https://${workerHost}`,
     buildSha
   };
 }
@@ -382,6 +419,14 @@ interface DirectDeployInput {
   openRouterDefaultModel?: string;
   /** Opt out of persisting CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID / WORKER_SCRIPT_NAME secrets. */
   skipSelfAdminToken?: boolean;
+  /**
+   * The full Worker host: `<name>.<account-subdomain>.workers.dev` for
+   * a default deploy, or a custom domain. Resolved upstream by runDeploy
+   * via getAccountWorkersSubdomain so direct-deploy doesn't repeat the
+   * /workers/subdomain lookup. Used in the success message + when the
+   * caller advertises the URL.
+   */
+  workerHost: string;
 }
 
 interface DirectDeployResult {
@@ -505,8 +550,8 @@ async function runDirectDeploy(input: DirectDeployInput): Promise<DirectDeployRe
     return { ok: false, steps };
   }
   steps.push(step("upload-worker", true,
-    `Worker live at ${input.workerName}.workers.dev`,
-    { id: upload.result?.id, etag: upload.result?.etag }
+    `Worker live at ${input.workerHost}`,
+    { id: upload.result?.id, etag: upload.result?.etag, workerUrl: `https://${input.workerHost}` }
   ));
 
   // e. Set sensitive secrets one at a time. We stop on the first failure
@@ -558,7 +603,7 @@ async function runDirectDeploy(input: DirectDeployInput): Promise<DirectDeployRe
     { fetchImpl }
   );
   if (subRes.success) {
-    steps.push(step("enable-subdomain", true, `${input.workerName}.workers.dev URL enabled`));
+    steps.push(step("enable-subdomain", true, `${input.workerHost} URL enabled`));
   } else {
     const errMsg = subRes.errors?.[0]?.message ?? "subdomain enable failed";
     steps.push(step("enable-subdomain", false,

@@ -222,8 +222,13 @@ export class HelmSetupPlugin implements AgentPlugin {
       }
       // We don't know the worker host from here; the script name is
       // derivable from env.AGENT_NAME if set, or defaults to "helm".
+      // CF Workers live at <name>.<account-subdomain>.workers.dev — NOT
+      // <name>.workers.dev. Resolve the account's subdomain so we pass
+      // the right host to runLockdown (which short-circuits on
+      // workers.dev anyway, but the messaging needs to be accurate; and
+      // when the user later adds a custom domain we pick that up too).
       const scriptName = o.scriptName || env.AGENT_NAME || "helm";
-      const workerHost = `${scriptName}.workers.dev`;
+      const workerHost = await this.resolveWorkerHost(token, pickedAccount.id, scriptName);
       const lockdown = await runLockdown({
         token,
         accountId: pickedAccount.id,
@@ -343,7 +348,7 @@ export class HelmSetupPlugin implements AgentPlugin {
           accountId: acc,
           scriptName,
           appName: `Helm — ${scriptName}`,
-          workerHost: `${scriptName}.workers.dev`,
+          workerHost: await this.resolveWorkerHost(token, acc, scriptName),
           allowedEmails
         });
         steps.push({
@@ -716,6 +721,30 @@ export class HelmSetupPlugin implements AgentPlugin {
       return (preferred ?? workers[0]).id;
     } catch {
       return "helm";
+    }
+  }
+
+  /**
+   * Compose the full Worker host: `<script>.<account-subdomain>.workers.dev`.
+   * Falls back to the (technically-wrong) `<script>.workers.dev` when the
+   * subdomain lookup fails so the lockdown call still goes through with a
+   * usable string — runLockdown's workers.dev short-circuit catches both
+   * shapes.
+   */
+  private async resolveWorkerHost(token: string, accId: string, scriptName: string): Promise<string> {
+    if (!this.ctx) return `${scriptName}.workers.dev`;
+    try {
+      const r = await this.ctx.fetch(
+        `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accId)}/workers/subdomain`,
+        { headers: { Authorization: `Bearer ${token}`, accept: "application/json" } }
+      );
+      if (!r.ok) return `${scriptName}.workers.dev`;
+      const j = (await r.json().catch(() => ({}))) as { result?: { subdomain?: string } };
+      const sub = j.result?.subdomain;
+      if (!sub) return `${scriptName}.workers.dev`;
+      return `${scriptName}.${sub}.workers.dev`;
+    } catch {
+      return `${scriptName}.workers.dev`;
     }
   }
 

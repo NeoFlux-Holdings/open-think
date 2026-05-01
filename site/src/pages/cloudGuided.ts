@@ -102,7 +102,7 @@ export function renderCloudGuided(_params: GuidedPageInput = {}): string {
         </div>
         <div class="scene-body">
           <p class="scene-help">
-            <span class="comment"># Configure your deployment. Worker name becomes &lt;name&gt;.workers.dev.</span>
+            <span class="comment"># Configure your deployment. Deploys at &lt;name&gt;.&lt;your-account-subdomain&gt;.workers.dev.</span>
           </p>
           <label class="g-label">Worker name</label>
           <input id="g-worker" type="text" class="g-input" value="helm" placeholder="helm" maxlength="48" />

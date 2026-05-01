@@ -57,13 +57,17 @@ describe("verifyAndListAccounts", () => {
 });
 
 describe("runDeploy · full happy path", () => {
-  it("verifies → creates D1 → creates Access → composes wrangler.toml", async () => {
+  it("verifies → resolves subdomain → creates D1 → skips Access on workers.dev → composes wrangler.toml", async () => {
     const f = routedFetch({
       [`${CF}/user/tokens/verify`]: () => ok({ id: "tok-1", status: "active" }),
+      // Subdomain lookup — runDeploy resolves this once so the URL it
+      // advertises is `<name>.<subdomain>.workers.dev`, not the legacy
+      // `<name>.workers.dev` (which doesn't actually resolve).
+      [`${CF}/accounts/acc-1/workers/subdomain`]: () => ok({ subdomain: "tom-acct" }),
       [`${CF}/accounts/acc-1/d1/database`]: () => ok({ uuid: "d1-uuid-abc", name: "helm-pa" }),
-      [`${CF}/accounts/acc-1/access/organizations`]: () => ok({ auth_domain: "tom.cloudflareaccess.com", name: "Tom" }),
-      [`${CF}/accounts/acc-1/access/apps`]: () => ok({ id: "app-1", uid: "app-1", aud: "AUDXYZ", name: "Helm — helm", domain: "helm.workers.dev", type: "self_hosted" }),
-      [`${CF}/accounts/acc-1/access/apps/app-1/policies`]: () => ok({ id: "policy-1" })
+      [`${CF}/accounts/acc-1/access/organizations`]: () => ok({ auth_domain: "tom.cloudflareaccess.com", name: "Tom" })
+      // No access/apps mock — the workers.dev short-circuit means we
+      // never call it, even when enableAccess: true.
     });
 
     const r = await runDeploy(
@@ -85,9 +89,21 @@ describe("runDeploy · full happy path", () => {
     expect(stepKinds).toContain("compose-wrangler-toml");
     expect(stepKinds).toContain("render-cli-commands");
 
+    // The advertised URL uses the resolved subdomain.
+    expect(r.workerUrl).toBe("https://helm.tom-acct.workers.dev");
+
+    // Access skipped (not "create-access-app failed" — a clean skip
+    // with the workers.dev limitation marker).
+    const accessStep = r.steps.find((s) => s.kind === "create-access-app");
+    expect(accessStep?.ok).toBe(true);
+    expect(accessStep?.summary).toMatch(/workers\.dev|skipped/i);
+
     // Wrangler.toml carries the new IDs.
     expect(r.wranglerToml).toMatch(/database_id = "d1-uuid-abc"/);
-    expect(r.wranglerToml).toMatch(/CF_ACCESS_TEAM_DOMAIN = "https:\/\/tom\.cloudflareaccess\.com"/);
+    // CF_ACCESS_TEAM_DOMAIN is NOT set when Access was skipped on
+    // workers.dev — caller deliberately leaves it to be wired later
+    // via custom domain or manual dashboard setup.
+    expect(r.wranglerToml).not.toMatch(/CF_ACCESS_TEAM_DOMAIN/);
     expect(r.wranglerToml).toMatch(/OWNER_EMAIL = "tom@example.com"/);
     // CF_ACCESS_AUD lives only in secrets, not in wrangler.toml [vars].
     expect(r.wranglerToml).not.toMatch(/CF_ACCESS_AUD = /);
@@ -163,6 +179,7 @@ describe("runDeploy · failure modes", () => {
   it("D1 create fails → stops, no wrangler.toml", async () => {
     const f = routedFetch({
       [`${CF}/user/tokens/verify`]: () => ok({ id: "tok", status: "active" }),
+      [`${CF}/accounts/acc-1/workers/subdomain`]: () => ok({ subdomain: "tom-acct" }),
       [`${CF}/accounts/acc-1/d1/database`]: () => err(7501, "quota exceeded")
     });
     const r = await runDeploy(
@@ -171,7 +188,12 @@ describe("runDeploy · failure modes", () => {
     );
     expect(r.ok).toBe(false);
     expect(r.wranglerToml).toBeUndefined();
-    expect(r.steps[1].error).toMatch(/quota exceeded/);
+    // D1 step is the one that fails — find by kind, not by index.
+    // Earlier steps include verify-token + (potentially) the
+    // subdomain-lookup warning step.
+    const d1Step = r.steps.find((s) => s.kind === "create-d1");
+    expect(d1Step?.ok).toBe(false);
+    expect(d1Step?.error).toMatch(/quota exceeded/);
   });
 
   it("Access org has no team domain → continues without Access (warning step)", async () => {
