@@ -139,7 +139,39 @@ describe("cfApi.createAccessApp + createAccessPolicy", () => {
     expect(body.type).toBe("self_hosted");
     expect(body.auto_redirect_to_identity).toBe(false);
     expect(body.session_duration).toBe("24h");
+    // Modern format: destinations array, NOT the legacy `domain` string
+    // (which CF rejects on *.workers.dev with "domain does not belong to zone").
+    expect(body.domain).toBeUndefined();
+    expect(body.destinations).toEqual([
+      { type: "public", uri: "https://helm.workers.dev" }
+    ]);
     expect(r.result?.aud).toBe("AUDXYZ");
+  });
+
+  it("normalizes a bare host to a full https:// uri in the destination", async () => {
+    let capturedBody = "";
+    const f = fakeFetch((_url, init) => {
+      capturedBody = String(init.body);
+      return new Response(
+        JSON.stringify({ success: true, result: { id: "a", uid: "a", aud: "X", name: "n", domain: "n", type: "self_hosted" } }),
+        { status: 200 }
+      );
+    });
+    await createAccessApp("t", "acc-1", { name: "n", domain: "x.example.com" }, { fetchImpl: f });
+    expect(JSON.parse(capturedBody).destinations[0].uri).toBe("https://x.example.com");
+  });
+
+  it("preserves a destination uri that already has a scheme", async () => {
+    let capturedBody = "";
+    const f = fakeFetch((_url, init) => {
+      capturedBody = String(init.body);
+      return new Response(
+        JSON.stringify({ success: true, result: { id: "a", uid: "a", aud: "X", name: "n", domain: "n", type: "self_hosted" } }),
+        { status: 200 }
+      );
+    });
+    await createAccessApp("t", "acc-1", { name: "n", domain: "https://x.example.com" }, { fetchImpl: f });
+    expect(JSON.parse(capturedBody).destinations[0].uri).toBe("https://x.example.com");
   });
 
   it("createAccessPolicy includes the owner email", async () => {

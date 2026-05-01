@@ -172,6 +172,45 @@ describe("runLockdown · full happy path", () => {
     expect(secretCalls.find((s) => s.name === "CF_ACCESS_ALLOWED_EMAILS")?.text).toBe("tom@example.com");
   });
 
+  it("POSTs the modern destinations array (NOT the legacy domain field) so workers.dev URLs go through", async () => {
+    let appBody = "";
+    const baseFetch = routedFetch({
+      [`${CF}/accounts/acc-1/access/organizations`]: () =>
+        ok({ auth_domain: "x.cloudflareaccess.com", name: "x" }),
+      [`${CF}/accounts/acc-1/access/apps/app-1/policies`]: () => ok({ id: "p" }),
+      [`${CF}/accounts/acc-1/access/apps`]: () =>
+        ok({ id: "app-1", uid: "app-1", aud: "AUD", name: "n", domain: "d", type: "self_hosted" }),
+      [`${CF}/accounts/acc-1/workers/scripts/h/secrets`]: () => ok({ name: "x", type: "secret_text" })
+    });
+    const f: typeof fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const u = typeof input === "string" ? input : (input as Request).url;
+      if (u.endsWith("/access/apps") && init?.method === "POST") {
+        appBody = String(init.body ?? "");
+      }
+      return baseFetch(input as RequestInfo, init);
+    }) as typeof fetch;
+    await runLockdown(
+      {
+        token: "tok",
+        accountId: "acc-1",
+        scriptName: "h",
+        appName: "Helm — h",
+        workerHost: "h.acct.workers.dev",
+        allowedEmails: ["a@x.com"]
+      },
+      { fetchImpl: f }
+    );
+    const body = JSON.parse(appBody) as Record<string, unknown>;
+    expect(body.type).toBe("self_hosted");
+    // Modern format: destinations array. The legacy `domain` field
+    // historically rejected workers.dev URLs with "domain does not
+    // belong to zone".
+    expect(body.domain).toBeUndefined();
+    expect(body.destinations).toEqual([
+      { type: "public", uri: "https://h.acct.workers.dev" }
+    ]);
+  });
+
   it("joins multiple emails into the allow-list secret", async () => {
     const secretCalls: Array<{ name: string; text: string }> = [];
     const baseFetch = routedFetch({

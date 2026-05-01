@@ -328,6 +328,19 @@ export async function runLockdown(
   );
 
   // 2. Create the Self-hosted Access app for this Worker's domain.
+  //
+  // We send the modern `destinations` array (CF added it in 2024) instead
+  // of the legacy `domain` string. `destinations` doesn't run the
+  // zone-ownership validation that historically rejected `*.workers.dev`
+  // URLs with "domain does not belong to zone" — it just gates the URI.
+  // The dashboard's Access app creator uses the same shape.
+  //
+  // CF's response still includes `domain` (it's derived from the first
+  // destination), so callers and tests that read `result.domain` keep
+  // working unchanged.
+  const destinationUri = input.workerHost.startsWith("http")
+    ? input.workerHost
+    : `https://${input.workerHost}`;
   const appRes = await cfCall<AccessAppResult>(
     input.token,
     `/accounts/${input.accountId}/access/apps`,
@@ -335,8 +348,8 @@ export async function runLockdown(
       method: "POST",
       body: JSON.stringify({
         name: input.appName,
-        domain: input.workerHost,
         type: "self_hosted",
+        destinations: [{ type: "public", uri: destinationUri }],
         session_duration: input.sessionDuration ?? "24h",
         auto_redirect_to_identity: false
       }),

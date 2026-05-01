@@ -250,6 +250,15 @@ export interface AccessApp {
  * `POST /accounts/{id}/access/apps` — creates an Access self-hosted app for
  * the deployed Worker URL. The `aud` field returned here is what the user
  * sets as `CF_ACCESS_AUD` in the Worker.
+ *
+ * Payload uses the modern `destinations` array (CF, 2024) instead of the
+ * legacy `domain` string. `destinations` doesn't run the zone-ownership
+ * validation that historically rejected `*.workers.dev` URLs with
+ * "domain does not belong to zone" — it just gates the URI. The dashboard's
+ * Access app creator uses the same shape; the public API has caught up.
+ *
+ * `input.domain` is treated as either a host (`my.workers.dev`) or a full
+ * URL — we normalize to a full https URI for the destination entry.
  */
 export async function createAccessApp(
   token: string,
@@ -261,12 +270,15 @@ export async function createAccessApp(
   },
   options: FetchOptions = {}
 ): Promise<CfApiResult<AccessApp>> {
+  const destinationUri = input.domain.startsWith("http")
+    ? input.domain
+    : `https://${input.domain}`;
   return call<AccessApp>(token, `/accounts/${accountId}/access/apps`, {
     method: "POST",
     body: JSON.stringify({
       name: input.name,
-      domain: input.domain,
       type: "self_hosted",
+      destinations: [{ type: "public", uri: destinationUri }],
       session_duration: input.sessionDuration ?? "24h",
       auto_redirect_to_identity: false
     }),

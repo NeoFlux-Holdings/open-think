@@ -207,16 +207,21 @@ export async function runDeploy(
       if (!app.success || !app.result?.aud) {
         const apiMsg = app.errors?.[0]?.message ?? "unknown";
         const apiCode = app.errors?.[0]?.code;
-        const isWorkersDev = name && /\.workers\.dev$/i.test(`${name}.workers.dev`);
+        // We send the modern `destinations` array, which doesn't run the
+        // zone-ownership validation that used to block workers.dev URLs.
+        // The "domain does not belong to zone" failure should be rare
+        // now (only seen on accounts not yet on the new Access API),
+        // but we still surface actionable recovery if it happens.
         const isDomainZoneError = /domain does not belong to zone/i.test(apiMsg);
         const recovery = isDomainZoneError
           ? [
-              `Cloudflare's API doesn't allow Self-hosted Access apps to be created against *.workers.dev URLs via this endpoint — the domain has to be on a zone in your account.`,
+              `Cloudflare returned "domain does not belong to zone" for ${name}.workers.dev. We send the modern destinations-array payload, so this is unexpected — usually it means your account hasn't been migrated to the new Access apps API yet.`,
               ``,
-              `Three paths forward:`,
-              `  1. Skip Access for now (recommended quick path): re-deploy with the "Create a Cloudflare Access app" checkbox UNCHECKED. Your Worker still runs — auth is in first-run permissive mode and the /app UI shows a yellow banner reminding you to lock it down later. The same workers.dev limit applies to the in-app wizard, so see (2) or (3) for actually locking down.`,
-              `  2. Add a custom domain to your Worker first (cleanest). Dash → Workers & Pages → ${name} → Settings → Triggers → "Add Custom Domain". Re-run this deploy form with that domain — Access app creation works against your zones.`,
-              `  3. Create the Access app manually in the dashboard. Zero Trust → Access → Applications → Add → Self-hosted → enter "${name}.workers.dev" as the application domain. The dashboard uses an internal mechanism that works on workers.dev where the public API doesn't.`
+              `Two paths forward:`,
+              `  1. Add a custom domain to your Worker (cleanest). Dash → Workers & Pages → ${name} → Settings → Triggers → "Add Custom Domain". Re-run with that domain.`,
+              `  2. Create the Access app manually in the dashboard. Zero Trust → Access → Applications → Add → Self-hosted → enter "${name}.workers.dev" as the application domain. Then set CF_ACCESS_AUD + CF_ACCESS_TEAM_DOMAIN as Worker secrets via /app#/settings → Manage secrets.`,
+              ``,
+              `Skipping for now leaves the Worker running in first-run permissive mode (yellow banner reminds you).`
             ].join("\n")
           : explainCfError(apiMsg, apiCode, "Access: Apps and Policies:Edit", acc);
         steps.push(step("create-access-app", false, `Access app create failed · ${apiMsg}`, undefined,
