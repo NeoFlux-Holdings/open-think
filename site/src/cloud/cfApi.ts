@@ -414,6 +414,30 @@ export async function getWorkerSettings(
   );
 }
 
+/**
+ * `POST /accounts/{id}/workers/scripts/{name}/subdomain` — enable the
+ * `<name>.<account>.workers.dev` URL for the script. CF leaves it
+ * disabled on fresh uploads in many account configurations, which means
+ * the deploy succeeds but the URL the UI advertises is dead (522). Idempotent
+ * — calling on an already-enabled subdomain is a no-op.
+ */
+export async function enableWorkersDevSubdomain(
+  token: string,
+  accountId: string,
+  scriptName: string,
+  options: FetchOptions = {}
+): Promise<CfApiResult<{ enabled: boolean }>> {
+  return call<{ enabled: boolean }>(
+    token,
+    `/accounts/${accountId}/workers/scripts/${scriptName}/subdomain`,
+    {
+      method: "POST",
+      body: JSON.stringify({ enabled: true }),
+      ...options
+    }
+  );
+}
+
 /* ---------- Worker upload (skeleton — see deployFlow for status) ---------- */
 
 /**

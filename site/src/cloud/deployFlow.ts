@@ -21,6 +21,7 @@
 import {
   createAccessApp,
   createAccessPolicy,
+  enableWorkersDevSubdomain,
   ensureD1Database,
   flattenMigrationsForCfApi,
   getAccessOrganization,
@@ -250,7 +251,8 @@ export async function runDeploy(
       ? { aud: accessAud, teamDomain: accessTeamDomain }
       : null,
     ownerEmail: req.secrets?.OWNER_EMAIL,
-    fromEmail: req.secrets?.FROM_EMAIL
+    fromEmail: req.secrets?.FROM_EMAIL,
+    openRouterDefaultModel: req.openRouterDefaultModel
   });
   steps.push(step("compose-wrangler-toml", true, "wrangler.toml composed", {
     bytes: wranglerToml.length
@@ -293,7 +295,9 @@ export async function runDeploy(
       secrets: { ...(req.secrets ?? {}) } as Record<string, string | undefined>,
       ownerEmail: req.secrets?.OWNER_EMAIL,
       fromEmail: req.secrets?.FROM_EMAIL,
-      fetchImpl: options.fetchImpl
+      fetchImpl: options.fetchImpl,
+      openRouterDefaultModel: req.openRouterDefaultModel,
+      skipSelfAdminToken: req.skipSelfAdminToken
     });
     steps.push(...directResult.steps);
     if (directResult.ok) {
@@ -374,6 +378,10 @@ interface DirectDeployInput {
   ownerEmail?: string;
   fromEmail?: string;
   fetchImpl?: typeof fetch;
+  /** When OPENROUTER_API_KEY is in `secrets`, MODEL_DEFAULT uses this id. */
+  openRouterDefaultModel?: string;
+  /** Opt out of persisting CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID / WORKER_SCRIPT_NAME secrets. */
+  skipSelfAdminToken?: boolean;
 }
 
 interface DirectDeployResult {
@@ -435,12 +443,25 @@ async function runDirectDeploy(input: DirectDeployInput): Promise<DirectDeployRe
   }
 
   // Plain-text vars (non-sensitive) — these match what composeWranglerToml
-  // would have written under [vars].
+  // would have written under [vars]. Defaults are tuned so the deployed
+  // Worker can self-administer immediately:
+  //   - ALLOWED_HOSTS: canonical hostlist (Worker fails to boot when empty)
+  //   - ENABLED_PLUGINS: full self-admin stack (cloudflare-admin +
+  //     helm-setup + helm-artifacts + mcp-client) so /app can run
+  //     Auto-setup, drift sync, and helm-* skills out of the box
+  //   - MODEL_DEFAULT: openrouter/auto when an OPENROUTER_API_KEY was
+  //     pasted (best chat default), else Workers AI as the no-key fallback
+  const hasOpenRouter = !!input.secrets.OPENROUTER_API_KEY;
+  const modelDefault = hasOpenRouter
+    ? (input.openRouterDefaultModel ?? "openrouter/auto")
+    : "@cf/openai/gpt-oss-120b";
   const vars: Record<string, string> = {
-    MODEL_DEFAULT: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-    ENABLED_PLUGINS: "admin,workers-ai,memory,email,notifier",
-    ALLOWED_HOSTS: "",
-    AGENT_NAME: "Helm"
+    MODEL_DEFAULT: modelDefault,
+    ENABLED_PLUGINS:
+      "admin,helm-setup,helm-artifacts,helm-toml,helm-github,cloudflare-admin,mcp-client,workers-ai,openrouter,memory,email,notifier",
+    ALLOWED_HOSTS:
+      "api.cloudflare.com,mcp.cloudflare.com,api.anthropic.com,api.openai.com,openrouter.ai,api.github.com",
+    AGENT_NAME: input.workerName
   };
   if (input.ownerEmail) {
     vars.AGENT_OWNER_EMAIL = input.ownerEmail;
@@ -492,6 +513,14 @@ async function runDirectDeploy(input: DirectDeployInput): Promise<DirectDeployRe
   // and let the caller decide — the script is already deployed and live;
   // missing secrets are recoverable via the manage page.
   // CF_ACCESS_AUD lives here too (Access app aud is sensitive).
+  //
+  // CRITICAL: we ALSO persist the deploy token + account id + script name
+  // so the deployed Worker can self-administer (run cf-* skills, the
+  // lockdown wizard, helm-setup-deploy from /app). Without these, the
+  // Worker starts in a state where /app#/settings can't do anything and
+  // the user has to paste their token a SECOND time. The token is
+  // already privileged enough to deploy this Worker; persisting it for
+  // self-admin is the same scope.
   const secretsToSet: Record<string, string> = {};
   for (const [k, v] of Object.entries(input.secrets)) {
     if (!v) continue;
@@ -500,6 +529,13 @@ async function runDirectDeploy(input: DirectDeployInput): Promise<DirectDeployRe
     secretsToSet[k] = v;
   }
   if (input.access?.aud) secretsToSet.CF_ACCESS_AUD = input.access.aud;
+
+  // Self-admin enablement secrets (opt-out via input.skipSelfAdminToken).
+  if (!input.skipSelfAdminToken) {
+    secretsToSet.CLOUDFLARE_API_TOKEN = input.token;
+    secretsToSet.CLOUDFLARE_ACCOUNT_ID = input.accountId;
+    secretsToSet.WORKER_SCRIPT_NAME = input.workerName;
+  }
 
   for (const [k, v] of Object.entries(secretsToSet)) {
     const r = await putWorkerSecret(input.token, input.accountId, input.workerName, k, v, { fetchImpl });
@@ -510,6 +546,26 @@ async function runDirectDeploy(input: DirectDeployInput): Promise<DirectDeployRe
     } else {
       steps.push(step("set-secret", true, `secret ${k}: set`));
     }
+  }
+
+  // f. Enable the workers.dev subdomain. Without this, the deploy
+  // succeeds but the URL the UI shows (helm.workers.dev) returns 522.
+  // Idempotent — calling it on an already-enabled Worker is a no-op.
+  const subRes = await enableWorkersDevSubdomain(
+    input.token,
+    input.accountId,
+    input.workerName,
+    { fetchImpl }
+  );
+  if (subRes.success) {
+    steps.push(step("enable-subdomain", true, `${input.workerName}.workers.dev URL enabled`));
+  } else {
+    const errMsg = subRes.errors?.[0]?.message ?? "subdomain enable failed";
+    steps.push(step("enable-subdomain", false,
+      `couldn't enable workers.dev URL · ${errMsg}`,
+      undefined,
+      `${errMsg}\n\nThe Worker is deployed but its URL may be off. Visit dash → Workers & Pages → ${input.workerName} → Settings → Triggers → toggle the workers.dev subdomain on.`
+    ));
   }
 
   return { ok: true, steps, buildSha: manifest.sha };
@@ -534,6 +590,13 @@ interface WranglerComposeInput {
   access: { aud: string; teamDomain: string } | null;
   ownerEmail?: string;
   fromEmail?: string;
+  /**
+   * Model id MODEL_DEFAULT resolves to. Defaults to "openrouter/auto"
+   * — best when the user pasted an OPENROUTER_API_KEY. Pass another
+   * id (e.g. "openrouter/moonshotai/kimi-k2-0905") to pin a specific
+   * model.
+   */
+  openRouterDefaultModel?: string;
 }
 
 export function composeWranglerToml(input: WranglerComposeInput): string {
@@ -548,10 +611,19 @@ export function composeWranglerToml(input: WranglerComposeInput): string {
   lines.push("enabled = true");
   lines.push("");
   lines.push("[vars]");
-  lines.push(`MODEL_DEFAULT = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"`);
-  lines.push(`ENABLED_PLUGINS = "admin,workers-ai,memory,email,notifier"`);
-  lines.push(`ALLOWED_HOSTS = ""`);
-  lines.push(`AGENT_NAME = "Helm"`);
+  // The browser-deploy flow ships an agent that can self-administer
+  // (cf-* skills, helm-setup-deploy, helm-artifacts-* etc.). That needs
+  // ENABLED_PLUGINS to include the full self-admin stack and ALLOWED_HOSTS
+  // to be non-empty (or the Worker errors on every request).
+  const modelDefault = input.openRouterDefaultModel ?? "openrouter/auto";
+  lines.push(`MODEL_DEFAULT = "${modelDefault}"`);
+  lines.push(
+    `ENABLED_PLUGINS = "admin,helm-setup,helm-artifacts,helm-toml,helm-github,cloudflare-admin,mcp-client,workers-ai,openrouter,memory,email,notifier"`
+  );
+  lines.push(
+    `ALLOWED_HOSTS = "api.cloudflare.com,mcp.cloudflare.com,api.anthropic.com,api.openai.com,openrouter.ai,api.github.com"`
+  );
+  lines.push(`AGENT_NAME = "${input.workerName}"`);
   if (input.ownerEmail) lines.push(`AGENT_OWNER_EMAIL = "${input.ownerEmail}"`);
   if (input.ownerEmail) lines.push(`OWNER_EMAIL = "${input.ownerEmail}"`);
   if (input.fromEmail) lines.push(`FROM_EMAIL = "${input.fromEmail}"`);

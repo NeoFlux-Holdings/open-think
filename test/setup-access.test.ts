@@ -481,6 +481,7 @@ describe("ACCESS_WIZARD_TOKEN_URL + scopes", () => {
     expect(parsed).toEqual([
       { key: "workers_scripts", type: "edit" },
       { key: "access", type: "edit" },
+      { key: "cloudflare_zero_trust", type: "read" },
       { key: "d1", type: "edit" },
       { key: "workers_r2_storage", type: "edit" },
       { key: "workers_kv_storage", type: "edit" },
@@ -499,8 +500,9 @@ describe("ACCESS_WIZARD_TOKEN_URL + scopes", () => {
     expect(params.get("name")).toBe("Helm");
   });
   it("scope list mirrors the URL", () => {
-    expect(ACCESS_WIZARD_SCOPES.length).toBe(8);
+    expect(ACCESS_WIZARD_SCOPES.length).toBe(9);
     expect(ACCESS_WIZARD_SCOPES.some((s) => s.permission.includes("Workers Scripts"))).toBe(true);
     expect(ACCESS_WIZARD_SCOPES.some((s) => s.permission.includes("Artifacts"))).toBe(true);
+    expect(ACCESS_WIZARD_SCOPES.some((s) => s.permission.includes("Cloudflare Zero Trust"))).toBe(true);
   });
 });

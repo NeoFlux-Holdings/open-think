@@ -1953,7 +1953,7 @@ input[type="text"]:focus, select:focus, textarea:focus { border-bottom-color: va
         <ol class="lockdown-instructions-list">
           <li>Click <a href="#" id="ld-step-link" target="_blank" rel="noopener">Create scoped token ↗</a> — opens dash → API Tokens.</li>
           <li>Click <span class="mono">Create Token</span> → <span class="mono">Get started</span> (Custom token).</li>
-          <li>Under <span class="mono">Permissions</span>, add these <strong>8</strong> rows (paste the names from the copy button above):
+          <li>Under <span class="mono">Permissions</span>, add these <strong>9</strong> rows (paste the names from the copy button above):
             <ul class="lockdown-instructions-scopes" id="ld-scopes"></ul>
           </li>
           <li>Set <span class="mono">Account Resources</span> → <span class="mono">Include</span> → <span class="mono">All accounts</span>.</li>

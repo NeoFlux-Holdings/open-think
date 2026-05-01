@@ -30,6 +30,7 @@ export interface DeployRequestSecrets {
   CF_ACCESS_ALLOWED_EMAILS?: string;
   ANTHROPIC_API_KEY?: string;
   OPENAI_API_KEY?: string;
+  OPENROUTER_API_KEY?: string;
   OWNER_EMAIL?: string;
   FROM_EMAIL?: string;
   VAPID_PUBLIC_KEY?: string;
@@ -50,6 +51,21 @@ export interface DeployRequest {
   enableAccess: boolean;
   /** Optional secrets to set after Worker upload. */
   secrets?: DeployRequestSecrets;
+  /**
+   * When OPENROUTER_API_KEY is set in `secrets`, this is the model id
+   * MODEL_DEFAULT will resolve to. Defaults to "openrouter/auto" when
+   * unset (OR's auto-router picks the best model per prompt).
+   */
+  openRouterDefaultModel?: string;
+  /**
+   * When true, the deploy will NOT persist CLOUDFLARE_API_TOKEN +
+   * CLOUDFLARE_ACCOUNT_ID + WORKER_SCRIPT_NAME as Worker secrets. Default
+   * false — persisting these is what lets the deployed Worker
+   * self-administer (run cf-* skills, the lockdown wizard, helm-setup-deploy
+   * from /app). Opt out only when you don't want the runtime to be able
+   * to mutate your CF account.
+   */
+  skipSelfAdminToken?: boolean;
 }
 
 export type DeployStepKind =
@@ -60,7 +76,8 @@ export type DeployStepKind =
   | "render-cli-commands"
   | "fetch-bundle"
   | "upload-worker"
-  | "set-secret";
+  | "set-secret"
+  | "enable-subdomain";
 
 export interface DeployStepResult {
   kind: DeployStepKind;

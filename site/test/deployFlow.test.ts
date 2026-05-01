@@ -199,15 +199,38 @@ describe("runDeploy · failure modes", () => {
 });
 
 describe("composeWranglerToml · invariants", () => {
-  it("always sets the default zero-config plugin list", () => {
+  it("ships the self-admin plugin stack + a non-empty ALLOWED_HOSTS", () => {
     const t = composeWranglerToml({
       workerName: "helm",
       accountId: "acc-1",
       d1: null,
       access: null
     });
-    expect(t).toMatch(/ENABLED_PLUGINS = "admin,workers-ai,memory,email,notifier"/);
-    expect(t).toMatch(/MODEL_DEFAULT = "@cf\/meta\/llama-3\.3-70b-instruct-fp8-fast"/);
+    // The deployed Worker needs cloudflare-admin + helm-setup +
+    // helm-artifacts + mcp-client to self-administer (run cf-* skills,
+    // helm-setup-deploy, drift sync) right out of the gate.
+    expect(t).toMatch(/ENABLED_PLUGINS = ".*cloudflare-admin/);
+    expect(t).toMatch(/ENABLED_PLUGINS = ".*helm-setup/);
+    expect(t).toMatch(/ENABLED_PLUGINS = ".*helm-artifacts/);
+    expect(t).toMatch(/ENABLED_PLUGINS = ".*mcp-client/);
+    // ALLOWED_HOSTS must be non-empty or the runtime errors
+    // E_INTERNAL "ALLOWED_HOSTS must include at least one host"
+    // on every request.
+    expect(t).toMatch(/ALLOWED_HOSTS = "api\.cloudflare\.com,/);
+    // Default chat model: openrouter/auto (best when OPENROUTER_API_KEY
+    // is set; falls back to Workers AI in runtime when key missing).
+    expect(t).toMatch(/MODEL_DEFAULT = "openrouter\/auto"/);
+  });
+
+  it("honors openRouterDefaultModel override (e.g. pinning kimi)", () => {
+    const t = composeWranglerToml({
+      workerName: "helm",
+      accountId: "acc-1",
+      d1: null,
+      access: null,
+      openRouterDefaultModel: "openrouter/moonshotai/kimi-k2-0905"
+    });
+    expect(t).toMatch(/MODEL_DEFAULT = "openrouter\/moonshotai\/kimi-k2-0905"/);
   });
 
   it("includes the two DO bindings + their migrations", () => {

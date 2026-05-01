@@ -621,6 +621,12 @@ const ACCESS_WIZARD_TOKEN_PERMISSIONS = encodeURIComponent(
   JSON.stringify([
     { key: "workers_scripts", type: "edit" },
     { key: "access", type: "edit" },
+    // `cloudflare_zero_trust:read` is needed for `/access/organizations` —
+    // the lockdown wizard's first call. Without it the user gets
+    // "Authentication error" even when the access:edit scope is granted,
+    // because organization lookup lives under Zero Trust, not Apps and
+    // Policies. (Yes, CF's permission split is unintuitive.)
+    { key: "cloudflare_zero_trust", type: "read" },
     { key: "d1", type: "edit" },
     { key: "workers_r2_storage", type: "edit" },
     { key: "workers_kv_storage", type: "edit" },
@@ -679,6 +685,7 @@ async function findAccessAppByDestination(
 export const ACCESS_WIZARD_SCOPES = [
   { resource: "Account", permission: "Workers Scripts:Edit" },
   { resource: "Account", permission: "Access: Apps and Policies:Edit" },
+  { resource: "Account", permission: "Cloudflare Zero Trust:Read" },
   { resource: "Account", permission: "D1:Edit" },
   { resource: "Account", permission: "Workers R2 Storage:Edit" },
   { resource: "Account", permission: "Workers KV Storage:Edit" },

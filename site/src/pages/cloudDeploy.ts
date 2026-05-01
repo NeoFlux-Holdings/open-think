@@ -127,8 +127,20 @@ export function renderCloudDeploy(): string {
         <input id="cf-owner" type="email" placeholder="you@example.com" />
       </div>
 
-      <details style="margin-top: 12px;">
+      <details style="margin-top: 12px;" open>
         <summary class="mono" style="cursor: pointer; font-size: 11px; letter-spacing: 0.12em; color: var(--muted); text-transform: uppercase;">Optional model keys</summary>
+        <div class="field">
+          <label for="cf-or">OPENROUTER_API_KEY <span style="color: var(--muted); font-size: 12px;">— recommended; auto-routes across 100+ models</span></label>
+          <input id="cf-or" type="password" autocomplete="off" placeholder="sk-or-… (optional)" />
+          <label style="display: flex; gap: 8px; align-items: center; margin-top: 8px; font-size: 13px;">
+            <input id="cf-or-default" type="checkbox" checked />
+            Use OpenRouter as the default chat model (otherwise falls back to Workers AI)
+          </label>
+          <details style="margin-top: 6px;">
+            <summary class="mono" style="font-size: 11px; cursor: pointer; color: var(--muted);">Pin a specific model</summary>
+            <input id="cf-or-model" type="text" autocomplete="off" placeholder="openrouter/auto (default) — or e.g. openrouter/moonshotai/kimi-k2-0905" style="margin-top: 6px;" />
+          </details>
+        </div>
         <div class="field">
           <label for="cf-anth">ANTHROPIC_API_KEY</label>
           <input id="cf-anth" type="password" autocomplete="off" placeholder="sk-ant-… (optional)" />
@@ -407,6 +419,9 @@ export function renderCloudDeploy(): string {
     const owner = ownerInput.value.trim();
     const anth = $('#cf-anth').value.trim();
     const oai = $('#cf-oai').value.trim();
+    const or = $('#cf-or').value.trim();
+    const orDefault = $('#cf-or-default').checked;
+    const orModel = ($('#cf-or-model').value || '').trim();
 
     if (!accountId) { alert('Pick an account.'); return; }
     if (!workerName) { alert('Pick a worker name.'); return; }
@@ -416,6 +431,7 @@ export function renderCloudDeploy(): string {
     if (owner) secrets.AGENT_OWNER_EMAIL = owner;
     if (anth) secrets.ANTHROPIC_API_KEY = anth;
     if (oai) secrets.OPENAI_API_KEY = oai;
+    if (or) secrets.OPENROUTER_API_KEY = or;
 
     step3.removeAttribute('hidden');
     out.setAttribute('hidden', '');
@@ -432,6 +448,15 @@ export function renderCloudDeploy(): string {
         enableAccess,
         secrets
       };
+      // Pin a specific OpenRouter model when the user typed one,
+      // otherwise fall back to "openrouter/auto" only when they
+      // checked "use as default" AND pasted a key. When they
+      // unchecked "use as default", we leave MODEL_DEFAULT alone
+      // (Workers AI fallback) so their key stays available for
+      // explicit per-call usage but isn't the chat default.
+      if (or && orDefault) {
+        payload.openRouterDefaultModel = orModel || 'openrouter/auto';
+      }
       // Tell the server we want to persist this deploy as a managed
       // subscriber. The server reads our actual customer_id from the
       // signed intent cookie — never from this body.

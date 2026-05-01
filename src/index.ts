@@ -786,8 +786,10 @@ async function handler(request: Request, env: Env, requestId: string, startedAt:
           hasExistingToken: Boolean(env.CLOUDFLARE_API_TOKEN),
           // Pre-fill the email field. If both this AND hasExistingToken are
           // true, the wizard's "Lock it down" button is one click — no
-          // form fill required.
-          prefilledOwnerEmail: env.OWNER_EMAIL ?? null,
+          // form fill required. Accept either AGENT_OWNER_EMAIL or
+          // OWNER_EMAIL (the cloud deploy form sets both as plain-text vars
+          // so either may be present at runtime).
+          prefilledOwnerEmail: env.AGENT_OWNER_EMAIL ?? env.OWNER_EMAIL ?? null,
           tokenUrl: ACCESS_WIZARD_TOKEN_URL,
           scopes: ACCESS_WIZARD_SCOPES
         }
