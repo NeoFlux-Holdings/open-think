@@ -33,7 +33,7 @@
 import type { AgentPlugin, PluginContext, PluginResult } from "../core/plugin";
 import type { Env } from "../types";
 import { AppError } from "../core/errors";
-import { diffBindings, mergeTomlBlock } from "./helmToml";
+import { buildTomlSnippet, diffBindings, mergeTomlBlock } from "./helmToml";
 
 const GH_API = "https://api.github.com";
 const GH_HEADERS = {
@@ -424,36 +424,4 @@ export class HelmGithubPlugin implements AgentPlugin {
   }
 }
 
-/**
- * Generate a wrangler.toml block for a live CF binding. Mirrors the
- * tomlSnippet output of cf-patch-binding so helm-github-sync-toml can
- * reproduce it from the live state alone.
- */
-function buildTomlSnippet(
-  driftEntry: { type: string; name: string; bucketName?: string; databaseName?: string },
-  liveBindings: Array<Record<string, unknown>>
-): string | null {
-  // Re-fetch the full binding from the live list (the diff entry only
-  // has a few fields).
-  const full = liveBindings.find((b) => b.type === driftEntry.type && b.name === driftEntry.name);
-  if (!full) return null;
-  switch (driftEntry.type) {
-    case "r2_bucket":
-      return `[[r2_buckets]]\nbinding = "${driftEntry.name}"\nbucket_name = "${full.bucket_name ?? ""}"`;
-    case "d1":
-      return `[[d1_databases]]\nbinding = "${driftEntry.name}"\ndatabase_name = "${full.database_name ?? ""}"\ndatabase_id = "${full.database_id ?? ""}"`;
-    case "kv_namespace":
-      return `[[kv_namespaces]]\nbinding = "${driftEntry.name}"\nid = "${full.namespace_id ?? ""}"`;
-    case "ai":
-      return `[ai]\nbinding = "${driftEntry.name}"`;
-    case "browser":
-      return `[browser]\nbinding = "${driftEntry.name}"`;
-    case "queue":
-      return `[[queues.producers]]\nbinding = "${driftEntry.name}"\nqueue = "${full.queue_name ?? ""}"`;
-    case "hyperdrive":
-      return `[[hyperdrive]]\nbinding = "${driftEntry.name}"\nid = "${full.id ?? ""}"`;
-    default:
-      // Unknown binding type — generic comment so the user can fill in.
-      return `# helm-github-sync-toml: live Worker has ${driftEntry.type} binding "${driftEntry.name}" but generator doesn't know its TOML shape. Add manually.`;
-  }
-}
+// buildTomlSnippet now lives in helmToml.ts so helm-artifacts can reuse it.

@@ -212,6 +212,31 @@ export function collectStatus(env: Env, runtime: RuntimeIntrospection | AgentRun
         "Same token used by the deploy wizard. Lets the agent run cf-create-d1, cf-put-secret, cf-create-r2, etc. as skills.",
       docs: "docs/HELM.md"
     },
+    {
+      id: "helm-artifacts",
+      label: "Cloudflare Artifacts (canonical wrangler.toml source-of-truth)",
+      group: "infrastructure",
+      enabled: enabled.has("helm-artifacts"),
+      // We can't probe the repo from here without burning an API call —
+      // mark configured when EITHER the binding is bound OR a CF API
+      // token + repo name are both available. helm-setup-deploy fills
+      // ARTIFACTS_REPO automatically; the /app#/settings card has the
+      // live "ready" pill that does the actual probe.
+      configured:
+        Boolean((env as Env & { ARTIFACTS?: unknown }).ARTIFACTS) ||
+        Boolean(env.CLOUDFLARE_API_TOKEN && (env.ARTIFACTS_REPO || env.AGENT_NAME)),
+      required: ["CLOUDFLARE_API_TOKEN with Artifacts:Edit scope"],
+      missing: (() => {
+        const m: string[] = [];
+        if (!env.CLOUDFLARE_API_TOKEN && !(env as Env & { ARTIFACTS?: unknown }).ARTIFACTS) {
+          m.push("CLOUDFLARE_API_TOKEN (Artifacts:Edit scope) or [[artifacts]] binding");
+        }
+        return m;
+      })(),
+      hint:
+        "Run helm-setup-deploy to provision automatically; or visit /app#/settings → Cloudflare Artifacts → Initialize. helm-clone in the shell mints a token + emits a `git clone` command.",
+      docs: "docs/HELM.md"
+    },
     /* ---------------- PA stack capability checks ---------------- */
     {
       id: "auth",

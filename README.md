@@ -65,6 +65,17 @@ Each PA-stack feature is opt-in. Uncomment a single block in [`wrangler.toml`](.
 | Web Push notifications | Open `/app#/settings` → click **Generate VAPID keys** (browser-side, never sent to server) → paste the three `wrangler secret put` commands |
 | Cloudflare Access (auth) | dash → Zero Trust → Access → Applications → Self-hosted → set `CF_ACCESS_TEAM_DOMAIN` + `CF_ACCESS_AUD` |
 
+### Source-of-truth lives on Cloudflare (no GitHub required)
+
+`helm-setup-deploy` provisions a **Cloudflare Artifacts** repo (public-beta git remote on Cloudflare's storage) as the canonical home for `wrangler.toml` + your Worker source. The agent commits drift fixes there; you clone it locally for direct edits; both push to the same place.
+
+- **/app#/settings → Cloudflare Artifacts card** — initialize, mint a write token, get a ready-to-paste `git clone` command, run drift checks
+- **In-shell**: `helm-clone <dest>` — mints a token + clones into the helm-shell container
+- **Skill surface**: `helm-artifacts-status / init / read-file / write-file / sync-toml / deploy / mint-token / cron-sync` (sixteen total — see [`docs/HELM.md`](./docs/HELM.md))
+- **Auto-sync**: set `ARTIFACTS_AUTO_SYNC=1` and the scheduled handler runs drift detection on every cron firing, fanning out to the notifier on drift
+
+The legacy `helm-github-*` skills still work for users who'd rather keep GitHub as canonical, but new deploys default to Artifacts and skip the PAT setup entirely.
+
 Or run the all-in-one CLI wizard:
 
 ```bash

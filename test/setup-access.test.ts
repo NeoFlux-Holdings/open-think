@@ -443,12 +443,17 @@ describe("ACCESS_WIZARD_TOKEN_URL + scopes", () => {
     expect(parsed).toEqual([
       { key: "workers_scripts", type: "edit" },
       { key: "access", type: "edit" },
+      { key: "d1", type: "edit" },
+      { key: "workers_r2_storage", type: "edit" },
+      { key: "workers_kv_storage", type: "edit" },
+      { key: "artifacts", type: "edit" },
       { key: "account_settings", type: "read" },
       { key: "user_details", type: "read" }
     ]);
   });
   it("scope list mirrors the URL", () => {
-    expect(ACCESS_WIZARD_SCOPES.length).toBe(4);
+    expect(ACCESS_WIZARD_SCOPES.length).toBe(8);
     expect(ACCESS_WIZARD_SCOPES.some((s) => s.permission.includes("Workers Scripts"))).toBe(true);
+    expect(ACCESS_WIZARD_SCOPES.some((s) => s.permission.includes("Artifacts"))).toBe(true);
   });
 });

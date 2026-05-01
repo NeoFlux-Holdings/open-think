@@ -524,3 +524,42 @@ function escapeRe(s: string): string {
 function normalizeBlankLines(s: string): string {
   return s.replace(/\n{3,}/g, "\n\n");
 }
+
+/**
+ * Generate a wrangler.toml block for a live Cloudflare binding. Used by
+ * any drift-fix path (helm-github-sync-toml, helm-artifacts-sync-toml,
+ * helm-toml-patch's reverse-engineering of cf-patch-binding output) so
+ * we have one source of truth for "given a live binding, what does the
+ * TOML look like?".
+ *
+ * `liveBindings` lets us pull richer fields (bucket_name / database_id /
+ * etc.) that aren't in the lighter DiffResult entry. Pass the same
+ * array helm-toml-sync did its diff against.
+ */
+export function buildTomlSnippet(
+  driftEntry: { type: string; name: string; bucketName?: string; databaseName?: string },
+  liveBindings: Array<Record<string, unknown>>
+): string | null {
+  const full = liveBindings.find(
+    (b) => b.type === driftEntry.type && b.name === driftEntry.name
+  );
+  if (!full) return null;
+  switch (driftEntry.type) {
+    case "r2_bucket":
+      return `[[r2_buckets]]\nbinding = "${driftEntry.name}"\nbucket_name = "${full.bucket_name ?? ""}"`;
+    case "d1":
+      return `[[d1_databases]]\nbinding = "${driftEntry.name}"\ndatabase_name = "${full.database_name ?? ""}"\ndatabase_id = "${full.database_id ?? ""}"`;
+    case "kv_namespace":
+      return `[[kv_namespaces]]\nbinding = "${driftEntry.name}"\nid = "${full.namespace_id ?? ""}"`;
+    case "ai":
+      return `[ai]\nbinding = "${driftEntry.name}"`;
+    case "browser":
+      return `[browser]\nbinding = "${driftEntry.name}"`;
+    case "queue":
+      return `[[queues.producers]]\nbinding = "${driftEntry.name}"\nqueue = "${full.queue_name ?? ""}"`;
+    case "hyperdrive":
+      return `[[hyperdrive]]\nbinding = "${driftEntry.name}"\nid = "${full.id ?? ""}"`;
+    default:
+      return `# helm: live Worker has ${driftEntry.type} binding "${driftEntry.name}" but the snippet generator doesn't know its TOML shape. Add manually.`;
+  }
+}

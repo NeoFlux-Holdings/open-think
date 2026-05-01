@@ -170,6 +170,47 @@ export const KNOWN_SECRETS: SecretSlot[] = [
     secret: false,
     placeholder: "helm-persist"
   },
+  // --- artifacts (canonical wrangler.toml source-of-truth) ---
+  {
+    name: "ARTIFACTS_REPO",
+    group: "persistence",
+    label: "ARTIFACTS_REPO",
+    hint: "Cloudflare Artifacts repo name. Auto-set by helm-setup-deploy to your Worker's name. Override only when you want a different name.",
+    secret: false,
+    placeholder: "(defaults to scriptName)"
+  },
+  {
+    name: "ARTIFACTS_NAMESPACE",
+    group: "persistence",
+    label: "ARTIFACTS_NAMESPACE",
+    hint: "Cloudflare Artifacts namespace. Defaults to \"default\" — only override for multi-tenant setups.",
+    secret: false,
+    placeholder: "default"
+  },
+  {
+    name: "ARTIFACTS_BRANCH",
+    group: "persistence",
+    label: "ARTIFACTS_BRANCH",
+    hint: "Default branch on the canonical Artifacts repo. \"main\" unless you have a reason to change it.",
+    secret: false,
+    placeholder: "main"
+  },
+  {
+    name: "ARTIFACTS_TOKEN",
+    group: "persistence",
+    label: "ARTIFACTS_TOKEN",
+    hint: "Power-user only — pre-minted long-lived Artifacts token. Leave blank and the plugin mints short-lived tokens on demand (more secure).",
+    secret: true,
+    placeholder: "art_v1_...?expires=..."
+  },
+  {
+    name: "ARTIFACTS_AUTO_SYNC",
+    group: "persistence",
+    label: "ARTIFACTS_AUTO_SYNC",
+    hint: "Set to \"1\" to have scheduled() run helm-artifacts-cron-sync on every cron firing (drift-check + notify).",
+    secret: false,
+    placeholder: "1"
+  },
   {
     name: "R2_ACCESS_KEY_ID",
     group: "persistence",

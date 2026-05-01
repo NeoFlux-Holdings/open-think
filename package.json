@@ -1,6 +1,6 @@
 {
   "name": "tom-tom",
-  "version": "0.3.0",
+  "version": "0.11.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -26,7 +26,7 @@
         "description": "**Recommended.** OpenRouter API key. When set, Helm's chat uses OpenRouter as the default provider with the `openrouter/auto` router — picks the best model per prompt across 100+ providers (Claude, GPT, Gemini, Llama, etc.). Get a key at [openrouter.ai/settings/keys](https://openrouter.ai/settings/keys). Skip to fall back to Workers AI."
       },
       "CLOUDFLARE_API_TOKEN": {
-        "description": "**Optional.** Pre-fills the in-app `Lock it down` wizard at /app#/settings so you don't have to paste a token there later. Create one with these four scopes — [Workers Scripts:Edit, Access: Apps and Policies:Edit, Account Settings:Read, User Details:Read] — at [dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens). Skip if you'd rather paste it in the wizard."
+        "description": "**Optional.** Pre-fills the in-app `Lock it down` wizard at /app#/settings so you don't have to paste a token there later. Create one with these scopes — [Workers Scripts:Edit, Workers R2 Storage:Edit, D1:Edit, Workers KV Storage:Edit, Artifacts:Edit, Access: Apps and Policies:Edit, Account Settings:Read, User Details:Read] — at [dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens). The Artifacts:Edit scope is what powers helm-setup-deploy's automatic source-of-truth provisioning + the helm-artifacts skills. Skip if you'd rather paste it in the wizard."
       },
       "OWNER_EMAIL": {
         "description": "**Optional.** Your email address. The `Lock it down` wizard pre-fills this as the only email Cloudflare Access will let through. Leave blank to type it in the wizard later. Also used by the email plugin for outbound notifications."

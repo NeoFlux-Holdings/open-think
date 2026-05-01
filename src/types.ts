@@ -1,17 +1,99 @@
-export interface ArtifactRepoHandle {
+/**
+ * Cloudflare Artifacts binding — public-beta API surface (May 2026).
+ *
+ * The binding only handles control plane (create / get / list / delete /
+ * import / fork / token mint). All file ops (read, write, commit, push,
+ * log) MUST go through the git smart-HTTP remote at
+ *   https://<account-id>.artifacts.cloudflare.net/git/<namespace>/<repo>.git
+ * using the token returned by createToken() in the Authorization header
+ * (Bearer or HTTP Basic).
+ *
+ * Token format: `art_v1_<40-hex>?expires=<unix-seconds>`. The expiry is
+ * encoded directly in the suffix; parse it to know when to mint a fresh
+ * one. Tokens are scoped to a single repo with `read` or `write`.
+ */
+export interface ArtifactsCreateTokenResult {
+  /** Internal token id (used for revoke). */
+  id: string;
+  /** The opaque token string (`art_v1_...?expires=...`). Treat as a secret. */
+  plaintext: string;
+  /** "read" | "write" — what this token can do. */
+  scope: "read" | "write";
+  /** ISO-8601 timestamp when the token stops working. */
+  expiresAt: string;
+}
+
+export interface ArtifactsTokenInfo {
+  id: string;
+  scope: "read" | "write";
+  state: "active" | "expired" | "revoked";
+  createdAt: string;
+  expiresAt: string;
+}
+
+export interface ArtifactsRepoHandle {
+  /** Stable internal repo id. */
+  readonly id: string;
+  /** Repo name (within the namespace). */
+  readonly name: string;
+  /** Full git smart-HTTP remote URL. */
+  readonly remote: string;
+  /** Default branch (usually "main"). */
+  readonly defaultBranch: string;
+  /**
+   * Mint a scoped, time-bounded token for this repo. Default scope is
+   * "write", default ttl is 86400s (24h). For drift-check crons prefer
+   * scope:"read" + ttl:900 to minimize blast radius.
+   */
+  createToken(scope?: "read" | "write", ttl?: number): Promise<ArtifactsCreateTokenResult>;
+  listTokens(): Promise<{ result: ArtifactsTokenInfo[] }>;
+  revokeToken(tokenOrId: string): Promise<boolean>;
+  fork(
+    name: string,
+    options?: { description?: string; readOnly?: boolean; defaultBranchOnly?: boolean }
+  ): Promise<{ id: string; name: string; remote: string; token: string }>;
+}
+
+export interface ArtifactsRepoListItem {
+  id: string;
+  name: string;
+  description: string | null;
+  defaultBranch: string;
+  createdAt: string;
+  updatedAt: string;
+  lastPushAt: string | null;
+  source: string | null;
+  readOnly: boolean;
   remote: string;
-  token: string;
-  fork(name: string, options?: { readOnly?: boolean }): Promise<ArtifactRepoHandle>;
 }
 
 export interface ArtifactsBinding {
-  create(name: string): Promise<ArtifactRepoHandle>;
-  get(name: string): Promise<ArtifactRepoHandle>;
+  /** Create an empty repo. Returns handle + initial write token. */
+  create(
+    name: string,
+    opts?: { description?: string; defaultBranch?: string; readOnly?: boolean }
+  ): Promise<{ id: string; name: string; remote: string; token: string }>;
+  /** Fetch a handle for an existing repo. */
+  get(name: string): Promise<ArtifactsRepoHandle>;
+  /** List all repos in this namespace. */
+  list(opts?: {
+    limit?: number;
+    cursor?: string;
+    search?: string;
+    sort?: "created_at" | "updated_at" | "last_push_at" | "name";
+    direction?: "asc" | "desc";
+  }): Promise<{ result: ArtifactsRepoListItem[]; result_info?: { cursor?: string; per_page?: number; count?: number } }>;
+  /** Delete a repo (irreversible). */
+  delete(name: string): Promise<boolean>;
+  /** One-shot import: clone a public HTTPS git URL into a new Artifacts repo. */
   import(input: {
-    source: { url: string; branch?: string };
+    source: { url: string; branch?: string; depth?: number; readOnly?: boolean };
     target: { name: string };
-  }): Promise<{ remote: string; token: string }>;
+  }): Promise<{ id: string; name: string; remote: string; token: string }>;
 }
+
+/** @deprecated Use ArtifactsRepoHandle. Kept for backward compatibility. */
+export type ArtifactRepoHandle = ArtifactsRepoHandle;
 
 export interface Env {
   CLOUDFLARE_API_TOKEN?: string;
@@ -47,11 +129,13 @@ export interface Env {
    */
   WORKER_SCRIPT_NAME?: string;
   /**
-   * GitHub PAT for helm-github (container-free repo ops). Fine-grained
+   * GitHub PAT for helm-github (FALLBACK path — Cloudflare Artifacts is the
+   * canonical source-of-truth now; see ARTIFACTS_* below). Fine-grained
    * tokens with repo: contents + pull-requests scopes are sufficient.
+   * Most users won't need GitHub at all once Artifacts is wired up.
    */
   GITHUB_TOKEN?: string;
-  /** "owner/repo" — the user's git repo for wrangler.toml syncing. */
+  /** "owner/repo" — fallback repo for wrangler.toml syncing when not using Artifacts. */
   GITHUB_REPO?: string;
   /** Default branch for commits + PR base (default "main"). */
   GITHUB_DEFAULT_BRANCH?: string;
@@ -59,6 +143,46 @@ export interface Env {
   HELM_WRANGLER_TOML_PATH?: string;
   /** Where the Helm Shell container clones the repo by default (default /workspace/repo). */
   HELM_REPO_PATH?: string;
+  /* --- Cloudflare Artifacts: PRIMARY source-of-truth for wrangler.toml --- */
+  /**
+   * Artifacts namespace (defaults to "default"). Each Worker can have its
+   * own namespace for tenant isolation.
+   */
+  ARTIFACTS_NAMESPACE?: string;
+  /**
+   * Repo name within the namespace. Defaults to env.AGENT_NAME ?? "helm".
+   * The full remote URL is derived as
+   *   https://<acct>.artifacts.cloudflare.net/git/<namespace>/<repo>.git
+   */
+  ARTIFACTS_REPO?: string;
+  /**
+   * Pre-minted long-lived token (`art_v1_...?expires=...`). Optional —
+   * the plugin will mint short-lived tokens on demand via the binding or
+   * REST API. Set this only when the binding isn't bound and you can't
+   * grant the Worker an `Artifacts:Edit` API token.
+   */
+  ARTIFACTS_TOKEN?: string;
+  /** Default branch for commits + auto-deploy (default "main"). */
+  ARTIFACTS_BRANCH?: string;
+  /**
+   * Optional public git URL to seed the Artifacts repo from on first init.
+   * Used by helm-artifacts-init when the repo doesn't exist yet. Skip to
+   * start with an empty repo.
+   */
+  ARTIFACTS_BOOTSTRAP_URL?: string;
+  /**
+   * Where helm-artifacts-clone deposits the working tree inside the
+   * shell container. Defaults to /workspace/<ARTIFACTS_REPO>. The agent
+   * never has to clone twice — git pull updates an existing checkout.
+   */
+  ARTIFACTS_CHECKOUT_PATH?: string;
+  /**
+   * If "1", the scheduled() handler runs helm-artifacts-cron-sync once
+   * per cron firing — drift-check the live Worker against the latest
+   * wrangler.toml in Artifacts and notify the owner on drift. Off by
+   * default so existing deployments don't suddenly start sending mail.
+   */
+  ARTIFACTS_AUTO_SYNC?: string;
   ENABLED_PLUGINS: string;
   ALLOWED_HOSTS: string;
   MODEL_DEFAULT?: string;

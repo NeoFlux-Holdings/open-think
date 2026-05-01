@@ -124,7 +124,7 @@ export async function deleteWorkflow(env: Env, id: string): Promise<boolean> {
 export async function runScheduledCron(
   env: Env,
   firing: { cron: string; scheduledTime: number }
-): Promise<{ ran: number; errors: Array<{ id: string; error: string }> }> {
+): Promise<{ ran: number; errors: Array<{ id: string; error: string }>; artifactsSync?: unknown }> {
   const runtime = await AgentRuntime.bootstrap(env, getPlugins());
   const skills = new SkillManager(runtime);
 
@@ -157,7 +157,30 @@ export async function runScheduledCron(
     })
   );
 
-  return { ran, errors };
+  // ARTIFACTS_AUTO_SYNC: opt-in drift detector that runs on every cron
+  // firing regardless of pa_workflows rows. Cheap escape hatch so users
+  // get drift notifications without setting up D1 + workflows.
+  let artifactsSync: unknown;
+  if (env.ARTIFACTS_AUTO_SYNC === "1") {
+    try {
+      const dry = await skills.invoke("helm-artifacts-cron-sync", {});
+      artifactsSync = dry;
+      const data = (dry as { ok?: boolean; data?: { shouldNotify?: boolean; notifyTitle?: string; notifyBody?: string } }).data;
+      if (dry && (dry as { ok?: boolean }).ok && data?.shouldNotify) {
+        await skills.invoke("notify-user", {
+          input: {
+            title: data.notifyTitle ?? "Helm: drift detected",
+            body: data.notifyBody ?? "wrangler.toml drift detected on the live Worker.",
+            channel: "email"
+          }
+        });
+      }
+    } catch (err) {
+      errors.push({ id: "artifacts-auto-sync", error: (err as Error).message });
+    }
+  }
+
+  return { ran, errors, artifactsSync };
 }
 
 /* ---------------- Shipped handlers ---------------- */
@@ -180,4 +203,37 @@ registerWorkflow("skill-runner", async (_env, _runtime, skills, params) => {
 registerWorkflow("cost-rollup", async (env) => {
   const { rollupAiGatewayCosts } = await import("./costTracking");
   return await rollupAiGatewayCosts(env);
+});
+
+/**
+ * Cloudflare Artifacts drift sync — pulls latest wrangler.toml from the
+ * canonical Artifacts repo, diffs against the live Worker, and notifies
+ * the owner on drift. The agent-driven path uses helm-artifacts-cron-sync
+ * directly; this workflow handler is for users who want a workflow row
+ * (e.g. with custom params or co-scheduled with other tasks). Most users
+ * should set ARTIFACTS_AUTO_SYNC=1 and let the top-level hook fire it
+ * on every cron.
+ */
+registerWorkflow("artifacts-drift-sync", async (_env, _runtime, skills, params) => {
+  const p = (params ?? {}) as { apply?: boolean; scriptName?: string; repo?: string };
+  const dry = await skills.invoke("helm-artifacts-cron-sync", {
+    input: { scriptName: p.scriptName, repo: p.repo }
+  });
+  const data = (dry as { ok?: boolean; data?: { shouldNotify?: boolean; notifyTitle?: string; notifyBody?: string } }).data;
+  if ((dry as { ok?: boolean }).ok && data?.shouldNotify) {
+    await skills.invoke("notify-user", {
+      input: {
+        title: data.notifyTitle ?? "Helm: drift detected",
+        body: data.notifyBody ?? "wrangler.toml drift detected on the live Worker.",
+        channel: "email"
+      }
+    });
+    if (p.apply) {
+      // Auto-apply mode: commit + push the fix back to Artifacts.
+      await skills.invoke("helm-artifacts-sync-toml", {
+        input: { apply: true, scriptName: p.scriptName, repo: p.repo }
+      });
+    }
+  }
+  return dry;
 });

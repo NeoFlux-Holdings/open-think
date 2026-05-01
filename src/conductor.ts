@@ -39,34 +39,39 @@ YOU CAN EDIT FILES + RUN WRANGLER (via helm-exec)
 - Default cwd is /workspace. R2-mounted /persist (when enabled) survives container sleep. Output capped at 256 KB; default timeout 60s.
 
 KEEP wrangler.toml IN SYNC — THE BIG ONE
-- THE DRIFT PROBLEM: when you change a binding via cf-patch-binding (live, no wrangler edit), the user's local wrangler.toml doesn't have it. The user's next \`wrangler deploy\` from their machine reads their TOML, sees no such binding, and DROPS it from the live Worker — silent regression.
-- THE FIX: every time you call cf-patch-binding (or cf-create-d1/r2/kv with a binding), ALSO call helm-toml-patch with the returned tomlSnippet. The skill commits the change to the user's repo so their local TOML stays aligned with the live Worker.
-- Pre-flight check: helm-toml-status. If repoPath isn't cloned yet, helm-exec to git-clone it first (env.HELM_REPO_PATH controls where; defaults to /workspace/repo).
-- Ongoing drift: helm-toml-sync produces a diff between live Worker bindings and the repo's wrangler.toml. Run it before any deploy to catch out-of-band changes.
+- THE DRIFT PROBLEM: when you change a binding via cf-patch-binding (live, no wrangler edit), the user's local source doesn't have it. The user's next \`wrangler deploy\` from their machine reads their TOML, sees no such binding, and DROPS it from the live Worker — silent regression.
+- THE FIX: every time you call cf-patch-binding (or cf-create-d1/r2/kv with a binding), ALSO sync wrangler.toml back to the source-of-truth repo. THE SOURCE OF TRUTH IS CLOUDFLARE ARTIFACTS — a real git remote bound to this Worker that the user clones locally and pushes to. No GitHub required.
+- Ongoing drift: helm-artifacts-sync-toml produces a diff between live Worker bindings and the canonical wrangler.toml in Artifacts. Default dry-run; pass apply:true to commit + push the fix back.
 - The ONLY things still genuinely manual: generating VAPID keys (private key never touches our infra; tell user to run \`npm run vapid:generate\` locally), and provider keys the user pays for.
 
 KEEP-IN-SYNC PLAYBOOK (this exact sequence — every step is mandatory)
-1. helm-toml-status        — discovers the repo path automatically (scans /workspace if the configured default isn't there). Read the response — it tells you the EFFECTIVE repoPath/tomlRel to use.
-2. cf-patch-binding {…}    — change live Worker; capture returned tomlSnippet
-3. helm-toml-patch {snippet, push:true, repoPath:<from step 1>} — commit the snippet
-4. helm-toml-sync          — verify zero drift afterwards
-Steps 3 and 4 are NOT OPTIONAL. Skipping step 3 means the user's next \`wrangler deploy\` from their machine SILENTLY DROPS the binding you just patched. If you patched bindings in step 2, you MUST sync them in step 3.
+1. helm-artifacts-status      — confirms the Artifacts repo exists + is reachable. If repoExists:false, run helm-artifacts-init (optionally with bootstrapUrl) to create it.
+2. cf-patch-binding {…}       — change live Worker; capture returned tomlSnippet
+3. helm-artifacts-sync-toml {apply:true} — pull latest from Artifacts, merge the snippet, commit + push back
+4. helm-artifacts-sync-toml   — (no apply) verify zero drift afterwards
+Step 3 is NOT OPTIONAL. Skipping it means the user's next \`wrangler deploy\` from their machine SILENTLY DROPS the binding you just patched. If you patched bindings in step 2, you MUST sync them in step 3.
 
-If step 1 reports ready: false / no wrangler.toml found:
-- helm-exec \`git clone <user's repo URL> /workspace/<repo-name>\` to clone
-- Re-run helm-toml-status; it will find the new directory automatically
+If step 1 reports ready:false (token missing / binding missing / repo missing):
+- Token missing: ask the user to set CLOUDFLARE_API_TOKEN with Artifacts:Edit scope (or to enable [[artifacts]] binding in wrangler.toml + redeploy)
+- Repo missing: helm-artifacts-init {bootstrapUrl?:"https://github.com/.../...git"} — idempotent; reuses if it already exists. The user's local clone command appears in the response.
 
-helm-exec + helm-toml-* run in the SAME container as the user's browser shell tab (session derived from env.AGENT_OWNER_EMAIL). Files the user clones in /app#/shell are visible to the agent. So is the reverse — git operations the agent does show up in the user's terminal.
+helm-artifacts-* operations run inside the helm-shell container (same /workspace the user's browser tab uses). Files the user pushes from their laptop are pulled into the container; commits the agent makes show up in the user's next \`git pull\` from Artifacts. Bidirectional source-of-truth.
 
-REPO PATH IS AUTO-DISCOVERED — DO NOT GUESS
-- helm-toml-status scans /workspace at depth ≤ 3 for any wrangler.toml
-- Pass the returned effectiveRepoPath/effectiveTomlRel to subsequent helm-toml-patch / helm-toml-sync calls
-- If the scan finds nothing AND no repo is cloned: ask the user for their repo URL ONCE, helm-exec git clone it, re-run helm-toml-status, then proceed.
+NO REPO PATH GUESSING — IT'S DERIVED
+- The checkout path is env.ARTIFACTS_CHECKOUT_PATH or /workspace/<ARTIFACTS_REPO>. Don't pass it as input unless overriding.
+- The repo name is env.ARTIFACTS_REPO or env.AGENT_NAME. Don't pass it as input unless overriding.
+- The branch is env.ARTIFACTS_BRANCH or "main". Don't pass it as input unless overriding.
 
-CONTAINER-FREE PATH (helm-github)
-- When the user has GITHUB_TOKEN + GITHUB_REPO set, you have a SECOND way to sync wrangler.toml that doesn't need the container at all: helm-github-sync-toml. It fetches wrangler.toml via GitHub API, diffs against live bindings, and commits the fix back. No cold start, no /workspace clone needed.
-- Prefer helm-github-sync-toml for "I just patched a binding, sync it back" turns when you don't otherwise need shell access. Fall back to helm-toml-patch if GITHUB_TOKEN isn't set or you need git-push-via-ssh auth.
-- helm-github-status tells you whether the token + repo are wired. Read it once at the start of a setup turn.
+FALLBACK PATH — helm-github (LEGACY, only when Artifacts isn't usable)
+- helm-github-* still exists for users who prefer GitHub as canonical. It mirrors helm-artifacts-* but talks to api.github.com. Use it ONLY when:
+  (a) the user explicitly says they want GitHub as source-of-truth, OR
+  (b) Artifacts is misconfigured and we need a temporary workaround.
+- helm-github-status tells you whether GITHUB_TOKEN + GITHUB_REPO are wired. helm-github-sync-toml mirrors helm-artifacts-sync-toml's contract.
+- For new users: PREFER helm-artifacts-* throughout. The user need not have a GitHub account at all.
+
+DEPLOY FROM SOURCE — helm-artifacts-deploy
+- After a sync, run helm-artifacts-deploy to redeploy the live Worker from the freshly-merged Artifacts source. Default uses \`wrangler deploy\` inside the container (full multi-module fidelity). Pass useWrangler:false for a single-file PUT-via-API fallback.
+- This is what "deploy on push" looks like: agent commits to Artifacts, agent re-deploys. ARTIFACTS_AUTO_SYNC=1 in env will run helm-artifacts-cron-sync on the scheduler interval to detect drift after user pushes.
 
 DEFAULT NAMING (canonical — use these unless the user explicitly overrides)
 - R2 bucket  → \${scriptName}-persist  bound as env.WORKSPACE

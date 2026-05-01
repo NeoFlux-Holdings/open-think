@@ -42,16 +42,24 @@ step. If not, go to `/app#/settings` and paste them — the wizard prompts
 clearly.
 
 The token URL the wizard links to is pre-filled with the right scopes
-(it uses CF's modern URL format — see `site/src/cloud/types.ts`). Five
+(it uses CF's modern URL format — see `site/src/cloud/types.ts`). Eight
 boxes should be checked when the dash opens:
 
 ```
 ☑ Workers Scripts: Edit
-☑ D1: Edit
 ☑ Access: Edit
+☑ D1: Edit
+☑ Workers R2 Storage: Edit
+☑ Workers KV Storage: Edit
+☑ Artifacts: Edit          ← new! powers helm-artifacts source-of-truth
 ☑ Account Settings: Read
 ☑ User Details: Read
 ```
+
+`Artifacts: Edit` is what lets `helm-setup-deploy` automatically
+provision a canonical wrangler.toml repo on Cloudflare's git-style
+versioned storage — no GitHub PAT needed. (Tokens with fewer scopes
+still work; helm-setup-deploy reports gracefully on any 403s.)
 
 Set **Account Resources → Include → All accounts** (or pick yours
 explicitly). Click `Continue to summary` → `Create Token` → copy.
@@ -76,7 +84,15 @@ Click it. The endpoint `POST /setup/auto` runs:
    in-shell `helm` REPL — eliminates one manual `wrangler secret put`)
 5. **Auto-create R2 bucket** named `${scriptName}-persist` if missing,
    set `R2_BUCKET` as a secret
-6. **Return** a `nextSteps` checklist showing what's still needed
+6. **Provision Cloudflare Artifacts repo** (canonical wrangler.toml +
+   Worker source-of-truth) named after `scriptName`, persist
+   `ARTIFACTS_REPO` as a secret, return the clone command
+7. **Return** a `nextSteps` checklist showing what's still needed
+
+> **Note**: a stronger flow than `Auto-setup` is `helm-setup-deploy` —
+> available from the chat ("set me up") or the Conductor session created
+> by Guided Setup. It runs the Auto-setup chain plus D1 PA-stack + KV
+> cache + ENABLED_PLUGINS patching + Artifacts. Same idempotent semantics.
 
 CF auto-redeploys the Worker as soon as new secrets are written
 (typically ~15 seconds). The auth banner flips from yellow to green.
@@ -125,6 +141,8 @@ npm run shell -- --host helm.your-domain.workers.dev
 | `HELM_INTERNAL_TOKEN` | ✅ | in-shell `helm` REPL bearer |
 | `R2_BUCKET` | ✅ | bucket name for `/persist` |
 | `[[r2_buckets]]` binding | manual (paste TOML, redeploy) | wires `env.WORKSPACE` for the `/persist` proxy |
+| `ARTIFACTS_REPO` | ✅ via `helm-setup-deploy` | canonical wrangler.toml + Worker source-of-truth on Cloudflare Artifacts (no GitHub needed) |
+| `ARTIFACTS_AUTO_SYNC=1` | optional | `scheduled()` runs `helm-artifacts-cron-sync` on every cron firing — drift check + notify |
 | `OPENROUTER_API_KEY` | manual | better default chat model (`openrouter/auto`) |
 | `ANTHROPIC_API_KEY` | manual | direct Claude |
 | `OPENAI_COMPATIBLE_URL` + `OPENAI_COMPATIBLE_KEY` | manual | Groq / Together / Ollama / etc. |

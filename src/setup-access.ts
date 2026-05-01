@@ -562,7 +562,15 @@ export function deriveScriptName(host: string): string | null {
 
 /**
  * Build the pre-filled token-creation URL the wizard links to.
- * The four scopes are the minimum needed for runLockdown.
+ *
+ * The wizard token covers BOTH:
+ *   - runLockdown (the original 4: workers_scripts + access + account + user)
+ *   - helm-setup-deploy's full chain: D1 + R2 + KV + Artifacts (canonical
+ *     wrangler.toml source-of-truth via Cloudflare Artifacts)
+ *
+ * One paste, every downstream skill works. Tokens with fewer scopes still
+ * work for the lockdown half — helm-setup-deploy gracefully reports any
+ * 403s on individual provisioning steps.
  *
  * IMPORTANT: CF's dash expects a URL-encoded JSON array of `{key, type}`
  * objects with SHORT keys (`workers_scripts`, not the dotted form). We
@@ -577,6 +585,10 @@ export const ACCESS_WIZARD_TOKEN_URL =
     JSON.stringify([
       { key: "workers_scripts", type: "edit" },
       { key: "access", type: "edit" },
+      { key: "d1", type: "edit" },
+      { key: "workers_r2_storage", type: "edit" },
+      { key: "workers_kv_storage", type: "edit" },
+      { key: "artifacts", type: "edit" },
       { key: "account_settings", type: "read" },
       { key: "user_details", type: "read" }
     ])
@@ -585,6 +597,10 @@ export const ACCESS_WIZARD_TOKEN_URL =
 export const ACCESS_WIZARD_SCOPES = [
   { resource: "Account", permission: "Workers Scripts:Edit" },
   { resource: "Account", permission: "Access: Apps and Policies:Edit" },
+  { resource: "Account", permission: "D1:Edit" },
+  { resource: "Account", permission: "Workers R2 Storage:Edit" },
+  { resource: "Account", permission: "Workers KV Storage:Edit" },
+  { resource: "Account", permission: "Artifacts:Edit" },
   { resource: "Account", permission: "Account Settings:Read" },
   { resource: "User", permission: "User Details:Read" }
 ] as const;

@@ -1,7 +1,7 @@
 import type { AgentPlugin } from "../core/plugin";
 import { AdminPlugin } from "./admin";
 import { AnthropicPlugin } from "./anthropic";
-import { ArtifactsPlugin } from "./artifacts";
+import { HelmArtifactsPlugin } from "./artifacts";
 import { BrowserPlugin } from "./browser";
 import { CalendarPlugin } from "./calendar";
 import { CfAiGatewayPlugin } from "./cfAiGateway";
@@ -38,7 +38,7 @@ export function getPlugins(): AgentPlugin[] {
     new McpClientPlugin(),
     new BrowserPlugin(),
     new SandboxPlugin(),
-    new ArtifactsPlugin(),
+    new HelmArtifactsPlugin(),
     new MppPlugin(),
     /* --- PA stack --- */
     new MemoryPlugin(),

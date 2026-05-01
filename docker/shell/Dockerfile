@@ -7,6 +7,8 @@
 # Helper scripts ship in PATH:
 #   helm-save  — tar+gzip /workspace into /persist/sessions/<id>/
 #   helm-load  — restore the latest snapshot
+#   helm-fetch — pull a file from the user's Files tab into /workspace
+#   helm-clone — mint an Artifacts token + clone the canonical repo
 #   helm       — send a prompt to the Worker's conductor and stream the
 #                response back (uses HELM_INTERNAL_TOKEN auth)
 
@@ -77,11 +79,13 @@ COPY entrypoint.sh /usr/local/bin/entrypoint
 COPY helm-save /usr/local/bin/helm-save
 COPY helm-load /usr/local/bin/helm-load
 COPY helm-fetch /usr/local/bin/helm-fetch
+COPY helm-clone /usr/local/bin/helm-clone
 COPY helm /usr/local/bin/helm
 RUN chmod +x /usr/local/bin/entrypoint \
     /usr/local/bin/helm-save \
     /usr/local/bin/helm-load \
     /usr/local/bin/helm-fetch \
+    /usr/local/bin/helm-clone \
     /usr/local/bin/helm \
     && chown -R helm:helm /opt/shell
 

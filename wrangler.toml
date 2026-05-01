@@ -24,19 +24,45 @@ enabled = true
 # (or via dash → Worker → Settings → Variables) if you want different.
 # All Workers AI models: dash → AI → Workers AI → Models.
 MODEL_DEFAULT = "@cf/openai/gpt-oss-120b"
-# Plugins enabled by default. Includes openrouter so when the user pastes
-# OPENROUTER_API_KEY at deploy time, the chat picks it up immediately
-# (auto-routes to the best model per prompt). admin + workers-ai give
-# zero-config baseline; openrouter is the strong default when keyed.
-# mcp-client is included so when CLOUDFLARE_API_TOKEN is set, Helm
-# can call the Cloudflare MCP at mcp.cloudflare.com (the "API MCP" —
-# 2,500+ endpoints behind two tools, code-mode style). The plugin
-# auto-defaults to that URL when no MCP_DEFAULT_URL is pinned and a
-# CF token exists. See src/plugins/mcpClient.ts.
-ENABLED_PLUGINS = "admin,helm-setup,helm-toml,helm-github,cloudflare-admin,mcp-client,workers-ai,openrouter"
-# Outbound host allowlist enforced by the plugin bus. Defaults cover the
-# most common providers including OpenRouter; extend as you add plugins.
+# Plugins enabled by default.
+#   - helm-artifacts is the canonical wrangler.toml + worker-source sync
+#     path (no GitHub required). Backed by Cloudflare Artifacts — a real
+#     git remote on the platform.
+#   - helm-toml is the legacy in-container path; kept for power users who
+#     want to drive wrangler deploy from inside the container.
+#   - helm-github is the legacy GitHub-as-canonical path; kept for users
+#     who prefer GitHub as source-of-truth. Most users do NOT need it.
+#   - openrouter: when OPENROUTER_API_KEY is pasted at deploy, chat picks
+#     it up immediately (auto-routes to the best model per prompt).
+#   - admin + workers-ai give zero-config baseline.
+#   - mcp-client: when CLOUDFLARE_API_TOKEN is set, Helm can call the
+#     Cloudflare MCP at mcp.cloudflare.com (2,500+ endpoints, code-mode
+#     style). Auto-defaults to that URL when no MCP_DEFAULT_URL is set.
+ENABLED_PLUGINS = "admin,helm-setup,helm-artifacts,helm-toml,helm-github,cloudflare-admin,mcp-client,workers-ai,openrouter"
+# Outbound host allowlist enforced by the plugin bus. The git protocol
+# for Cloudflare Artifacts (<account-id>.artifacts.cloudflare.net) only
+# matters from the helm-shell container, not from the Worker, so it
+# does NOT need to be in this list. The Worker only talks to
+# api.cloudflare.com (REST control plane).
 ALLOWED_HOSTS = "api.cloudflare.com,mcp.cloudflare.com,api.anthropic.com,api.openai.com,openrouter.ai,api.github.com"
+# --- Cloudflare Artifacts (PRIMARY source-of-truth for wrangler.toml) ---
+# Defaults work without changes. Override only if you want a non-default
+# namespace or repo name.
+# ARTIFACTS_NAMESPACE = "default"
+# ARTIFACTS_REPO       = "<override; defaults to AGENT_NAME>"
+# ARTIFACTS_BRANCH     = "main"
+# ARTIFACTS_CHECKOUT_PATH = "/workspace/<repo>"
+# Set to "1" to have the scheduled() handler run helm-artifacts-cron-sync
+# on every cron firing (drift-checks the live Worker against canonical
+# wrangler.toml, fans out to notifier on drift). Off by default so
+# existing deployments don't suddenly start sending mail.
+# ARTIFACTS_AUTO_SYNC  = "1"
+# Optional: pre-mint a long-lived Artifacts token here. Leave unset and
+# the plugin will mint short-lived tokens on demand via the binding /
+# REST API instead — strongly preferred for security.
+# ARTIFACTS_TOKEN      = "art_v1_...?expires=..."
+# Optional: bootstrap from a public git URL on first init (one-shot).
+# ARTIFACTS_BOOTSTRAP_URL = "https://github.com/you/worker-repo"
 AGENT_NAME = "Helm"
 AGENT_OWNER = "you"
 
@@ -65,6 +91,15 @@ AGENT_OWNER = "you"
 # Workers AI binding — powers the `workers-ai` plugin out of the box. Free.
 [ai]
 binding = "AI"
+
+# Cloudflare Artifacts — git-style versioned source storage (public beta
+# May 2026). Powers helm-artifacts-* skills. Optional — the plugin also
+# works via REST API alone with a CLOUDFLARE_API_TOKEN that has the
+# Artifacts:Edit scope. Uncomment to use the binding (slightly faster for
+# token mints; same control-plane surface).
+# [[artifacts]]
+# binding = "ARTIFACTS"
+# namespace = "default"
 
 # Per-agent identity + tree-structured session storage. Auto-provisions.
 [[durable_objects.bindings]]

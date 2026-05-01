@@ -1953,7 +1953,7 @@ input[type="text"]:focus, select:focus, textarea:focus { border-bottom-color: va
         <ol class="lockdown-instructions-list">
           <li>Click <a href="#" id="ld-step-link" target="_blank" rel="noopener">Create scoped token ↗</a> — opens dash → API Tokens.</li>
           <li>Click <span class="mono">Create Token</span> → <span class="mono">Get started</span> (Custom token).</li>
-          <li>Under <span class="mono">Permissions</span>, add these <strong>4</strong> rows (paste the names from the copy button above):
+          <li>Under <span class="mono">Permissions</span>, add these <strong>8</strong> rows (paste the names from the copy button above):
             <ul class="lockdown-instructions-scopes" id="ld-scopes"></ul>
           </li>
           <li>Set <span class="mono">Account Resources</span> → <span class="mono">Include</span> → <span class="mono">All accounts</span>.</li>
@@ -2085,6 +2085,34 @@ input[type="text"]:focus, select:focus, textarea:focus { border-bottom-color: va
     </p>
     <div id="secrets-groups"></div>
     <div id="secrets-error" class="lockdown-error" hidden></div>
+  </section>
+
+  <section class="reveal d3 artifacts-card" id="artifacts-card" style="margin-top: 36px;">
+    <div class="panel-header">
+      <span class="h display">Cloudflare Artifacts</span>
+      <span class="meta" id="artifacts-status">checking…</span>
+    </div>
+    <p style="font-size: 14px; color: var(--muted); margin-bottom: 14px; max-width: 64ch;">
+      Canonical source-of-truth for <span class="mono">wrangler.toml</span> + Worker source — a real
+      git remote on Cloudflare's platform. The agent commits drift fixes here; you clone it locally
+      to make direct edits. No GitHub account required.
+    </p>
+    <div id="artifacts-info" class="mono" style="font-size: 12px; color: var(--muted); margin-bottom: 12px;"></div>
+    <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
+      <button id="artifacts-init" hidden>Initialize repo</button>
+      <button id="artifacts-mint">Mint write token + clone command</button>
+      <button id="artifacts-drift" class="ghost">Check drift</button>
+      <button id="artifacts-refresh" class="ghost">Refresh</button>
+    </div>
+    <details id="artifacts-bootstrap-details" style="margin-top: 12px;">
+      <summary class="mono" style="font-size: 12px; color: var(--muted); cursor: pointer;">Bootstrap from a git URL (one-shot)</summary>
+      <div style="display: flex; gap: 8px; margin-top: 8px;">
+        <input type="text" id="artifacts-bootstrap-url" placeholder="https://github.com/you/seed.git" style="flex: 1; min-width: 240px;">
+        <button id="artifacts-bootstrap-go">Import →</button>
+      </div>
+    </details>
+    <pre id="artifacts-result" class="mono" style="margin-top: 12px; font-size: 12px; max-height: 320px; overflow: auto; background: rgba(0,0,0,0.18); padding: 10px; border-radius: 6px; white-space: pre-wrap; word-break: break-word; display: none;"></pre>
+    <div id="artifacts-error" class="lockdown-error" hidden></div>
   </section>
 
   <section class="reveal d3" style="margin-top: 36px;">
@@ -4705,6 +4733,140 @@ async function renderSettings() {
     setTimeout(() => {
       location.hash = '#/conductor';
     }, 600);
+  });
+
+  /* ---------------- Cloudflare Artifacts card ---------------- */
+  const artifactsStatus = $('#artifacts-status');
+  const artifactsInfo = $('#artifacts-info');
+  const artifactsResult = $('#artifacts-result');
+  const artifactsErr = $('#artifacts-error');
+  const artifactsInitBtn = $('#artifacts-init');
+  const artifactsMintBtn = $('#artifacts-mint');
+  const artifactsDriftBtn = $('#artifacts-drift');
+  const artifactsRefreshBtn = $('#artifacts-refresh');
+  const artifactsBootstrapBtn = $('#artifacts-bootstrap-go');
+  const artifactsBootstrapInput = $('#artifacts-bootstrap-url');
+  const artifactsBootstrapDetails = $('#artifacts-bootstrap-details');
+
+  function showArtifactsResult(label, payload) {
+    artifactsResult.style.display = 'block';
+    artifactsResult.textContent = label + '\\n' + JSON.stringify(payload, null, 2);
+  }
+
+  async function invokeArtifactsSkill(skillId, input) {
+    const r = await j('/skills/invoke/' + encodeURIComponent(skillId), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ input: input || {} })
+    });
+    return r.data || { ok: false, error: 'no response' };
+  }
+
+  async function refreshArtifacts() {
+    artifactsErr.hidden = true;
+    artifactsErr.textContent = '';
+    artifactsStatus.textContent = 'checking…';
+    const r = await invokeArtifactsSkill('helm-artifacts-status', {});
+    if (!r.ok) {
+      artifactsStatus.textContent = 'error';
+      artifactsErr.hidden = false;
+      artifactsErr.textContent = r.error || 'status check failed';
+      return;
+    }
+    const d = r.data || {};
+    artifactsStatus.textContent = d.ready ? 'ready' : (d.repoExists === false ? 'needs init' : 'not configured');
+    const lines = [
+      'namespace: ' + (d.namespace || 'default'),
+      'repo:      ' + (d.repoName || '—'),
+      'branch:    ' + (d.branch || 'main'),
+      'binding:   ' + (d.hasBinding ? 'yes ([[artifacts]] bound)' : 'no (REST-only)'),
+      'token:     ' + (d.hasApiToken ? 'set (CLOUDFLARE_API_TOKEN)' : 'missing — set CLOUDFLARE_API_TOKEN with Artifacts:Edit'),
+      'remote:    ' + (d.remoteUrl || '—'),
+      d.repoInfo && d.repoInfo.last_push_at ? 'last push: ' + d.repoInfo.last_push_at : ''
+    ].filter(Boolean);
+    artifactsInfo.textContent = lines.join('\\n');
+    artifactsInitBtn.hidden = !!(d.repoExists);
+    artifactsMintBtn.disabled = !d.repoExists;
+    artifactsDriftBtn.disabled = !d.repoExists;
+    if (!d.repoExists) {
+      artifactsBootstrapDetails.open = true;
+    }
+  }
+
+  artifactsRefreshBtn.addEventListener('click', refreshArtifacts);
+
+  artifactsInitBtn.addEventListener('click', async () => {
+    artifactsInitBtn.disabled = true;
+    artifactsInitBtn.textContent = 'Initializing…';
+    const r = await invokeArtifactsSkill('helm-artifacts-init', {});
+    artifactsInitBtn.textContent = 'Initialize repo';
+    artifactsInitBtn.disabled = false;
+    showArtifactsResult(r.ok ? 'Init OK:' : 'Init failed:', r.ok ? r.data : { error: r.error });
+    if (r.ok) await refreshArtifacts();
+  });
+
+  artifactsBootstrapBtn.addEventListener('click', async () => {
+    const url = artifactsBootstrapInput.value.trim();
+    if (!url) {
+      artifactsErr.hidden = false;
+      artifactsErr.textContent = 'Enter a public https:// git URL first.';
+      return;
+    }
+    artifactsBootstrapBtn.disabled = true;
+    artifactsBootstrapBtn.textContent = 'Importing…';
+    const r = await invokeArtifactsSkill('helm-artifacts-import-github', { url });
+    artifactsBootstrapBtn.textContent = 'Import →';
+    artifactsBootstrapBtn.disabled = false;
+    showArtifactsResult(r.ok ? 'Import OK:' : 'Import failed:', r.ok ? r.data : { error: r.error });
+    if (r.ok) await refreshArtifacts();
+  });
+
+  artifactsMintBtn.addEventListener('click', async () => {
+    artifactsMintBtn.disabled = true;
+    artifactsMintBtn.textContent = 'Minting…';
+    const r = await invokeArtifactsSkill('helm-artifacts-mint-token', { scope: 'write', ttl: 900 });
+    artifactsMintBtn.textContent = 'Mint write token + clone command';
+    artifactsMintBtn.disabled = false;
+    if (!r.ok) {
+      showArtifactsResult('Mint failed:', { error: r.error });
+      return;
+    }
+    const d = r.data || {};
+    // Build a ready-to-paste git clone command. We pull the host out of
+    // the repoInfo we got from status (or rebuild from the account-id).
+    const status = await invokeArtifactsSkill('helm-artifacts-status', {});
+    const remote = status.ok ? status.data?.remoteUrl : '';
+    const cloneCmd = remote
+      ? 'git clone ' + remote.replace('https://', 'https://x:' + d.token + '@')
+      : '(remote URL unavailable; check status)';
+    showArtifactsResult(
+      'Token expires: ' + d.expiresAt + ' · scope: ' + d.scope + ' · via: ' + d.via + '\\n\\n# Clone command (token embedded — copy + paste, then delete from your shell history):\\n' + cloneCmd,
+      { tokenId: d.tokenId, expiresAt: d.expiresAt, scope: d.scope }
+    );
+  });
+
+  artifactsDriftBtn.addEventListener('click', async () => {
+    artifactsDriftBtn.disabled = true;
+    artifactsDriftBtn.textContent = 'Checking…';
+    const r = await invokeArtifactsSkill('helm-artifacts-sync-toml', {});
+    artifactsDriftBtn.textContent = 'Check drift';
+    artifactsDriftBtn.disabled = false;
+    if (!r.ok) {
+      showArtifactsResult('Drift check failed:', { error: r.error });
+      return;
+    }
+    const d = r.data || {};
+    const summary = d.inSync
+      ? 'In sync — no drift. ' + (d.liveBindingCount || 0) + ' live binding(s).'
+      : 'Drift detected: ' + (d.drift?.missingFromToml?.length || 0) + ' missing from TOML, ' + (d.drift?.missingFromLive?.length || 0) + ' missing from live.';
+    showArtifactsResult(summary, d.drift || d);
+  });
+
+  // Auto-load on first render.
+  refreshArtifacts().catch((e) => {
+    artifactsStatus.textContent = 'error';
+    artifactsErr.hidden = false;
+    artifactsErr.textContent = (e && e.message) || String(e);
   });
 
   /* ---------------- web push enable ---------------- */

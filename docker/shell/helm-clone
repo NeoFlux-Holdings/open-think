@@ -1,0 +1,160 @@
+#!/bin/bash
+# helm-clone — mint a write token for the canonical Cloudflare Artifacts
+# repo and print (or run) a ready-to-use `git clone` command.
+#
+# The Worker is the source of truth for ARTIFACTS_NAMESPACE / ARTIFACTS_REPO
+# and for the API token that mints repo-scoped tokens. We let it do the
+# resolution and just consume the output here.
+#
+# Usage:
+#   helm-clone                  # print the clone command (token embedded)
+#   helm-clone <dest-dir>       # actually clone into <dest-dir>
+#   helm-clone --token          # print just the minted token (write scope, 15 min ttl)
+#   helm-clone --remote         # print just the remote URL (no token)
+#   helm-clone --read           # print clone command using a READ token
+#   helm-clone --help
+#
+# Auth: HELM_WORKER_HOST + HELM_INTERNAL_TOKEN — forwarded automatically
+# into the container by ShellContainerDO when set as Worker secrets.
+
+set -e
+
+if [ -z "${HELM_WORKER_HOST:-}" ] || [ -z "${HELM_INTERNAL_TOKEN:-}" ]; then
+  echo "helm-clone: HELM_WORKER_HOST + HELM_INTERNAL_TOKEN required." >&2
+  echo "  Set them as Worker secrets; the container DO forwards them." >&2
+  exit 2
+fi
+
+SCOPE="write"
+PRINT_ONLY=""
+DEST=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --help|-h)
+      cat <<'USAGE'
+helm-clone — mint a Cloudflare Artifacts token + emit a `git clone` command.
+
+USAGE
+  helm-clone                       print clone command (write-scope token embedded)
+  helm-clone <dest-dir>            actually clone into <dest-dir>
+  helm-clone --read                clone command with a READ-only token
+  helm-clone --token               print just the minted token
+  helm-clone --remote              print just the remote URL (no token)
+  helm-clone --help
+
+Tokens default to 15-minute TTL. The agent uses the same skill
+(helm-artifacts-mint-token) under the hood — same ARTIFACTS_REPO,
+same source-of-truth.
+USAGE
+      exit 0
+      ;;
+    --read)
+      SCOPE="read"
+      shift
+      ;;
+    --token)
+      PRINT_ONLY="token"
+      shift
+      ;;
+    --remote)
+      PRINT_ONLY="remote"
+      shift
+      ;;
+    --*)
+      echo "helm-clone: unknown flag: $1" >&2
+      exit 2
+      ;;
+    *)
+      DEST="$1"
+      shift
+      ;;
+  esac
+done
+
+INVOKE_URL="https://${HELM_WORKER_HOST}/skills/invoke"
+
+# Helper: invoke a skill via the Worker. Echoes the JSON `data` field on
+# success, exits non-zero on failure with a message on stderr.
+invoke() {
+  local skill="$1"
+  local payload="$2"
+  local resp
+  resp="$(curl -fsS \
+    -X POST \
+    -H "content-type: application/json" \
+    -H "Authorization: Bearer ${HELM_INTERNAL_TOKEN}" \
+    --data "$payload" \
+    "${INVOKE_URL}/${skill}" 2>&1)" || {
+    echo "helm-clone: ${skill} request failed: ${resp}" >&2
+    return 1
+  }
+  local ok
+  ok="$(echo "$resp" | jq -r '.ok // false')"
+  if [ "$ok" != "true" ]; then
+    local err
+    err="$(echo "$resp" | jq -r '.error // .data.error // "unknown"')"
+    echo "helm-clone: ${skill} failed: ${err}" >&2
+    return 1
+  fi
+  echo "$resp" | jq -c '.data'
+}
+
+# 1. Resolve remote URL via status.
+STATUS_DATA="$(invoke helm-artifacts-status '{"input":{}}')" || exit 1
+REMOTE="$(echo "$STATUS_DATA" | jq -r '.remoteUrl // empty')"
+REPO_EXISTS="$(echo "$STATUS_DATA" | jq -r '.repoExists // false')"
+REPO_NAME="$(echo "$STATUS_DATA" | jq -r '.repoName // "(unknown)"')"
+
+if [ -z "$REMOTE" ]; then
+  echo "helm-clone: could not resolve Artifacts remote URL." >&2
+  echo "  Status: $(echo "$STATUS_DATA" | jq -c .)" >&2
+  exit 1
+fi
+
+if [ "$REPO_EXISTS" != "true" ]; then
+  echo "helm-clone: Artifacts repo \"${REPO_NAME}\" does not exist yet." >&2
+  echo "  Run: helm \"initialize the artifacts repo\"" >&2
+  echo "  Or visit /app#/settings → Cloudflare Artifacts → Initialize." >&2
+  exit 1
+fi
+
+if [ "$PRINT_ONLY" = "remote" ]; then
+  echo "$REMOTE"
+  exit 0
+fi
+
+# 2. Mint a token.
+MINT_DATA="$(invoke helm-artifacts-mint-token "{\"input\":{\"scope\":\"${SCOPE}\",\"ttl\":900}}")" || exit 1
+TOKEN="$(echo "$MINT_DATA" | jq -r '.token // empty')"
+EXPIRES="$(echo "$MINT_DATA" | jq -r '.expiresAt // ""')"
+
+if [ -z "$TOKEN" ]; then
+  echo "helm-clone: token mint returned no token: $(echo "$MINT_DATA" | jq -c .)" >&2
+  exit 1
+fi
+
+if [ "$PRINT_ONLY" = "token" ]; then
+  echo "$TOKEN"
+  exit 0
+fi
+
+# 3. Build the clone URL with the token embedded.
+CLONE_URL="$(echo "$REMOTE" | sed "s#https://#https://x:${TOKEN}@#")"
+
+if [ -n "$DEST" ]; then
+  echo "helm-clone: cloning into ${DEST} (scope=${SCOPE}, expires ${EXPIRES})…"
+  exec git clone "$CLONE_URL" "$DEST"
+fi
+
+# Print mode: emit the command + a quick reminder.
+cat <<INFO
+# Cloudflare Artifacts canonical remote
+# repo:    ${REPO_NAME}
+# scope:   ${SCOPE}
+# expires: ${EXPIRES}
+# Tip: pass a destination directory to clone immediately:
+#   helm-clone <dest-dir>
+
+git clone ${CLONE_URL}
+INFO

@@ -34,6 +34,14 @@ interface InvokeInput {
   appName?: string;
   allowedEmails?: string[];
   topic?: string;
+  /** When true, helm-setup-deploy skips the Cloudflare Artifacts step. */
+  skipArtifacts?: boolean;
+  /** Optional public git URL to seed the Artifacts repo from on first init. */
+  artifactsBootstrapUrl?: string;
+  /** Override repo name; defaults to scriptName. */
+  artifactsRepo?: string;
+  /** Override namespace; defaults to "default". */
+  artifactsNamespace?: string;
 }
 
 function asObj(input: unknown): Record<string, unknown> {
@@ -445,6 +453,63 @@ export class HelmSetupPlugin implements AgentPlugin {
       steps.push({ kind: "secret WORKER_SCRIPT_NAME", ok: true, detail: `${fromEnv} (already set)` });
     }
 
+    // ---- 10. Cloudflare Artifacts repo (canonical source-of-truth for
+    //          wrangler.toml + Worker source; no GitHub required). ----
+    let artifactsCloneUrl: string | null = null;
+    let artifactsRemote: string | null = null;
+    if (o.skipArtifacts) {
+      steps.push({ kind: "artifacts repo", ok: true, detail: "skipped (input.skipArtifacts)" });
+    } else {
+      const namespace = o.artifactsNamespace || env.ARTIFACTS_NAMESPACE || "default";
+      const repoName = o.artifactsRepo || env.ARTIFACTS_REPO || scriptName;
+      const bootstrapUrl = o.artifactsBootstrapUrl || env.ARTIFACTS_BOOTSTRAP_URL || "";
+      const artifacts = await this.cfEnsureArtifactsRepo(
+        token,
+        acc,
+        namespace,
+        repoName,
+        bootstrapUrl
+      );
+      steps.push({
+        kind: `artifacts repo ${namespace}/${repoName}`,
+        ok: artifacts.ok,
+        detail: artifacts.detail
+      });
+      if (artifacts.ok && artifacts.remote) {
+        artifactsRemote = artifacts.remote;
+        // Only persist the secrets if they're not already set — avoid
+        // pointless writes that trigger redeploy churn.
+        if (!env.ARTIFACTS_REPO) {
+          const r = await this.cfPutSecret(token, acc, scriptName, "ARTIFACTS_REPO", repoName);
+          steps.push({ kind: "secret ARTIFACTS_REPO", ok: r.ok, detail: r.detail });
+        } else {
+          steps.push({ kind: "secret ARTIFACTS_REPO", ok: true, detail: "already set" });
+        }
+        if (!env.ARTIFACTS_NAMESPACE && namespace !== "default") {
+          const r = await this.cfPutSecret(token, acc, scriptName, "ARTIFACTS_NAMESPACE", namespace);
+          steps.push({ kind: "secret ARTIFACTS_NAMESPACE", ok: r.ok, detail: r.detail });
+        }
+        // The clone URL we surface to the user has a placeholder where
+        // their token will go. Tokens are minted on demand via
+        // helm-artifacts-mint-token (or the Settings card).
+        artifactsCloneUrl = `git clone https://x:<artifacts-token>@${artifacts.remote.replace(/^https:\/\//, "")}`;
+      }
+    }
+
+    const notes = [
+      "Live Worker is now provisioned + bound. CF auto-redeploys on settings change (~15s); wait that long before testing.",
+      "Provider keys (OpenRouter / Anthropic / OpenAI) and VAPID keys remain manual — paste in /app#/settings → Manage secrets."
+    ];
+    if (artifactsRemote) {
+      notes.unshift(
+        "Cloudflare Artifacts is now the canonical source-of-truth for wrangler.toml. The agent commits drift fixes to it via helm-artifacts-sync-toml; you clone it locally for direct edits. helm-artifacts-mint-token returns a fresh token when you need to push from your machine."
+      );
+    } else {
+      notes.push(
+        "Commit the wranglerTomlAdditions to your wrangler.toml so the next `wrangler deploy` from your machine doesn't drop the bindings."
+      );
+    }
+
     return {
       ok: steps.every((s) => s.ok),
       data: {
@@ -452,13 +517,90 @@ export class HelmSetupPlugin implements AgentPlugin {
         scriptName,
         steps,
         wranglerTomlAdditions: tomlSnippets.join("\n\n"),
-        notes: [
-          "Live Worker is now provisioned + bound. CF auto-redeploys on settings change (~15s); wait that long before testing.",
-          "Commit the wranglerTomlAdditions to your wrangler.toml so the next `wrangler deploy` from your machine doesn't drop the bindings.",
-          "Provider keys (OpenRouter / Anthropic / OpenAI) and VAPID keys remain manual — paste in /app#/settings → Manage secrets."
-        ]
+        artifacts: artifactsRemote
+          ? { remote: artifactsRemote, cloneCommand: artifactsCloneUrl }
+          : null,
+        notes
       }
     };
+  }
+
+  /**
+   * Ensure the canonical Cloudflare Artifacts repo exists for this Worker.
+   * Idempotent — probes first, falls back to either /import (when a
+   * bootstrap URL is supplied) or /repos (empty create) when missing.
+   * Reports gracefully when the API token lacks Artifacts:Edit scope so
+   * the rest of the deploy chain still finishes.
+   */
+  private async cfEnsureArtifactsRepo(
+    token: string,
+    accId: string,
+    namespace: string,
+    repoName: string,
+    bootstrapUrl: string
+  ): Promise<{ ok: boolean; detail: string; remote?: string; bootstrapped?: boolean }> {
+    if (!this.ctx) return { ok: false, detail: "no ctx" };
+    const base = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accId)}/artifacts/namespaces/${encodeURIComponent(namespace)}`;
+    // Probe.
+    const probe = await this.ctx.fetch(`${base}/repos/${encodeURIComponent(repoName)}`, {
+      headers: { Authorization: `Bearer ${token}`, accept: "application/json" }
+    });
+    if (probe.ok) {
+      const j = (await probe.json().catch(() => ({}))) as {
+        success?: boolean;
+        result?: { remote?: string };
+      };
+      if (j.success && j.result?.remote) {
+        return { ok: true, detail: "already exists — reusing", remote: j.result.remote };
+      }
+    } else if (probe.status === 403) {
+      // Token doesn't have Artifacts:Edit scope. Don't fail the deploy —
+      // just tell the user how to wire it.
+      return {
+        ok: false,
+        detail:
+          "skipped — CLOUDFLARE_API_TOKEN lacks the Artifacts:Edit scope. Edit the token at dash → Profile → API Tokens, add the scope, retry."
+      };
+    } else if (probe.status === 404) {
+      // Continue to create path.
+    } else if (probe.status >= 500) {
+      const t = await probe.text();
+      return { ok: false, detail: `probe failed (${probe.status}): ${t.slice(0, 200)}` };
+    }
+    // Create (empty or imported).
+    const url = bootstrapUrl
+      ? `${base}/repos/${encodeURIComponent(repoName)}/import`
+      : `${base}/repos`;
+    const body = bootstrapUrl
+      ? { url: bootstrapUrl, branch: "main", depth: 100 }
+      : { name: repoName, default_branch: "main", description: `Open Think — ${repoName}` };
+    const create = await this.ctx.fetch(url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    const text = await create.text();
+    if (!create.ok && create.status === 403) {
+      return {
+        ok: false,
+        detail:
+          "skipped — token rejected by Artifacts API. Add the Artifacts:Edit scope and retry."
+      };
+    }
+    if (!create.ok) {
+      return { ok: false, detail: `create failed (${create.status}): ${text.slice(0, 200)}` };
+    }
+    try {
+      const j = JSON.parse(text) as { result?: { remote?: string } };
+      return {
+        ok: true,
+        detail: bootstrapUrl ? `imported from ${bootstrapUrl}` : "created (empty)",
+        remote: j.result?.remote,
+        bootstrapped: !!bootstrapUrl
+      };
+    } catch {
+      return { ok: true, detail: "created (response unparsable)" };
+    }
   }
 
   private randomHex(bytes: number): string {

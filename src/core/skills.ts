@@ -464,7 +464,7 @@ const SKILL_CATALOG: SkillDefinition[] = [
     id: "helm-setup-deploy",
     name: "Helm Setup Deploy (full)",
     description:
-      "DEPLOY-EVERYTHING in one call — what \"set me up\" should mean. Auto-resolves accountId + scriptName (no need to pass them). Creates D1 PA-stack + R2 bucket + KV cache, PATCHES the live Worker bindings (DB, WORKSPACE, CACHE), updates ENABLED_PLUGINS, sets HELM_INTERNAL_TOKEN + CLOUDFLARE_ACCOUNT_ID secrets, runs Access lockdown if needed. NO `wrangler deploy` required afterwards — CF auto-redeploys on settings change. Returns the matching wrangler.toml additions for the user to commit so their next local deploy doesn't drop the bindings. PREFER THIS over chaining cf-* skills. DANGEROUS.",
+      "DEPLOY-EVERYTHING in one call — what \"set me up\" should mean. Auto-resolves accountId + scriptName. Creates D1 PA-stack + R2 bucket + KV cache, PATCHES live Worker bindings, updates ENABLED_PLUGINS, sets HELM_INTERNAL_TOKEN + CLOUDFLARE_ACCOUNT_ID secrets, runs Access lockdown if needed, AND provisions a Cloudflare Artifacts repo as the canonical wrangler.toml source-of-truth (no GitHub required). NO `wrangler deploy` afterwards — CF auto-redeploys on settings change. Returns the matching wrangler.toml additions to commit, plus the Artifacts clone command. PREFER THIS over chaining cf-* skills. DANGEROUS.",
     pluginId: "helm-setup",
     action: "deploy",
     tags: ["setup", "deploy", "create", "auto"],
@@ -475,6 +475,13 @@ const SKILL_CATALOG: SkillDefinition[] = [
         accountId: { type: "string", description: "Optional override; auto-resolves from token otherwise" },
         scriptName: { type: "string", description: "Optional override; defaults to env.AGENT_NAME or \"helm\"" },
         skipAccess: { type: "boolean", description: "Skip the Access lockdown step (e.g. when re-running)" },
+        skipArtifacts: { type: "boolean", description: "Skip the Cloudflare Artifacts repo step" },
+        artifactsBootstrapUrl: {
+          type: "string",
+          description: "Optional public git URL to seed the Artifacts repo from on first init (one-shot import)"
+        },
+        artifactsRepo: { type: "string", description: "Override Artifacts repo name; defaults to scriptName" },
+        artifactsNamespace: { type: "string", description: "Override namespace; defaults to \"default\"" },
         allowedEmails: { type: "array", items: { type: "string" }, description: "Override Access policy emails" }
       }
     }
@@ -950,54 +957,270 @@ const SKILL_CATALOG: SkillDefinition[] = [
       required: ["command"]
     }
   },
+  /* ---- helm-artifacts: PRIMARY source-of-truth via Cloudflare Artifacts ---- */
   {
-    id: "artifacts-create-repo",
-    name: "Artifacts Create Repo",
-    description: "Create a Cloudflare Artifacts repository. Dangerous — mutates account state.",
-    pluginId: "artifacts",
-    action: "create-repo",
-    tags: ["artifacts", "git", "storage"],
-    dangerous: true,
+    id: "helm-artifacts-status",
+    name: "Helm Artifacts Status",
+    description:
+      "Check Artifacts readiness: binding presence, REST reachability, repo existence, derived remote URL. ALWAYS run this first before any other helm-artifacts-* call so the agent knows whether init is needed.",
+    pluginId: "helm-artifacts",
+    action: "status",
+    tags: ["artifacts", "introspect", "git"],
     inputSchema: {
       type: "object",
-      properties: { name: { type: "string" } },
-      required: ["name"]
+      properties: {
+        namespace: { type: "string", description: "Optional override; defaults to env.ARTIFACTS_NAMESPACE or \"default\"" },
+        repo: { type: "string", description: "Optional override; defaults to env.ARTIFACTS_REPO or env.AGENT_NAME" }
+      }
     }
   },
   {
-    id: "artifacts-import-repo",
-    name: "Artifacts Import Repo",
-    description: "Import an existing repo into Artifacts. Dangerous — mutates account state.",
-    pluginId: "artifacts",
-    action: "import-repo",
-    tags: ["artifacts", "git", "import"],
+    id: "helm-artifacts-init",
+    name: "Helm Artifacts Init",
+    description:
+      "Create (or reuse) the canonical Artifacts repo for this Worker. Idempotent — if the repo already exists, returns its remote without changes. Pass bootstrapUrl to seed from a public git URL (one-shot import). DANGEROUS — provisions Cloudflare resources.",
+    pluginId: "helm-artifacts",
+    action: "init",
+    tags: ["artifacts", "create", "setup"],
     dangerous: true,
     inputSchema: {
       type: "object",
       properties: {
-        sourceUrl: { type: "string" },
-        targetName: { type: "string" },
+        namespace: { type: "string" },
+        repo: { type: "string", description: "Repo name (defaults to env.AGENT_NAME)" },
+        branch: { type: "string", description: "Default branch (default: main)" },
+        bootstrapUrl: { type: "string", description: "Optional public HTTPS git URL to import on first create" },
+        description: { type: "string" }
+      }
+    }
+  },
+  {
+    id: "helm-artifacts-list-repos",
+    name: "Helm Artifacts List Repos",
+    description: "List all Artifacts repos in the namespace. Read-only.",
+    pluginId: "helm-artifacts",
+    action: "list-repos",
+    tags: ["artifacts", "introspect"],
+    inputSchema: {
+      type: "object",
+      properties: {
+        namespace: { type: "string" },
+        limit: { type: "number" },
+        cursor: { type: "string" },
+        search: { type: "string" },
+        sort: { type: "string", enum: ["created_at", "updated_at", "last_push_at", "name"] },
+        direction: { type: "string", enum: ["asc", "desc"] }
+      }
+    }
+  },
+  {
+    id: "helm-artifacts-repo-info",
+    name: "Helm Artifacts Repo Info",
+    description: "Get metadata for a single Artifacts repo (id, remote URL, default branch, last push). Read-only.",
+    pluginId: "helm-artifacts",
+    action: "repo-info",
+    tags: ["artifacts", "introspect"],
+    inputSchema: {
+      type: "object",
+      properties: { namespace: { type: "string" }, repo: { type: "string" } }
+    }
+  },
+  {
+    id: "helm-artifacts-mint-token",
+    name: "Helm Artifacts Mint Token",
+    description:
+      "Mint a scoped, time-bounded Artifacts token for a repo. Default scope=write, ttl=900s. Used internally by other helm-artifacts skills; expose to the agent only when manual git operations are needed. DANGEROUS — token grants repo write access for ttl seconds.",
+    pluginId: "helm-artifacts",
+    action: "mint-token",
+    tags: ["artifacts", "secret"],
+    dangerous: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        repo: { type: "string" },
+        scope: { type: "string", enum: ["read", "write"] },
+        ttl: { type: "number", description: "Seconds, max 86400; default 900" }
+      }
+    }
+  },
+  {
+    id: "helm-artifacts-clone",
+    name: "Helm Artifacts Clone",
+    description:
+      "Ensure the Artifacts repo is cloned (or up-to-date) inside the helm-shell container at env.ARTIFACTS_CHECKOUT_PATH (default /workspace/<repo>). Idempotent — if already cloned, runs `git pull` instead. Required before any read-file/write-file/sync-toml.",
+    pluginId: "helm-artifacts",
+    action: "clone",
+    tags: ["artifacts", "git", "shell"],
+    dangerous: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        namespace: { type: "string" },
+        repo: { type: "string" },
+        branch: { type: "string" },
+        checkoutPath: { type: "string" }
+      }
+    }
+  },
+  {
+    id: "helm-artifacts-pull",
+    name: "Helm Artifacts Pull",
+    description: "Run `git pull --ff-only` on the container's clone. Use to pick up changes the user pushed from their local machine.",
+    pluginId: "helm-artifacts",
+    action: "pull",
+    tags: ["artifacts", "git", "shell"],
+    inputSchema: {
+      type: "object",
+      properties: { repo: { type: "string" }, branch: { type: "string" } }
+    }
+  },
+  {
+    id: "helm-artifacts-read-file",
+    name: "Helm Artifacts Read File",
+    description: "Read any file from the Artifacts checkout. Defaults to wrangler.toml. Auto-clones if needed.",
+    pluginId: "helm-artifacts",
+    action: "read-file",
+    tags: ["artifacts", "read"],
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Relative to checkoutPath; default wrangler.toml" },
+        repo: { type: "string" }
+      }
+    }
+  },
+  {
+    id: "helm-artifacts-write-file",
+    name: "Helm Artifacts Write File",
+    description:
+      "Atomic edit + commit + push to Artifacts. Auto-clones if needed. Pass push:false to commit locally only. Idempotent — no-op when content matches HEAD. DANGEROUS.",
+    pluginId: "helm-artifacts",
+    action: "write-file",
+    tags: ["artifacts", "write", "git"],
+    dangerous: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Relative to checkoutPath" },
+        content: { type: "string", description: "Full new file content (UTF-8)" },
+        message: { type: "string", description: "Commit message (default: \"helm: update <path>\")" },
+        push: { type: "boolean", description: "Default true. Pass false to commit locally only." },
+        repo: { type: "string" },
         branch: { type: "string" }
       },
-      required: ["sourceUrl", "targetName"]
+      required: ["path", "content"]
     }
   },
   {
-    id: "artifacts-fork-repo",
-    name: "Artifacts Fork Repo",
-    description: "Fork an Artifacts repo. Dangerous — mutates account state.",
-    pluginId: "artifacts",
-    action: "fork-repo",
-    tags: ["artifacts", "git", "fork"],
+    id: "helm-artifacts-ls",
+    name: "Helm Artifacts List Files",
+    description: "Run `git ls-files` against HEAD. Returns the array of tracked file paths.",
+    pluginId: "helm-artifacts",
+    action: "ls",
+    tags: ["artifacts", "read"],
+    inputSchema: {
+      type: "object",
+      properties: { repo: { type: "string" } }
+    }
+  },
+  {
+    id: "helm-artifacts-history",
+    name: "Helm Artifacts History",
+    description: "Last N commits (default 20, max 200). Returns sha + author + ISO date + subject.",
+    pluginId: "helm-artifacts",
+    action: "history",
+    tags: ["artifacts", "read", "git"],
+    inputSchema: {
+      type: "object",
+      properties: { repo: { type: "string" }, limit: { type: "number" } }
+    }
+  },
+  {
+    id: "helm-artifacts-diff",
+    name: "Helm Artifacts Diff",
+    description: "Diff between two refs. Defaults to HEAD~1..HEAD. Truncated to 16K characters.",
+    pluginId: "helm-artifacts",
+    action: "diff",
+    tags: ["artifacts", "read", "git"],
+    inputSchema: {
+      type: "object",
+      properties: {
+        from: { type: "string", description: "default HEAD~1" },
+        to: { type: "string", description: "default HEAD" },
+        repo: { type: "string" }
+      }
+    }
+  },
+  {
+    id: "helm-artifacts-sync-toml",
+    name: "Helm Artifacts Sync TOML (canonical drift fix)",
+    description:
+      "PRIMARY drift-fix path. Pulls latest wrangler.toml from Artifacts, diffs against the live Worker bindings, and (if apply:true) commits + pushes the merged version back. Default dry-run. Replaces helm-github-sync-toml for users without GitHub. DANGEROUS when apply:true.",
+    pluginId: "helm-artifacts",
+    action: "sync-toml",
+    tags: ["artifacts", "toml", "drift", "auto"],
     dangerous: true,
     inputSchema: {
       type: "object",
       properties: {
-        name: { type: "string" },
-        forkName: { type: "string" },
-        readOnly: { type: "boolean" }
+        apply: { type: "boolean", description: "Default false (dry-run)." },
+        scriptName: { type: "string", description: "Worker name; auto-resolves" },
+        repo: { type: "string" },
+        branch: { type: "string" },
+        tomlPath: { type: "string", description: "Default wrangler.toml" }
+      }
+    }
+  },
+  {
+    id: "helm-artifacts-deploy",
+    name: "Helm Artifacts Deploy",
+    description:
+      "Re-deploy the Worker from the Artifacts checkout. Defaults to running `wrangler deploy` inside the helm-shell container (full multi-module fidelity). Pass useWrangler:false for a single-file fallback that PUTs worker.js directly via the CF API. DANGEROUS — replaces the live Worker.",
+    pluginId: "helm-artifacts",
+    action: "deploy",
+    tags: ["artifacts", "deploy"],
+    dangerous: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        scriptName: { type: "string" },
+        useWrangler: { type: "boolean", description: "Default true" },
+        repo: { type: "string" }
+      }
+    }
+  },
+  {
+    id: "helm-artifacts-import-github",
+    name: "Helm Artifacts Import from GitHub",
+    description:
+      "One-shot bootstrap: clone a public HTTPS git URL into a fresh Artifacts repo. Useful when migrating from a GitHub-hosted source. The GitHub repo can be deleted afterwards — Artifacts is canonical from this point on. DANGEROUS — provisions resources.",
+    pluginId: "helm-artifacts",
+    action: "import-github",
+    tags: ["artifacts", "create", "github"],
+    dangerous: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "https:// public git URL" },
+        namespace: { type: "string" },
+        repo: { type: "string", description: "Target Artifacts repo name (default env.AGENT_NAME)" },
+        branch: { type: "string" },
+        depth: { type: "number" }
       },
-      required: ["name", "forkName"]
+      required: ["url"]
+    }
+  },
+  {
+    id: "helm-artifacts-cron-sync",
+    name: "Helm Artifacts Cron Sync (drift-check)",
+    description:
+      "Cron-friendly drift detector. Runs sync-toml dry-run against the live Worker; returns drift + a `shouldNotify` flag the scheduled() handler uses to fan out to notifier. Wired automatically when ARTIFACTS_AUTO_SYNC=1.",
+    pluginId: "helm-artifacts",
+    action: "cron-sync",
+    tags: ["artifacts", "drift", "cron"],
+    inputSchema: {
+      type: "object",
+      properties: { repo: { type: "string" }, scriptName: { type: "string" } }
     }
   },
   {

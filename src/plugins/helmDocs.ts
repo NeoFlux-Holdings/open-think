@@ -162,6 +162,10 @@ In-shell helpers (always in PATH):
   helm-fetch <key>           — pull a file from /persist into /workspace
   helm-fetch --list          — list all your files
   helm-fetch --search <s>    — find files by substring
+  helm-clone                 — mint Artifacts token + emit git-clone command
+  helm-clone <dest>          — actually clone the canonical Artifacts repo
+  helm-clone --read          — same but with a READ-only token
+  helm-clone --token         — print just the minted token (15 min ttl)
 
 Files tab at /app#/files: drag-drop upload, browse, download, delete.
 Per-user prefix files/u-<hash>/. Backed by env.WORKSPACE R2 binding via
@@ -200,6 +204,21 @@ helm-setup (high-level wrappers):
   helm-setup-secrets-status  secret slot inventory + which are set
   helm-setup-auto        one-call full setup (lockdown + token + bucket)
   helm-docs              read curated documentation (this very catalog)
+
+helm-artifacts (PRIMARY source-of-truth — no GitHub needed):
+  helm-artifacts-status         binding + REST + repo accessibility
+  helm-artifacts-init           create / import a repo (idempotent)
+  helm-artifacts-clone          ensure container has a fresh clone
+  helm-artifacts-pull           git pull --ff-only
+  helm-artifacts-read-file      read any file from the checkout
+  helm-artifacts-write-file     atomic edit + commit + push
+  helm-artifacts-sync-toml      drift-fix wrangler.toml against live Worker
+  helm-artifacts-deploy         redeploy live Worker from the checkout
+  helm-artifacts-mint-token     scoped time-bounded token (for user's git clone)
+  helm-artifacts-cron-sync      scheduled drift detector + notify
+
+helm-github (LEGACY fallback when GitHub is the user's canonical):
+  helm-github-status / read-file / write-file / create-branch / open-pr / sync-toml
 
 admin (introspection):
   admin-introspect       runtime config + plugin metadata
@@ -244,79 +263,142 @@ THE WRANGLER.TOML DRIFT PROBLEM (and how to avoid it).
 What happens without sync:
   1. Agent calls cf-patch-binding to add an R2 bucket binding live
   2. Live Worker now has env.WORKSPACE wired ✓
-  3. User's local wrangler.toml does NOT have [[r2_buckets]]
-  4. User runs \`wrangler deploy\` from local for an unrelated change
-  5. wrangler reads local wrangler.toml, sees no R2 binding, REMOVES IT
+  3. The canonical wrangler.toml does NOT have [[r2_buckets]]
+  4. User (or agent) runs \`wrangler deploy\` from the canonical source
+  5. wrangler reads wrangler.toml, sees no R2 binding, REMOVES IT
      from the live Worker
   6. Silent regression
 
-The agent's job: keep wrangler.toml in sync. Three skills:
+PRIMARY PATH — helm-artifacts (Cloudflare Artifacts canonical):
+  1. cf-patch-binding {type, name, config}    ← updates live Worker
+  2. capture result.tomlSnippet                ← exact 3-line block
+  3. helm-artifacts-sync-toml {apply:true}    ← merges + commits + pushes to Artifacts
+  4. (optional) helm-artifacts-deploy          ← redeploy from Artifacts source
 
-  helm-toml-status — checks if user's repo is cloned at /workspace/repo
-                     (or env.HELM_REPO_PATH) and wrangler.toml exists.
+Why Artifacts is canonical:
+  - One source of truth on Cloudflare's platform — not behind a separate
+    GitHub auth boundary.
+  - Both the user (local clone) and the agent (helm-shell container clone)
+    push to the same remote.
+  - Tokens are scoped + short-lived, minted on demand. No PAT management.
 
-  helm-toml-sync   — diffs LIVE Worker bindings vs repo's wrangler.toml.
-                     Returns: missingFromToml[], missingFromLive[].
-                     Read-only.
-
-  helm-toml-patch  — adds/replaces a TOML block in wrangler.toml +
-                     commits + (optionally) pushes. Use the same
-                     tomlSnippet returned by cf-patch-binding.
-
-Canonical sequence after ANY binding mutation:
-  1. cf-patch-binding {type, name, config}      ← updates live Worker
-  2. capture result.tomlSnippet                  ← exact 3-line block
-  3. helm-toml-patch {snippet, push: true}       ← syncs to repo
-  4. (optional) helm-toml-sync                   ← verify zero drift
-
-First-time setup (one-time per fresh container):
-  helm-exec \`git clone https://github.com/<user>/<repo> /workspace/repo\`
-  helm-exec \`cd /workspace/repo && git config user.email helm@open-think && git config user.name Helm\`
-  (If pushing: ensure git remote uses a token URL or gh auth login was run.)
+LEGACY PATHS (only for migration / power users):
+  - helm-toml-* operates on a clone INSIDE the helm-shell container at
+    /workspace/repo. Useful when you want to drive 'wrangler deploy'
+    from inside the container with a non-Artifacts remote.
+  - helm-github-* operates against api.github.com. Useful when the user
+    chose GitHub as canonical instead of Artifacts.
 
 Env var overrides:
-  HELM_REPO_PATH         where to look for the repo (default /workspace/repo)
-  HELM_WRANGLER_TOML_PATH path within the repo (default wrangler.toml)
+  ARTIFACTS_REPO          repo name (default env.AGENT_NAME)
+  ARTIFACTS_NAMESPACE     namespace (default "default")
+  ARTIFACTS_BRANCH        branch (default "main")
+  ARTIFACTS_CHECKOUT_PATH /workspace/<repo>
+  ARTIFACTS_AUTO_SYNC     "1" → scheduled() runs cron-sync on cron firing
 `.trim(),
 
-  /* --------------------- container-free repo ops --------------------- */
-  "github": `
-HELM-GITHUB — container-free wrangler.toml sync.
+  /* --------------------- canonical source-of-truth via Artifacts --------------------- */
+  "artifacts": `
+HELM-ARTIFACTS — Cloudflare Artifacts as the canonical source of truth
+for wrangler.toml + Worker source. PRIMARY path. No GitHub required.
 
-When the Helm Shell container is asleep (15 min idle), helm-toml-* costs
-a cold start (~10s). For drift checks + occasional reads, use helm-github
-instead — runs in the Worker isolate, no container wake-up.
+What it is:
+  Cloudflare Artifacts (public beta May 2026) is a real git remote backed
+  by Cloudflare's storage. Each repo has an HTTPS smart-Git URL like
+    https://<account-id>.artifacts.cloudflare.net/git/<namespace>/<repo>.git
+  The user clones it locally with stock \`git\`. The agent clones it inside
+  the helm-shell container. Both push to the same canonical place.
+
+Why over GitHub:
+  - Zero external auth: tokens are scoped + short-lived, minted on demand
+    by the binding or the CF REST API. No PAT to manage.
+  - Per-tenant isolation: one repo per Worker (or per project); scoped
+    tokens; no cross-talk.
+  - Native to the platform: same account, same dashboard, same API token.
 
 Setup (one-time):
+  Easiest: run helm-setup-deploy. The deploy chain provisions an Artifacts
+  repo automatically (named after scriptName, namespace "default") and
+  persists ARTIFACTS_REPO as a Worker secret. Pass artifactsBootstrapUrl
+  to seed from a public git URL on first init.
+
+  Manual:
+  1. Set CLOUDFLARE_API_TOKEN with the "Artifacts:Edit" scope.
+  2. helm-artifacts-init {bootstrapUrl?:"https://github.com/you/repo.git"}
+     — creates the repo, optionally seeds it from any public git URL.
+     Idempotent.
+  3. cf-put-secret ARTIFACTS_REPO=<name> + ARTIFACTS_NAMESPACE=default
+     so subsequent calls skip discovery.
+
+The /app#/settings UI exposes the same surface in the "Cloudflare Artifacts"
+card: status pill, Initialize button, Mint token + clone command button,
+drift checker, and a one-shot "import from a public git URL" form.
+
+Skills:
+  helm-artifacts-status        binding + REST + repo accessibility
+  helm-artifacts-init          create / import (idempotent)
+  helm-artifacts-list-repos    list repos in the namespace
+  helm-artifacts-repo-info     metadata for one repo
+  helm-artifacts-mint-token    mint a scoped time-bounded token
+  helm-artifacts-clone         ensure container clone is fresh
+  helm-artifacts-pull          git pull --ff-only on the clone
+  helm-artifacts-read-file     read any file from the checkout
+  helm-artifacts-write-file    atomic edit + commit + push
+  helm-artifacts-ls            list tracked files
+  helm-artifacts-history       last N commits
+  helm-artifacts-diff          ref-to-ref diff
+  helm-artifacts-sync-toml     drift-fix wrangler.toml against live Worker
+  helm-artifacts-deploy        re-deploy live Worker from the checkout
+  helm-artifacts-import-github one-shot bootstrap from a public GitHub URL
+  helm-artifacts-cron-sync     scheduled drift detector + notify
+
+Local user workflow:
+  $ git clone https://x:<read-token>@<acct>.artifacts.cloudflare.net/git/default/<repo>.git
+  $ cd <repo>
+  $ <edit wrangler.toml>
+  $ git push    # pushes back to Artifacts
+
+Three ways to get a fresh token:
+  1. /app#/settings → Cloudflare Artifacts card → "Mint write token + clone command"
+     (one-click, copy-paste; 15-min TTL by default)
+  2. In the helm-shell container:
+       $ helm-clone               # prints clone command (write scope)
+       $ helm-clone <dest>        # actually clones into <dest>
+       $ helm-clone --read        # read-only token instead
+       $ helm-clone --token       # just the bare token
+  3. From the agent:
+       helm-artifacts-mint-token {scope:"write", ttl:900}
+
+Auto-sync on cron:
+  Set ARTIFACTS_AUTO_SYNC=1 + define [triggers].crons in wrangler.toml.
+  The scheduled() handler will invoke helm-artifacts-cron-sync; if drift
+  is detected, the notifier plugin is fanned out (email or Web Push).
+`.trim(),
+
+  /* --------------------- legacy / fallback repo ops --------------------- */
+  "github": `
+HELM-GITHUB — container-free wrangler.toml sync via the GitHub REST API.
+LEGACY / FALLBACK path. Most users should use helm-artifacts (above)
+instead. helm-github only matters when:
+  (a) the user explicitly wants GitHub as source-of-truth, OR
+  (b) Artifacts isn't yet provisioned and we need a stop-gap.
+
+Setup:
   1. Create a fine-grained PAT at https://github.com/settings/personal-access-tokens
-     Scopes needed: Contents (read+write), Pull requests (read+write)
-  2. Set GITHUB_TOKEN as a Worker secret (cf-put-secret)
-  3. Set GITHUB_REPO ("owner/repo") as a Worker secret or var
-  4. Optional: GITHUB_DEFAULT_BRANCH (default "main"),
-              HELM_WRANGLER_TOML_PATH (default "wrangler.toml")
+     Scopes: Contents (read+write), Pull requests (read+write)
+  2. Set GITHUB_TOKEN, GITHUB_REPO ("owner/repo"), optionally
+     GITHUB_DEFAULT_BRANCH and HELM_WRANGLER_TOML_PATH.
 
 Skills:
   helm-github-status        verify token + repo accessibility
-  helm-github-read-file     fetch wrangler.toml (or any file) via API
-  helm-github-write-file    commit a file change (creates branch if --branch)
+  helm-github-read-file     fetch wrangler.toml (or any file)
+  helm-github-write-file    commit a file change
   helm-github-create-branch idempotent branch creation
-  helm-github-open-pr       open a PR from head→base
-  helm-github-sync-toml     ONE-CALL drift fix:
-                             - apply:false (default) → dry-run drift report
-                             - apply:true            → commit fixes
-                             - targetBranch:"helm/sync-N" → branch + PR
+  helm-github-open-pr       open a PR
+  helm-github-sync-toml     drift-fix mirroring helm-artifacts-sync-toml
 
-Container-vs-GitHub trade-off:
-  Container (helm-toml-patch): full-fidelity (any file, complex edits,
-                                runs \`wrangler deploy\`, pushes via git).
-                                Costs cold-start when asleep.
-  GitHub API (helm-github-*):   binding sync only, no shell tools, no
-                                wrangler invocation. ~50ms per call,
-                                no cold start. Best for cron drift checks.
-
-Use helm-github when: agent-driven sync, no other shell work needed.
-Use helm-toml-patch when: same turn already touches the container,
-                          or push-via-git needs a non-token auth flow.
+When in doubt: use helm-artifacts-*. helm-github-* is kept around for
+users with existing GitHub-centric flows.
 `.trim(),
 
   /* --------------------- agent-can-deploy playbook --------------------- */
