@@ -333,29 +333,43 @@ export async function runLockdown(
   // of the legacy `domain` string. `destinations` doesn't run the
   // zone-ownership validation that historically rejected `*.workers.dev`
   // URLs with "domain does not belong to zone" — it just gates the URI.
-  // The dashboard's Access app creator uses the same shape.
   //
-  // CF's response still includes `domain` (it's derived from the first
-  // destination), so callers and tests that read `result.domain` keep
-  // working unchanged.
+  // Dedupe: before creating, list existing apps and reuse one whose
+  // destinations point at our worker host. This makes the wizard
+  // idempotent across re-runs, AND avoids creating duplicate Access apps
+  // when the user re-runs setup-deploy (the previous behavior would 409
+  // or silently double up depending on CF's mood).
   const destinationUri = input.workerHost.startsWith("http")
     ? input.workerHost
     : `https://${input.workerHost}`;
-  const appRes = await cfCall<AccessAppResult>(
+  const existingApp = await findAccessAppByDestination(
     input.token,
-    `/accounts/${input.accountId}/access/apps`,
-    {
-      method: "POST",
-      body: JSON.stringify({
-        name: input.appName,
-        type: "self_hosted",
-        destinations: [{ type: "public", uri: destinationUri }],
-        session_duration: input.sessionDuration ?? "24h",
-        auto_redirect_to_identity: false
-      }),
-      fetchImpl
-    }
+    input.accountId,
+    destinationUri,
+    fetchImpl
   );
+  let appRes: CfApiResult<AccessAppResult>;
+  let dedupedExisting = false;
+  if (existingApp) {
+    appRes = { success: true, result: existingApp };
+    dedupedExisting = true;
+  } else {
+    appRes = await cfCall<AccessAppResult>(
+      input.token,
+      `/accounts/${input.accountId}/access/apps`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          name: input.appName,
+          type: "self_hosted",
+          destinations: [{ type: "public", uri: destinationUri }],
+          session_duration: input.sessionDuration ?? "24h",
+          auto_redirect_to_identity: false
+        }),
+        fetchImpl
+      }
+    );
+  }
   if (!appRes.success || !appRes.result) {
     const apiMsg = appRes.errors?.[0]?.message ?? "Access app creation failed.";
     const apiCode = appRes.errors?.[0]?.code;
@@ -373,8 +387,10 @@ export async function runLockdown(
     step(
       "create-app",
       true,
-      `Access app live · aud=${aud.slice(0, 12)}…`,
-      { appId, aud, domain: input.workerHost }
+      dedupedExisting
+        ? `Access app reused · aud=${aud.slice(0, 12)}… (existing app already gates ${destinationUri})`
+        : `Access app live · aud=${aud.slice(0, 12)}…`,
+      { appId, aud, domain: input.workerHost, deduped: dedupedExisting }
     )
   );
 
@@ -620,6 +636,45 @@ export const ACCESS_WIZARD_TOKEN_URL =
   `&accountId=*` +
   `&zoneId=all` +
   `&name=${encodeURIComponent("Helm")}`;
+
+/**
+ * Look up an existing self-hosted Access app whose destinations cover the
+ * given URI. Returns the first match or null. Used by `runLockdown` to
+ * dedupe across re-runs — instead of failing or duplicating, we reuse the
+ * existing app's `aud` so the user's secrets stay coherent.
+ *
+ * Match is forgiving: legacy apps stored their target as `domain` rather
+ * than `destinations[]`, and CF's destinations URIs sometimes carry a
+ * trailing slash that the caller's host doesn't. We normalize both sides
+ * by stripping the scheme + trailing slash before comparing.
+ */
+async function findAccessAppByDestination(
+  token: string,
+  accountId: string,
+  destinationUri: string,
+  fetchImpl?: typeof fetch
+): Promise<AccessAppResult | null> {
+  const list = await cfCall<Array<AccessAppResult & {
+    domain?: string;
+    destinations?: Array<{ type?: string; uri?: string }>;
+  }>>(token, `/accounts/${accountId}/access/apps?per_page=100`, {
+    method: "GET",
+    fetchImpl
+  });
+  if (!list.success || !list.result || !Array.isArray(list.result)) return null;
+  const normalize = (s: string) =>
+    s.toLowerCase().replace(/^https?:\/\//, "").replace(/\/+$/, "");
+  const target = normalize(destinationUri);
+  for (const app of list.result) {
+    if (Array.isArray(app.destinations)) {
+      for (const d of app.destinations) {
+        if (typeof d.uri === "string" && normalize(d.uri) === target) return app;
+      }
+    }
+    if (typeof app.domain === "string" && normalize(app.domain) === target) return app;
+  }
+  return null;
+}
 
 export const ACCESS_WIZARD_SCOPES = [
   { resource: "Account", permission: "Workers Scripts:Edit" },

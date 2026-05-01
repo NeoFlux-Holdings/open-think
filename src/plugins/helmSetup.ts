@@ -254,23 +254,20 @@ export class HelmSetupPlugin implements AgentPlugin {
       } else {
         extras.push({ kind: "set-helm-internal-token", ok: true, detail: "already set" });
       }
-      // Auto-create R2 bucket.
-      const bucketName = env.R2_BUCKET || `${scriptName}-persist`;
+      // Auto-create R2 bucket. Mirrors runDeploy's collision strategy:
+      // explicit env.R2_BUCKET → reuse on collision; auto-generated
+      // name → suffix `-2`, `-3`, … so we don't bind a fresh agent to
+      // a foreign bucket from a prior install.
+      let bucketName = env.R2_BUCKET || `${scriptName}-persist`;
       if (!env.R2_BUCKET) {
-        const r = await this.ctx.fetch(
-          `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(pickedAccount.id)}/r2/buckets`,
-          {
-            method: "POST",
-            headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
-            body: JSON.stringify({ name: bucketName })
-          }
-        );
-        const text = await r.text();
-        const alreadyExists = !r.ok && text.toLowerCase().includes("already exists");
+        const create = await this.cfCreateR2(token, pickedAccount.id, bucketName, {
+          suffixOnConflict: true
+        });
+        if (create.ok && create.name) bucketName = create.name;
         extras.push({
           kind: "create-r2-bucket",
-          ok: r.ok || alreadyExists,
-          detail: r.ok ? `created ${bucketName}` : alreadyExists ? `reusing ${bucketName}` : `failed: ${text.slice(0, 200)}`
+          ok: create.ok,
+          detail: create.detail
         });
       } else {
         extras.push({ kind: "create-r2-bucket", ok: true, detail: `already configured: ${env.R2_BUCKET}` });
@@ -369,43 +366,85 @@ export class HelmSetupPlugin implements AgentPlugin {
     }
 
     // ---- 4. R2 bucket + WORKSPACE binding ----
-    const bucketName = env.R2_BUCKET || `${scriptName}-persist`;
-    const bucketCreate = await this.cfCreateR2(token, acc, bucketName);
-    steps.push({ kind: `r2 bucket ${bucketName}`, ok: bucketCreate.ok, detail: bucketCreate.detail });
-    if (bucketCreate.ok) {
+    // Idempotency + collision strategy: if WORKSPACE is already bound,
+    // reuse its bucket. Else try to create the canonical name; if a
+    // foreign R2 bucket already owns it (and the user didn't pin
+    // R2_BUCKET explicitly), suffix `-2`, `-3`, … so a fresh agent
+    // doesn't get bound to someone else's bucket.
+    const r2UserExplicit = !!env.R2_BUCKET;
+    const r2Preferred = env.R2_BUCKET || `${scriptName}-persist`;
+    const r2Existing = await this.findExistingBinding(token, acc, scriptName, "r2_bucket", "WORKSPACE");
+    let r2Name: string | undefined;
+    if (r2Existing && typeof r2Existing.bucket_name === "string") {
+      r2Name = r2Existing.bucket_name as string;
+      steps.push({ kind: `r2 bucket ${r2Name}`, ok: true, detail: `WORKSPACE already bound — reusing ${r2Name}` });
+    } else {
+      const bucketCreate = await this.cfCreateR2(token, acc, r2Preferred, {
+        suffixOnConflict: !r2UserExplicit
+      });
+      steps.push({ kind: `r2 bucket`, ok: bucketCreate.ok, detail: bucketCreate.detail });
+      r2Name = bucketCreate.name;
+    }
+    if (r2Name) {
       const patch = await this.cfPatchBinding(token, acc, scriptName, {
-        type: "r2_bucket", name: "WORKSPACE", config: { bucket_name: bucketName }
+        type: "r2_bucket", name: "WORKSPACE", config: { bucket_name: r2Name }
       });
       steps.push({ kind: "binding WORKSPACE (r2)", ok: patch.ok, detail: patch.detail });
-      tomlSnippets.push(`[[r2_buckets]]\nbinding = "WORKSPACE"\nbucket_name = "${bucketName}"`);
-      if (!env.R2_BUCKET) {
-        const r = await this.cfPutSecret(token, acc, scriptName, "R2_BUCKET", bucketName);
+      tomlSnippets.push(`[[r2_buckets]]\nbinding = "WORKSPACE"\nbucket_name = "${r2Name}"`);
+      // Persist the actual bucket name (may differ from preferred when
+      // we suffixed). Update R2_BUCKET secret if it's missing OR if
+      // suffixing changed the name.
+      if (!env.R2_BUCKET || env.R2_BUCKET !== r2Name) {
+        const r = await this.cfPutSecret(token, acc, scriptName, "R2_BUCKET", r2Name);
         steps.push({ kind: "secret R2_BUCKET", ok: r.ok, detail: r.detail });
       }
     }
 
     // ---- 5. D1 PA-stack + DB binding ----
-    const d1Name = `${scriptName}-pa`;
-    const d1Create = await this.cfCreateD1(token, acc, d1Name);
-    steps.push({ kind: `d1 ${d1Name}`, ok: d1Create.ok, detail: d1Create.detail });
-    if (d1Create.uuid) {
+    const d1Existing = await this.findExistingBinding(token, acc, scriptName, "d1", "DB");
+    let d1Name: string | undefined;
+    let d1Uuid: string | undefined;
+    if (d1Existing && typeof d1Existing.database_name === "string" && typeof d1Existing.database_id === "string") {
+      d1Name = d1Existing.database_name as string;
+      d1Uuid = d1Existing.database_id as string;
+      steps.push({ kind: `d1 ${d1Name}`, ok: true, detail: `DB already bound — reusing ${d1Name}` });
+    } else {
+      const d1Preferred = `${scriptName}-pa`;
+      const d1Create = await this.cfCreateD1(token, acc, d1Preferred, { suffixOnConflict: true });
+      steps.push({ kind: `d1`, ok: d1Create.ok, detail: d1Create.detail });
+      d1Name = d1Create.name;
+      d1Uuid = d1Create.uuid;
+    }
+    if (d1Name && d1Uuid) {
       const patch = await this.cfPatchBinding(token, acc, scriptName, {
-        type: "d1", name: "DB", config: { database_name: d1Name, database_id: d1Create.uuid }
+        type: "d1", name: "DB", config: { database_name: d1Name, database_id: d1Uuid }
       });
       steps.push({ kind: "binding DB (d1)", ok: patch.ok, detail: patch.detail });
-      tomlSnippets.push(`[[d1_databases]]\nbinding = "DB"\ndatabase_name = "${d1Name}"\ndatabase_id = "${d1Create.uuid}"`);
+      tomlSnippets.push(`[[d1_databases]]\nbinding = "DB"\ndatabase_name = "${d1Name}"\ndatabase_id = "${d1Uuid}"`);
     }
 
     // ---- 6. KV cache namespace + CACHE binding ----
-    const kvTitle = `${scriptName}-cache`;
-    const kvCreate = await this.cfCreateKv(token, acc, kvTitle);
-    steps.push({ kind: `kv ${kvTitle}`, ok: kvCreate.ok, detail: kvCreate.detail });
-    if (kvCreate.id) {
+    const kvExisting = await this.findExistingBinding(token, acc, scriptName, "kv_namespace", "CACHE");
+    let kvId: string | undefined;
+    let kvTitle: string | undefined;
+    if (kvExisting && typeof kvExisting.namespace_id === "string") {
+      kvId = kvExisting.namespace_id as string;
+      // Worker bindings don't carry the human-readable title; leave
+      // kvTitle undefined and skip the toml snippet's title field.
+      steps.push({ kind: `kv namespace`, ok: true, detail: `CACHE already bound — reusing namespace ${kvId.slice(0, 8)}…` });
+    } else {
+      const kvPreferred = `${scriptName}-cache`;
+      const kvCreate = await this.cfCreateKv(token, acc, kvPreferred, { suffixOnConflict: true });
+      steps.push({ kind: `kv namespace`, ok: kvCreate.ok, detail: kvCreate.detail });
+      kvId = kvCreate.id;
+      kvTitle = kvCreate.title;
+    }
+    if (kvId) {
       const patch = await this.cfPatchBinding(token, acc, scriptName, {
-        type: "kv_namespace", name: "CACHE", config: { namespace_id: kvCreate.id }
+        type: "kv_namespace", name: "CACHE", config: { namespace_id: kvId }
       });
       steps.push({ kind: "binding CACHE (kv)", ok: patch.ok, detail: patch.detail });
-      tomlSnippets.push(`[[kv_namespaces]]\nbinding = "CACHE"\nid = "${kvCreate.id}"`);
+      tomlSnippets.push(`[[kv_namespaces]]\nbinding = "CACHE"\nid = "${kvId}"`);
     }
 
     // ---- 7. ENABLED_PLUGINS plain_text binding (merge in PA-stack plugins) ----
@@ -461,25 +500,29 @@ export class HelmSetupPlugin implements AgentPlugin {
       steps.push({ kind: "artifacts repo", ok: true, detail: "skipped (input.skipArtifacts)" });
     } else {
       const namespace = o.artifactsNamespace || env.ARTIFACTS_NAMESPACE || "default";
-      const repoName = o.artifactsRepo || env.ARTIFACTS_REPO || scriptName;
+      const userExplicitRepo = !!(o.artifactsRepo || env.ARTIFACTS_REPO);
+      const repoPreferred = o.artifactsRepo || env.ARTIFACTS_REPO || scriptName;
       const bootstrapUrl = o.artifactsBootstrapUrl || env.ARTIFACTS_BOOTSTRAP_URL || "";
       const artifacts = await this.cfEnsureArtifactsRepo(
         token,
         acc,
         namespace,
-        repoName,
-        bootstrapUrl
+        repoPreferred,
+        bootstrapUrl,
+        { suffixOnConflict: !userExplicitRepo }
       );
       steps.push({
-        kind: `artifacts repo ${namespace}/${repoName}`,
+        kind: `artifacts repo ${namespace}/${artifacts.name ?? repoPreferred}`,
         ok: artifacts.ok,
         detail: artifacts.detail
       });
-      if (artifacts.ok && artifacts.remote) {
+      if (artifacts.ok && artifacts.remote && artifacts.name) {
         artifactsRemote = artifacts.remote;
-        // Only persist the secrets if they're not already set — avoid
-        // pointless writes that trigger redeploy churn.
-        if (!env.ARTIFACTS_REPO) {
+        const repoName = artifacts.name;
+        // Persist ARTIFACTS_REPO when missing OR when suffixing
+        // produced a name that differs from what's stored. Skip the
+        // write when nothing changed to avoid redeploy churn.
+        if (!env.ARTIFACTS_REPO || env.ARTIFACTS_REPO !== repoName) {
           const r = await this.cfPutSecret(token, acc, scriptName, "ARTIFACTS_REPO", repoName);
           steps.push({ kind: "secret ARTIFACTS_REPO", ok: r.ok, detail: r.detail });
         } else {
@@ -527,8 +570,10 @@ export class HelmSetupPlugin implements AgentPlugin {
 
   /**
    * Ensure the canonical Cloudflare Artifacts repo exists for this Worker.
-   * Idempotent — probes first, falls back to either /import (when a
-   * bootstrap URL is supplied) or /repos (empty create) when missing.
+   * Probes first; on existence, behavior depends on `suffixOnConflict`:
+   *   - false (legacy / explicit name): reuse the existing repo silently
+   *   - true (auto-generated name): suffix `-2`, `-3`, … up to maxAttempts
+   *     so we don't bind a fresh agent to a foreign repo
    * Reports gracefully when the API token lacks Artifacts:Edit scope so
    * the rest of the deploy chain still finishes.
    */
@@ -536,71 +581,98 @@ export class HelmSetupPlugin implements AgentPlugin {
     token: string,
     accId: string,
     namespace: string,
-    repoName: string,
-    bootstrapUrl: string
-  ): Promise<{ ok: boolean; detail: string; remote?: string; bootstrapped?: boolean }> {
+    preferredName: string,
+    bootstrapUrl: string,
+    opts: { suffixOnConflict?: boolean; maxAttempts?: number } = {}
+  ): Promise<{ ok: boolean; name?: string; detail: string; remote?: string; bootstrapped?: boolean; suffixed?: boolean; reused?: boolean }> {
     if (!this.ctx) return { ok: false, detail: "no ctx" };
     const base = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accId)}/artifacts/namespaces/${encodeURIComponent(namespace)}`;
-    // Probe.
-    const probe = await this.ctx.fetch(`${base}/repos/${encodeURIComponent(repoName)}`, {
-      headers: { Authorization: `Bearer ${token}`, accept: "application/json" }
-    });
-    if (probe.ok) {
-      const j = (await probe.json().catch(() => ({}))) as {
-        success?: boolean;
-        result?: { remote?: string };
-      };
-      if (j.success && j.result?.remote) {
-        return { ok: true, detail: "already exists — reusing", remote: j.result.remote };
+    const maxAttempts = opts.maxAttempts ?? 10;
+
+    for (let i = 0; i < maxAttempts; i++) {
+      const candidate = i === 0 ? preferredName : `${preferredName}-${i + 1}`;
+      // Probe.
+      const probe = await this.ctx.fetch(`${base}/repos/${encodeURIComponent(candidate)}`, {
+        headers: { Authorization: `Bearer ${token}`, accept: "application/json" }
+      });
+      if (probe.ok) {
+        const j = (await probe.json().catch(() => ({}))) as {
+          success?: boolean;
+          result?: { remote?: string };
+        };
+        if (j.success && j.result?.remote) {
+          if (opts.suffixOnConflict) {
+            // Foreign repo at the canonical name — try next suffix.
+            continue;
+          }
+          // Explicit name (or first attempt with no suffix policy) → reuse.
+          return {
+            ok: true,
+            name: candidate,
+            detail: i === 0 ? "already exists — reusing" : `${candidate} already exists — reusing`,
+            remote: j.result.remote,
+            reused: true
+          };
+        }
+      } else if (probe.status === 403) {
+        return {
+          ok: false,
+          detail:
+            "skipped — CLOUDFLARE_API_TOKEN lacks the Artifacts:Edit scope. Edit the token at dash → Profile → API Tokens, add the scope, retry."
+        };
+      } else if (probe.status >= 500) {
+        const t = await probe.text();
+        return { ok: false, detail: `probe failed (${probe.status}): ${t.slice(0, 200)}` };
       }
-    } else if (probe.status === 403) {
-      // Token doesn't have Artifacts:Edit scope. Don't fail the deploy —
-      // just tell the user how to wire it.
-      return {
-        ok: false,
-        detail:
-          "skipped — CLOUDFLARE_API_TOKEN lacks the Artifacts:Edit scope. Edit the token at dash → Profile → API Tokens, add the scope, retry."
-      };
-    } else if (probe.status === 404) {
-      // Continue to create path.
-    } else if (probe.status >= 500) {
-      const t = await probe.text();
-      return { ok: false, detail: `probe failed (${probe.status}): ${t.slice(0, 200)}` };
+      // probe was 404 OR success-with-no-remote → create at this candidate.
+      const url = bootstrapUrl
+        ? `${base}/repos/${encodeURIComponent(candidate)}/import`
+        : `${base}/repos`;
+      const body = bootstrapUrl
+        ? { url: bootstrapUrl, branch: "main", depth: 100 }
+        : { name: candidate, default_branch: "main", description: `Open Think — ${candidate}` };
+      const create = await this.ctx.fetch(url, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      const text = await create.text();
+      if (!create.ok && create.status === 403) {
+        return {
+          ok: false,
+          detail:
+            "skipped — token rejected by Artifacts API. Add the Artifacts:Edit scope and retry."
+        };
+      }
+      // CF can return 409 (or specific message) when repo is already
+      // importing/forking — treat as collision and try next suffix.
+      if (!create.ok) {
+        const lower = text.toLowerCase();
+        const collision =
+          create.status === 409 ||
+          lower.includes("already exists") ||
+          lower.includes("already importing") ||
+          lower.includes("name is taken");
+        if (collision && opts.suffixOnConflict) continue;
+        return { ok: false, detail: `create failed (${create.status}): ${text.slice(0, 200)}` };
+      }
+      try {
+        const j = JSON.parse(text) as { result?: { remote?: string } };
+        return {
+          ok: true,
+          name: candidate,
+          detail:
+            (bootstrapUrl ? `imported from ${bootstrapUrl}` : "created (empty)") +
+            (i > 0 ? ` (canonical name was taken — suffixed -${i + 1})` : ""),
+          remote: j.result?.remote,
+          bootstrapped: !!bootstrapUrl,
+          suffixed: i > 0
+        };
+      } catch {
+        return { ok: true, name: candidate, detail: "created (response unparsable)" };
+      }
     }
-    // Create (empty or imported).
-    const url = bootstrapUrl
-      ? `${base}/repos/${encodeURIComponent(repoName)}/import`
-      : `${base}/repos`;
-    const body = bootstrapUrl
-      ? { url: bootstrapUrl, branch: "main", depth: 100 }
-      : { name: repoName, default_branch: "main", description: `Open Think — ${repoName}` };
-    const create = await this.ctx.fetch(url, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
-      body: JSON.stringify(body)
-    });
-    const text = await create.text();
-    if (!create.ok && create.status === 403) {
-      return {
-        ok: false,
-        detail:
-          "skipped — token rejected by Artifacts API. Add the Artifacts:Edit scope and retry."
-      };
-    }
-    if (!create.ok) {
-      return { ok: false, detail: `create failed (${create.status}): ${text.slice(0, 200)}` };
-    }
-    try {
-      const j = JSON.parse(text) as { result?: { remote?: string } };
-      return {
-        ok: true,
-        detail: bootstrapUrl ? `imported from ${bootstrapUrl}` : "created (empty)",
-        remote: j.result?.remote,
-        bootstrapped: !!bootstrapUrl
-      };
-    } catch {
-      return { ok: true, detail: "created (response unparsable)" };
-    }
+    return { ok: false, detail: `${preferredName} and ${maxAttempts - 1} suffix variants all collided — try a different base name` };
   }
 
   private randomHex(bytes: number): string {
@@ -663,81 +735,187 @@ export class HelmSetupPlugin implements AgentPlugin {
     return { ok: true, id: j.result[0].id };
   }
 
-  private async cfCreateR2(token: string, accId: string, name: string): Promise<{ ok: boolean; detail: string }> {
-    if (!this.ctx) return { ok: false, detail: "no ctx" };
+  /**
+   * Look up an existing binding on the live Worker. Returns null when
+   * Worker doesn't exist, the token can't read settings, or the binding
+   * isn't bound. Used by runDeploy to short-circuit creates when we're
+   * re-running against an already-provisioned Worker.
+   */
+  private async findExistingBinding(
+    token: string,
+    accId: string,
+    scriptName: string,
+    type: string,
+    bindingName: string
+  ): Promise<Record<string, unknown> | null> {
+    if (!this.ctx) return null;
     const r = await this.ctx.fetch(
-      `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accId)}/r2/buckets`,
-      {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
-        body: JSON.stringify({ name })
-      }
+      `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accId)}/workers/scripts/${encodeURIComponent(scriptName)}/settings`,
+      { headers: { Authorization: `Bearer ${token}`, accept: "application/json" } }
     );
-    const text = await r.text();
-    const exists = !r.ok && text.toLowerCase().includes("already exists");
-    if (r.ok) return { ok: true, detail: "created" };
-    if (exists) return { ok: true, detail: "already exists — reusing" };
-    return { ok: false, detail: `failed (${r.status}): ${text.slice(0, 200)}` };
+    if (!r.ok) return null;
+    const j = (await r.json().catch(() => ({}))) as {
+      result?: { bindings?: Array<Record<string, unknown>> };
+    };
+    return (j.result?.bindings ?? []).find((b) => b.type === type && b.name === bindingName) ?? null;
   }
 
-  private async cfCreateD1(token: string, accId: string, name: string): Promise<{ ok: boolean; uuid?: string; detail: string }> {
+  /**
+   * Create an R2 bucket. With `suffixOnConflict`, retries with `-2`,
+   * `-3`, … up to maxAttempts when the canonical name is taken by a
+   * foreign resource — the user is deploying a NEW agent in an account
+   * with prior installs, and we'd rather take a fresh name than silently
+   * bind to someone else's bucket. Without the flag (legacy default for
+   * user-explicit names), reuses on collision.
+   */
+  private async cfCreateR2(
+    token: string,
+    accId: string,
+    preferredName: string,
+    opts: { suffixOnConflict?: boolean; maxAttempts?: number } = {}
+  ): Promise<{ ok: boolean; name?: string; detail: string; suffixed?: boolean; reused?: boolean }> {
     if (!this.ctx) return { ok: false, detail: "no ctx" };
-    const r = await this.ctx.fetch(
-      `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accId)}/d1/database`,
-      {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
-        body: JSON.stringify({ name })
-      }
-    );
-    const text = await r.text();
-    if (r.ok) {
-      try {
-        const j = JSON.parse(text) as { result?: { uuid?: string } };
-        return { ok: true, uuid: j.result?.uuid, detail: "created" };
-      } catch {/* noop */}
-    }
-    if (text.toLowerCase().includes("already")) {
-      // Look it up by name.
-      const lookup = await this.ctx.fetch(
-        `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accId)}/d1/database?name=${encodeURIComponent(name)}`,
-        { headers: { Authorization: `Bearer ${token}` } }
+    const maxAttempts = opts.maxAttempts ?? 10;
+    for (let i = 0; i < maxAttempts; i++) {
+      const candidate = i === 0 ? preferredName : `${preferredName}-${i + 1}`;
+      const r = await this.ctx.fetch(
+        `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accId)}/r2/buckets`,
+        {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: JSON.stringify({ name: candidate })
+        }
       );
-      const lj = (await lookup.json().catch(() => ({}))) as { result?: Array<{ uuid: string }> };
-      const existing = lj.result?.[0]?.uuid;
-      if (existing) return { ok: true, uuid: existing, detail: "already exists — reusing" };
+      const text = await r.text();
+      if (r.ok) {
+        return {
+          ok: true,
+          name: candidate,
+          detail: i === 0 ? `created ${candidate}` : `created ${candidate} (canonical name was taken — suffixed -${i + 1})`,
+          suffixed: i > 0
+        };
+      }
+      const exists = text.toLowerCase().includes("already exists");
+      if (!exists) return { ok: false, detail: `failed (${r.status}): ${text.slice(0, 200)}` };
+      if (!opts.suffixOnConflict) {
+        // Legacy contract: explicit name + collision = reuse silently.
+        return { ok: true, name: candidate, detail: `${candidate} already exists — reusing`, reused: true };
+      }
+      // suffixOnConflict + collision → try next suffix
     }
-    return { ok: false, detail: `failed (${r.status}): ${text.slice(0, 200)}` };
+    return { ok: false, detail: `${preferredName} and ${maxAttempts - 1} suffix variants all collided — try a different base name` };
   }
 
-  private async cfCreateKv(token: string, accId: string, title: string): Promise<{ ok: boolean; id?: string; detail: string }> {
+  /**
+   * Create a D1 database. See `cfCreateR2` for the `suffixOnConflict`
+   * semantics. On a non-suffix reuse path we still look up the existing
+   * uuid by name so callers get a usable id back.
+   */
+  private async cfCreateD1(
+    token: string,
+    accId: string,
+    preferredName: string,
+    opts: { suffixOnConflict?: boolean; maxAttempts?: number } = {}
+  ): Promise<{ ok: boolean; name?: string; uuid?: string; detail: string; suffixed?: boolean; reused?: boolean }> {
     if (!this.ctx) return { ok: false, detail: "no ctx" };
-    const r = await this.ctx.fetch(
-      `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accId)}/storage/kv/namespaces`,
-      {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
-        body: JSON.stringify({ title })
-      }
-    );
-    const text = await r.text();
-    if (r.ok) {
-      try {
-        const j = JSON.parse(text) as { result?: { id?: string } };
-        return { ok: true, id: j.result?.id, detail: "created" };
-      } catch {/* noop */}
-    }
-    if (text.toLowerCase().includes("already exists") || text.toLowerCase().includes("duplicate")) {
-      // List + find by title.
-      const list = await this.ctx.fetch(
-        `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accId)}/storage/kv/namespaces?per_page=100`,
-        { headers: { Authorization: `Bearer ${token}` } }
+    const maxAttempts = opts.maxAttempts ?? 10;
+    for (let i = 0; i < maxAttempts; i++) {
+      const candidate = i === 0 ? preferredName : `${preferredName}-${i + 1}`;
+      const r = await this.ctx.fetch(
+        `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accId)}/d1/database`,
+        {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: JSON.stringify({ name: candidate })
+        }
       );
-      const lj = (await list.json().catch(() => ({}))) as { result?: Array<{ id: string; title: string }> };
-      const existing = lj.result?.find((n) => n.title === title)?.id;
-      if (existing) return { ok: true, id: existing, detail: "already exists — reusing" };
+      const text = await r.text();
+      if (r.ok) {
+        try {
+          const j = JSON.parse(text) as { result?: { uuid?: string } };
+          return {
+            ok: true,
+            name: candidate,
+            uuid: j.result?.uuid,
+            detail: i === 0 ? `created ${candidate}` : `created ${candidate} (canonical name was taken — suffixed -${i + 1})`,
+            suffixed: i > 0
+          };
+        } catch {
+          /* fall through */
+        }
+      }
+      const exists = text.toLowerCase().includes("already");
+      if (!exists) return { ok: false, detail: `failed (${r.status}): ${text.slice(0, 200)}` };
+      if (!opts.suffixOnConflict) {
+        // Legacy: look up existing by name and return its uuid.
+        const lookup = await this.ctx.fetch(
+          `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accId)}/d1/database?name=${encodeURIComponent(candidate)}`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        const lj = (await lookup.json().catch(() => ({}))) as { result?: Array<{ uuid: string; name: string }> };
+        const existing = lj.result?.find((d) => d.name === candidate)?.uuid ?? lj.result?.[0]?.uuid;
+        if (existing) return { ok: true, name: candidate, uuid: existing, detail: `${candidate} already exists — reusing`, reused: true };
+        return { ok: false, detail: `${candidate} already exists but lookup failed` };
+      }
+      // suffixOnConflict → try next
     }
-    return { ok: false, detail: `failed (${r.status}): ${text.slice(0, 200)}` };
+    return { ok: false, detail: `${preferredName} and ${maxAttempts - 1} suffix variants all collided — try a different base name` };
+  }
+
+  /**
+   * Create a KV namespace. See `cfCreateR2` for the `suffixOnConflict`
+   * semantics.
+   */
+  private async cfCreateKv(
+    token: string,
+    accId: string,
+    preferredTitle: string,
+    opts: { suffixOnConflict?: boolean; maxAttempts?: number } = {}
+  ): Promise<{ ok: boolean; title?: string; id?: string; detail: string; suffixed?: boolean; reused?: boolean }> {
+    if (!this.ctx) return { ok: false, detail: "no ctx" };
+    const maxAttempts = opts.maxAttempts ?? 10;
+    for (let i = 0; i < maxAttempts; i++) {
+      const candidate = i === 0 ? preferredTitle : `${preferredTitle}-${i + 1}`;
+      const r = await this.ctx.fetch(
+        `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accId)}/storage/kv/namespaces`,
+        {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: JSON.stringify({ title: candidate })
+        }
+      );
+      const text = await r.text();
+      if (r.ok) {
+        try {
+          const j = JSON.parse(text) as { result?: { id?: string } };
+          return {
+            ok: true,
+            title: candidate,
+            id: j.result?.id,
+            detail: i === 0 ? `created ${candidate}` : `created ${candidate} (canonical title was taken — suffixed -${i + 1})`,
+            suffixed: i > 0
+          };
+        } catch {
+          /* fall through */
+        }
+      }
+      const lower = text.toLowerCase();
+      const exists = lower.includes("already exists") || lower.includes("duplicate");
+      if (!exists) return { ok: false, detail: `failed (${r.status}): ${text.slice(0, 200)}` };
+      if (!opts.suffixOnConflict) {
+        // Legacy: list + match by title.
+        const list = await this.ctx.fetch(
+          `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accId)}/storage/kv/namespaces?per_page=100`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        const lj = (await list.json().catch(() => ({}))) as { result?: Array<{ id: string; title: string }> };
+        const existing = lj.result?.find((n) => n.title === candidate)?.id;
+        if (existing) return { ok: true, title: candidate, id: existing, detail: `${candidate} already exists — reusing`, reused: true };
+        return { ok: false, detail: `${candidate} already exists but lookup failed` };
+      }
+      // suffixOnConflict → try next
+    }
+    return { ok: false, detail: `${preferredTitle} and ${maxAttempts - 1} suffix variants all collided — try a different base name` };
   }
 
   private async cfPutSecret(token: string, accId: string, scriptName: string, name: string, text: string): Promise<{ ok: boolean; detail: string }> {

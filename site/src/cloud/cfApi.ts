@@ -180,6 +180,47 @@ export async function ensureD1Database(
   return created;
 }
 
+/**
+ * Provision a D1 database with auto-suffix on collision. Tries `baseName`,
+ * then `baseName-2`, `baseName-3`, …, up to `maxAttempts` (default 10).
+ * Use this when the database name is auto-derived (e.g., from the Worker
+ * name) and the account may already have an unrelated DB at that name
+ * from a prior install.
+ *
+ * Returns the actual name used + the database uuid. Different from
+ * `ensureD1Database` which always reuses on collision (intended for
+ * user-explicit names where reuse is the right call).
+ */
+export async function ensureD1WithSuffix(
+  token: string,
+  accountId: string,
+  baseName: string,
+  options: FetchOptions & { maxAttempts?: number } = {}
+): Promise<CfApiResult<D1Database> & { actualName?: string; suffixed?: boolean }> {
+  const maxAttempts = options.maxAttempts ?? 10;
+  for (let i = 0; i < maxAttempts; i++) {
+    const candidate = i === 0 ? baseName : `${baseName}-${i + 1}`;
+    const created = await createD1Database(token, accountId, candidate, options);
+    if (created.success) {
+      return { ...created, actualName: candidate, suffixed: i > 0 };
+    }
+    const errorMsg = (created.errors?.[0]?.message ?? "").toLowerCase();
+    const errorCode = created.errors?.[0]?.code;
+    const looksLikeNameTaken =
+      errorMsg.includes("already") ||
+      errorMsg.includes("exists") ||
+      errorMsg.includes("name is taken") ||
+      errorCode === 7501 ||
+      errorCode === 7402;
+    if (!looksLikeNameTaken) return created;
+    // collision — try next suffix
+  }
+  return {
+    success: false,
+    errors: [{ code: 7501, message: `${baseName} and ${maxAttempts - 1} suffix variants all collided — try a different base name` }]
+  };
+}
+
 /* ---------- Migration shape transformation ---------- */
 
 /**
