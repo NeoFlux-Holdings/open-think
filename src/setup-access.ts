@@ -572,27 +572,41 @@ export function deriveScriptName(host: string): string | null {
  * work for the lockdown half — helm-setup-deploy gracefully reports any
  * 403s on individual provisioning steps.
  *
- * IMPORTANT: CF's dash expects a URL-encoded JSON array of `{key, type}`
- * objects with SHORT keys (`workers_scripts`, not the dotted form). We
- * used to pass `com.cloudflare.api.account.workers.scripts:edit` which
- * the dash silently dropped — users got blank custom-token forms and
- * thought the link was broken. See:
- * https://developers.cloudflare.com/fundamentals/api/how-to/account-owned-token-template/
+ * IMPORTANT — CF's dash needs FOUR query params, not just one, to actually
+ * pre-populate the form:
+ *
+ *   permissionGroupKeys = URL-encoded JSON array of {key, type} objects
+ *                          with SHORT keys (`workers_scripts`, not the
+ *                          legacy dotted form which is silently dropped)
+ *   accountId           = "*"     pre-selects "All accounts"
+ *   zoneId              = "all"   pre-selects "All zones"
+ *   name                = string  pre-fills the token-name field
+ *
+ * Without the last three the dash opens an empty custom-token page even
+ * when permissionGroupKeys is well-formed — the URL appears broken to
+ * the user. See:
+ *   https://developers.cloudflare.com/fundamentals/api/how-to/account-owned-token-template/
+ *   (and a community thread documenting the full URL contract)
  */
+const ACCESS_WIZARD_TOKEN_PERMISSIONS = encodeURIComponent(
+  JSON.stringify([
+    { key: "workers_scripts", type: "edit" },
+    { key: "access", type: "edit" },
+    { key: "d1", type: "edit" },
+    { key: "workers_r2_storage", type: "edit" },
+    { key: "workers_kv_storage", type: "edit" },
+    { key: "artifacts", type: "edit" },
+    { key: "account_settings", type: "read" },
+    { key: "user_details", type: "read" }
+  ])
+);
+
 export const ACCESS_WIZARD_TOKEN_URL =
-  "https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=" +
-  encodeURIComponent(
-    JSON.stringify([
-      { key: "workers_scripts", type: "edit" },
-      { key: "access", type: "edit" },
-      { key: "d1", type: "edit" },
-      { key: "workers_r2_storage", type: "edit" },
-      { key: "workers_kv_storage", type: "edit" },
-      { key: "artifacts", type: "edit" },
-      { key: "account_settings", type: "read" },
-      { key: "user_details", type: "read" }
-    ])
-  );
+  "https://dash.cloudflare.com/profile/api-tokens" +
+  `?permissionGroupKeys=${ACCESS_WIZARD_TOKEN_PERMISSIONS}` +
+  `&accountId=*` +
+  `&zoneId=all` +
+  `&name=${encodeURIComponent("Helm")}`;
 
 export const ACCESS_WIZARD_SCOPES = [
   { resource: "Account", permission: "Workers Scripts:Edit" },

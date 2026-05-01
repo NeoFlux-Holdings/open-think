@@ -116,24 +116,34 @@ export const TOKEN_SCOPES = [
 
 /**
  * Pre-filled URL the deploy page links to. CF's dash supports query-string
- * pre-population for custom-token templates, but the format is a
- * URL-encoded JSON array of `{key, type}` objects using the SHORT keys
- * (`d1`, not `com.cloudflare.api.account.d1`). The dotted-string format
- * we used to send was silently dropped by the dash, leaving users with
- * tokens missing the requested scopes — most visibly, the D1 perm fell
- * out and `POST /accounts/{id}/d1/database` failed with code 9109
- * "Authentication error" even when the user thought they'd added it.
+ * pre-population for custom-token templates, but you have to send FOUR
+ * query params, not just one:
+ *
+ *   permissionGroupKeys = URL-encoded JSON array of {key, type} objects
+ *                         using SHORT keys (`d1`, not the legacy dotted
+ *                         form which the dash silently drops)
+ *   accountId           = "*"     pre-selects "All accounts"
+ *   zoneId              = "all"   pre-selects "All zones"
+ *   name                = string  pre-fills the token-name field
+ *
+ * Without the last three, the dash opens an empty custom-token page even
+ * with a well-formed permissionGroupKeys — the URL appears broken.
  *
  * Reference: https://developers.cloudflare.com/fundamentals/api/how-to/account-owned-token-template/
  */
+const TOKEN_TEMPLATE_PERMISSIONS = encodeURIComponent(
+  JSON.stringify([
+    { key: "workers_scripts", type: "edit" },
+    { key: "d1", type: "edit" },
+    { key: "access", type: "edit" },
+    { key: "account_settings", type: "read" },
+    { key: "user_details", type: "read" }
+  ])
+);
+
 export const TOKEN_TEMPLATE_URL =
-  "https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=" +
-  encodeURIComponent(
-    JSON.stringify([
-      { key: "workers_scripts", type: "edit" },
-      { key: "d1", type: "edit" },
-      { key: "access", type: "edit" },
-      { key: "account_settings", type: "read" },
-      { key: "user_details", type: "read" }
-    ])
-  );
+  "https://dash.cloudflare.com/profile/api-tokens" +
+  `?permissionGroupKeys=${TOKEN_TEMPLATE_PERMISSIONS}` +
+  `&accountId=*` +
+  `&zoneId=all` +
+  `&name=${encodeURIComponent("Open Think")}`;

@@ -435,11 +435,10 @@ describe("ACCESS_WIZARD_TOKEN_URL + scopes", () => {
     // The legacy dotted format `com.cloudflare.api.account.*:edit` is
     // silently dropped by the dash, leaving users with empty token forms.
     expect(ACCESS_WIZARD_TOKEN_URL).not.toMatch(/com\.cloudflare\.api/);
-    const queryStart = ACCESS_WIZARD_TOKEN_URL.indexOf("permissionGroupKeys=");
-    expect(queryStart).toBeGreaterThan(-1);
-    const encoded = ACCESS_WIZARD_TOKEN_URL.slice(queryStart + "permissionGroupKeys=".length);
-    const decoded = decodeURIComponent(encoded);
-    const parsed = JSON.parse(decoded) as Array<{ key: string; type: string }>;
+    const params = new URL(ACCESS_WIZARD_TOKEN_URL).searchParams;
+    const raw = params.get("permissionGroupKeys");
+    expect(raw).not.toBeNull();
+    const parsed = JSON.parse(raw!) as Array<{ key: string; type: string }>;
     expect(parsed).toEqual([
       { key: "workers_scripts", type: "edit" },
       { key: "access", type: "edit" },
@@ -450,6 +449,15 @@ describe("ACCESS_WIZARD_TOKEN_URL + scopes", () => {
       { key: "account_settings", type: "read" },
       { key: "user_details", type: "read" }
     ]);
+  });
+  it("includes the accountId/zoneId/name params CF's dash needs to actually pre-populate the form", () => {
+    // Empirically the CF dash only honors the permission template when
+    // ALL of these are present — without them, users land on an empty
+    // custom-token page even though the link looks right.
+    const params = new URL(ACCESS_WIZARD_TOKEN_URL).searchParams;
+    expect(params.get("accountId")).toBe("*");
+    expect(params.get("zoneId")).toBe("all");
+    expect(params.get("name")).toBe("Helm");
   });
   it("scope list mirrors the URL", () => {
     expect(ACCESS_WIZARD_SCOPES.length).toBe(8);

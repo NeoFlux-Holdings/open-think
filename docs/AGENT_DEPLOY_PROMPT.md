@@ -89,21 +89,29 @@ EXECUTION GUIDANCE (for paths 3 + 4):
 
   Step A: Token creation
     Direct the user to:
-    https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=%5B%7B%22key%22%3A%22workers_scripts%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22d1%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22access%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22account_settings%22%2C%22type%22%3A%22read%22%7D%2C%7B%22key%22%3A%22user_details%22%2C%22type%22%3A%22read%22%7D%5D
-    (CF's URL parser expects a URL-encoded JSON array of {key, type} objects
-    with the SHORT keys — using the older `com.cloudflare.api.account.*:edit`
-    dotted form caused the dash to silently drop every scope, leaving users
-    with empty token forms and "auth error 9109" later when D1 tried to call
-    /accounts/{id}/d1/database without the perm.)
+    https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=%5B%7B%22key%22%3A%22workers_scripts%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22access%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22d1%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22workers_r2_storage%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22workers_kv_storage%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22artifacts%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22account_settings%22%2C%22type%22%3A%22read%22%7D%2C%7B%22key%22%3A%22user_details%22%2C%22type%22%3A%22read%22%7D%5D&accountId=*&zoneId=all&name=Helm
+    (CF's URL parser expects FOUR query params, not just one:
+       - permissionGroupKeys = URL-encoded JSON array of {key, type} with
+         SHORT keys (`workers_scripts`, not the legacy dotted form which
+         the dash silently drops)
+       - accountId=* — pre-selects "All accounts"
+       - zoneId=all — pre-selects "All zones"
+       - name=Helm — pre-fills the token-name field
+     Without the last three, the dash opens an empty custom-token page
+     even when permissionGroupKeys is well-formed.)
     This URL pre-fills the EXACT scopes Open Think needs:
-      - Workers Scripts:Edit  (key: workers_scripts)
-      - D1:Edit               (key: d1)
-      - Access: Apps and Policies:Edit  (key: access)
-      - Account Settings:Read (key: account_settings)
-      - User Details:Read     (key: user_details)
+      - Workers Scripts:Edit         (key: workers_scripts)
+      - Access: Apps and Policies:Edit (key: access)
+      - D1:Edit                      (key: d1)
+      - Workers R2 Storage:Edit      (key: workers_r2_storage)
+      - Workers KV Storage:Edit      (key: workers_kv_storage)
+      - Artifacts:Edit               (key: artifacts)
+      - Account Settings:Read        (key: account_settings)
+      - User Details:Read            (key: user_details)
     Tell them to click "Continue to summary" → "Create token" → copy the value.
-    Sanity check: the create-token form should show all 5 perms pre-filled.
-    If only 0–4 show, the link parser failed — fall back to manual entry.
+    Sanity check: the create-token form should show all 8 perms pre-filled
+    AND the token-name field should already say "Helm". If the form is empty
+    or shows < 8 perms, the link parser failed — fall back to manual entry.
 
   Step B: Browser deploy
     Open https://beta.open-think.app/deploy/cloud
