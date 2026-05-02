@@ -364,13 +364,30 @@ export function renderCloudDeploy(): string {
     }
   })();
 
-  // (The legacy workers.dev preemptive warning was removed — CF's modern
-  // Access apps API takes a destinations array which doesn't run the
-  // zone-ownership validation that historically rejected *.workers.dev.
-  // If a 403 still happens for some account-specific reason, the recovery
-  // text in deployFlow.ts surfaces actionable next steps.)
+  // Defensive: fail loudly if any wired-up element is missing instead of
+  // silently failing somewhere downstream. If the page renders without
+  // verify-btn / verify-out, every later listener attaches to null and
+  // blows up at click time with no visible feedback — exactly the
+  // "nothing happens when I click" UX the user hit.
+  const requiredEls = {
+    tokenInput, verifyBtn, verifyOut, step2, step3, accountSelect,
+    workerInput, ownerInput, deployBtn, stepsList, out, wranglerPre,
+    cmdsPre, urlSpan
+  };
+  for (const [k, el] of Object.entries(requiredEls)) {
+    if (!el) {
+      console.error('[deploy] required element missing: ' + k + ' — page is broken; reload or report');
+      const banner = document.createElement('div');
+      banner.style.cssText = 'background:#fef2f2;color:#991b1b;padding:12px;margin:12px 0;border-left:3px solid #dc2626;font-family:monospace;';
+      banner.textContent = 'Deploy form broken: missing element #' + k + '. Refresh the page; if the issue persists, file a bug.';
+      document.body.prepend(banner);
+      return;
+    }
+  }
+  console.info('[deploy] form ready · ' + Object.keys(requiredEls).length + ' elements wired');
 
   verifyBtn.addEventListener('click', async () => {
+    console.info('[deploy] verify clicked');
     const token = tokenInput.value.trim();
     if (!token) {
       verifyOut.textContent = 'paste a token first';
@@ -384,6 +401,22 @@ export function renderCloudDeploy(): string {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ token })
       });
+      // Surface non-JSON / non-200 cleanly. The previous code blindly
+      // called r.json() and a 502/HTML response would throw with no
+      // visible feedback.
+      if (!r.ok) {
+        const body = await r.text();
+        verifyOut.textContent = 'verify failed (' + r.status + '): ' + (body.slice(0, 200) || r.statusText);
+        console.error('[deploy] verify HTTP ' + r.status + ':', body.slice(0, 500));
+        return;
+      }
+      const ct = r.headers.get('content-type') || '';
+      if (!ct.includes('json')) {
+        const body = await r.text();
+        verifyOut.textContent = 'verify failed: server returned ' + ct + ' (expected JSON)';
+        console.error('[deploy] non-JSON response from /api/cloud/verify-token:', body.slice(0, 500));
+        return;
+      }
       const data = await r.json();
       if (!data.ok) {
         verifyOut.textContent = 'verify failed: ' + (data.error || 'unknown');
@@ -402,6 +435,7 @@ export function renderCloudDeploy(): string {
       step2.scrollIntoView({ behavior: 'smooth', block: 'start' });
     } catch (err) {
       verifyOut.textContent = 'error: ' + (err && err.message ? err.message : String(err));
+      console.error('[deploy] verify threw:', err);
     } finally {
       verifyBtn.disabled = false;
     }

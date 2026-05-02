@@ -122,11 +122,22 @@ export interface DeployResponse {
  * Required scopes for the CF API token. We surface this list to the user
  * verbatim and link them to the dashboard's "Create custom token" page
  * pre-filled with these permissions.
+ *
+ * The deployed Worker uses this same token to self-administer (run
+ * cf-* skills, helm-setup-deploy, helm-artifacts-*, the lockdown wizard
+ * post-deploy), so it has to cover the full provisioning chain — not
+ * just what the deploy form itself calls. R2/KV/Artifacts edit make the
+ * difference between "Worker deploys but can't run /setup/auto" and
+ * "Worker deploys and self-administers cleanly".
  */
 export const TOKEN_SCOPES = [
   { resource: "Account", permission: "Workers Scripts:Edit" },
-  { resource: "Account", permission: "D1:Edit" },
   { resource: "Account", permission: "Access: Apps and Policies:Edit" },
+  { resource: "Account", permission: "Cloudflare Zero Trust:Read" },
+  { resource: "Account", permission: "D1:Edit" },
+  { resource: "Account", permission: "Workers R2 Storage:Edit" },
+  { resource: "Account", permission: "Workers KV Storage:Edit" },
+  { resource: "Account", permission: "Artifacts:Edit" },
   { resource: "Account", permission: "Account Settings:Read" },
   { resource: "User", permission: "User Details:Read" }
 ] as const;
@@ -151,8 +162,15 @@ export const TOKEN_SCOPES = [
 const TOKEN_TEMPLATE_PERMISSIONS = encodeURIComponent(
   JSON.stringify([
     { key: "workers_scripts", type: "edit" },
-    { key: "d1", type: "edit" },
     { key: "access", type: "edit" },
+    // cloudflare_zero_trust:read powers /access/organizations — Apps and
+    // Policies:Edit alone isn't enough, the org lookup lives under
+    // Zero Trust.
+    { key: "cloudflare_zero_trust", type: "read" },
+    { key: "d1", type: "edit" },
+    { key: "workers_r2_storage", type: "edit" },
+    { key: "workers_kv_storage", type: "edit" },
+    { key: "artifacts", type: "edit" },
     { key: "account_settings", type: "read" },
     { key: "user_details", type: "read" }
   ])
