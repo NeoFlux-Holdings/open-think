@@ -89,10 +89,23 @@ export class AgentRuntime {
     const config = parseConfig(env);
     const allIds = new Set(allPlugins.map((plugin) => plugin.id));
 
+    // Bundle/config tolerance: ENABLED_PLUGINS may list plugin ids that
+    // exist in a newer runtime but not in the currently-deployed bundle
+    // (e.g., the cloud-deploy form persists "helm-artifacts" in the var,
+    // but the user's bundle is from before helm-artifacts shipped).
+    // Filter unknown ids out with a warning instead of throwing — a
+    // bundle/config skew shouldn't take the Worker offline.
+    const unknownIds: string[] = [];
     for (const enabledId of config.enabledPlugins) {
       if (!allIds.has(enabledId)) {
-        throw new AppError("E_PLUGIN_UNKNOWN", `Enabled plugin '${enabledId}' is not registered`, 400);
+        unknownIds.push(enabledId);
+        config.enabledPlugins.delete(enabledId);
       }
+    }
+    if (unknownIds.length > 0) {
+      console.warn(
+        `[runtime] ignoring ${unknownIds.length} unknown plugin id${unknownIds.length === 1 ? "" : "s"} in ENABLED_PLUGINS: ${unknownIds.join(", ")} — bundle is older than the runtime config expects (run \`wrangler deploy\` from the latest source, or remove these from ENABLED_PLUGINS to silence)`
+      );
     }
 
     const active = allPlugins.filter((plugin) => config.enabledPlugins.has(plugin.id));

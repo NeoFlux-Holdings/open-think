@@ -32,16 +32,29 @@ class EmptyCapabilityPlugin extends TestPlugin {
 }
 
 describe("AgentRuntime", () => {
-  it("rejects unknown enabled plugins", async () => {
-    await expect(
-      AgentRuntime.bootstrap(
+  it("warns + filters unknown enabled plugins instead of throwing (bundle/config skew tolerance)", async () => {
+    // Older bundles may not contain plugin ids that newer ENABLED_PLUGINS
+    // defaults reference (e.g. helm-artifacts on a v0.10 bundle). The
+    // runtime should boot with the unknown ids dropped + a clear console
+    // warning — taking the Worker offline on a config skew is worse than
+    // running with a slightly trimmed plugin set.
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => warnings.push(args.map(String).join(" "));
+    try {
+      const valid = new TestPlugin();
+      const runtime = await AgentRuntime.bootstrap(
         {
-          ENABLED_PLUGINS: "missing-plugin",
+          ENABLED_PLUGINS: `missing-plugin,${valid.id}`,
           ALLOWED_HOSTS: "api.cloudflare.com"
         },
-        []
-      )
-    ).rejects.toThrowError(/not registered/);
+        [valid]
+      );
+      expect(runtime.listPlugins().map((p) => p.id)).toEqual([valid.id]);
+      expect(warnings.join("\n")).toMatch(/missing-plugin/);
+    } finally {
+      console.warn = originalWarn;
+    }
   });
 
   it("fails fast when a required secret is missing", async () => {

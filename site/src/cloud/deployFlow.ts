@@ -195,20 +195,21 @@ export async function runDeploy(
     }));
   }
 
-  // --- 3. Optional: create the Cloudflare Access app + owner policy ---
-  // We skip Access if the user didn't pick it OR if they're missing an owner
-  // email (we need to scope the policy to someone). The Access org's
-  // `auth_domain` becomes their `CF_ACCESS_TEAM_DOMAIN`.
+  // --- 3. Optional: look up the Access team domain ---
+  // We don't create the Access app here. Empirically CF's API requires
+  // the Worker script to exist before it accepts an Access destination
+  // pointing at the Worker's URL — a fresh `*.workers.dev` URL with no
+  // script behind it hits "domain does not belong to zone". So we defer
+  // the actual app creation until AFTER the Worker upload (see step 6 →
+  // runDirectDeploy → access creation). Step 3 just resolves the team
+  // domain once so we have it ready to attach when we create the app.
   let accessAud: string | undefined;
   let accessTeamDomain: string | undefined;
   if (req.enableAccess && req.secrets?.OWNER_EMAIL) {
-    // First, get the team domain.
     const org = await getAccessOrganization(req.token, acc, options);
     if (!org.success || !org.result?.auth_domain) {
       const apiMsg = org.errors?.[0]?.message ?? "no auth_domain";
       const apiCode = org.errors?.[0]?.code;
-      // 200-with-empty-auth_domain = Zero Trust not yet configured.
-      // Anything else (400/403/etc.) = scope or account-resources problem.
       const isEmptyDomain = org.success && !org.result?.auth_domain;
       const detail = isEmptyDomain
         ? "Zero Trust team name not set. Visit dash → Zero Trust → Settings → General → set a Team name. Free tier; takes ~1 minute."
@@ -222,59 +223,6 @@ export async function runDeploy(
       // Don't abort — Access is optional. Continue without it.
     } else {
       accessTeamDomain = `https://${org.result.auth_domain}`;
-      // Hard reality: CF's public Access apps API requires the destination
-      // to belong to a zone YOU own. workers.dev is Cloudflare's shared
-      // free zone, so any *.workers.dev URL fails with "domain does not
-      // belong to zone" — both with the legacy `domain` string AND the
-      // modern `destinations[]` array (the validation runs for
-      // type:"public" destinations either way). The dashboard uses an
-      // internal mechanism that bypasses this; the public API doesn't
-      // expose it.
-      //
-      // We detect workers.dev upfront and skip the API call entirely
-      // with a clean "skipped, here's how to add Access later" message.
-      // The Worker still deploys and runs in first-run permissive mode.
-      const isWorkersDev = /\.workers\.dev$/i.test(workerHost);
-      if (isWorkersDev) {
-        steps.push(step("create-access-app", true,
-          `Access skipped — workers.dev URLs aren't supported by the public Access API`,
-          { skippedReason: "workers.dev limitation", workerHost },
-          `Cloudflare's public Access API requires the destination to belong to a zone you own. workers.dev is CF's shared free zone, so the API rejects ${workerHost} with "domain does not belong to zone".\n\nTwo ways to lock down /app:\n  1. Add a custom domain to your Worker (cleanest). Dash → Workers & Pages → ${name} → Settings → Triggers → "Add Custom Domain". Then re-run the lockdown wizard at /app#/settings.\n  2. Create the Access app manually in the dashboard. Zero Trust → Access → Applications → Add → Self-hosted → enter "${workerHost}" as the application domain. Then set CF_ACCESS_AUD + CF_ACCESS_TEAM_DOMAIN via /app#/settings → Manage secrets.\n\nUntil one of those is wired, the Worker runs in first-run permissive mode (yellow banner at /app reminds you).`
-        ));
-        // Don't set accessAud / accessTeamDomain — caller continues
-        // without Access wired. Worker still uploads + deploys fine.
-      } else {
-      const app = await createAccessApp(
-        req.token,
-        acc,
-        { name: `Helm — ${name}`, domain: workerHost, sessionDuration: "24h" },
-        options
-      );
-      if (!app.success || !app.result?.aud) {
-        const apiMsg = app.errors?.[0]?.message ?? "unknown";
-        const apiCode = app.errors?.[0]?.code;
-        const isDomainZoneError = /domain does not belong to zone/i.test(apiMsg);
-        const recovery = isDomainZoneError
-          ? [
-              `Cloudflare returned "domain does not belong to zone" for ${workerHost}.`,
-              `This usually means the domain isn't on a zone in your account — verify ${workerHost} is added as a zone before Access can gate it.`
-            ].join("\n")
-          : explainCfError(apiMsg, apiCode, "Access: Apps and Policies:Edit", acc);
-        steps.push(step("create-access-app", false, `Access app create failed · ${apiMsg}`, undefined,
-          `${apiMsg}\n\n${recovery}`));
-        // Continue without Access.
-      } else {
-        accessAud = app.result.aud;
-        await createAccessPolicy(req.token, acc, app.result.id, req.secrets.OWNER_EMAIL, options);
-        steps.push(step("create-access-app", true,
-          `Access app created · AUD=${accessAud.slice(0, 12)}…`, {
-            appId: app.result.id,
-            aud: accessAud,
-            teamDomain: accessTeamDomain,
-            domain: workerHost
-          }));
-      }
-      } // close: !isWorkersDev
     }
   }
 
@@ -325,9 +273,11 @@ export async function runDeploy(
       workerName: name,
       manifestUrl: options.directDeploy.manifestUrl,
       d1: d1Id ? { uuid: d1Id, name: d1Name ?? `${name}-pa` } : null,
-      access: accessAud && accessTeamDomain
-        ? { aud: accessAud, teamDomain: accessTeamDomain }
-        : null,
+      // Pass teamDomain only — accessAud doesn't exist yet. The aud is
+      // created post-upload (step 6.5 below) once the Worker script is
+      // registered with CF, which is when the Access API will accept a
+      // workers.dev destination.
+      access: accessTeamDomain ? { aud: undefined, teamDomain: accessTeamDomain } : null,
       secrets: { ...(req.secrets ?? {}) } as Record<string, string | undefined>,
       ownerEmail: req.secrets?.OWNER_EMAIL,
       fromEmail: req.secrets?.FROM_EMAIL,
@@ -341,6 +291,72 @@ export async function runDeploy(
       directDeployed = true;
       buildSha = directResult.buildSha;
     }
+  }
+
+  // --- 6.5. Post-upload Access creation ---
+  // The Worker script now exists. CF's Access API will accept a
+  // workers.dev destination only when the script is registered — that's
+  // why creating the Access app pre-upload returned "domain does not
+  // belong to zone". Now that the Worker is live, try the create.
+  if (directDeployed && req.enableAccess && accessTeamDomain && req.secrets?.OWNER_EMAIL) {
+    const app = await createAccessApp(
+      req.token,
+      acc,
+      { name: `Helm — ${name}`, domain: workerHost, sessionDuration: "24h" },
+      { fetchImpl: options.fetchImpl }
+    );
+    if (!app.success || !app.result?.aud) {
+      const apiMsg = app.errors?.[0]?.message ?? "unknown";
+      const apiCode = app.errors?.[0]?.code;
+      const isDomainZoneError = /domain does not belong to zone/i.test(apiMsg);
+      const recovery = isDomainZoneError
+        ? [
+            `Cloudflare returned "domain does not belong to zone" for ${workerHost} even though the Worker is live. This sometimes happens on the first deploy of a new account.`,
+            ``,
+            `Two ways to recover:`,
+            `  1. Visit dash → Workers & Pages → ${name} → Settings → Domains & Routes → "Enable Cloudflare Access". The dashboard's one-click button uses an internal API that always works on workers.dev.`,
+            `  2. Re-run the lockdown wizard at https://${workerHost}/app#/settings — it talks to the same API but from inside the running Worker, which sometimes succeeds where the deploy form doesn't.`,
+            `  3. Skip Access; the Worker keeps running in first-run permissive mode.`
+          ].join("\n")
+        : explainCfError(apiMsg, apiCode, "Access: Apps and Policies:Edit", acc);
+      steps.push(step("create-access-app", false, `Access app create failed · ${apiMsg}`, undefined,
+        `${apiMsg}\n\n${recovery}`));
+    } else {
+      accessAud = app.result.aud;
+      await createAccessPolicy(req.token, acc, app.result.id, req.secrets.OWNER_EMAIL, { fetchImpl: options.fetchImpl });
+      steps.push(step("create-access-app", true,
+        `Access app created · AUD=${accessAud.slice(0, 12)}…`, {
+          appId: app.result.id,
+          aud: accessAud,
+          teamDomain: accessTeamDomain,
+          domain: workerHost
+        }));
+      // Push CF_ACCESS_AUD as a secret on the live Worker. Without this
+      // the deployed agent can't enforce Access (CF_ACCESS_TEAM_DOMAIN
+      // alone isn't enough — auth.ts checks both).
+      const audPut = await putWorkerSecret(
+        req.token, acc, name, "CF_ACCESS_AUD", accessAud,
+        { fetchImpl: options.fetchImpl }
+      );
+      if (audPut.success) {
+        steps.push(step("set-secret", true, `secret CF_ACCESS_AUD: set`));
+      } else {
+        const errMsg = audPut.errors?.[0]?.message ?? "secret put failed";
+        steps.push(step("set-secret", false,
+          `secret CF_ACCESS_AUD: failed · ${errMsg}`,
+          undefined,
+          `Access app was created (aud=${accessAud.slice(0, 12)}…) but persisting CF_ACCESS_AUD as a Worker secret failed. Set it via /app#/settings → Manage secrets, or run \`wrangler secret put CF_ACCESS_AUD\` locally with the value above.`
+        ));
+      }
+    }
+  } else if (req.enableAccess && req.secrets?.OWNER_EMAIL && !directDeployed) {
+    // User asked for Access + we have an owner email + but Worker upload
+    // didn't happen (local-fallback mode). Defer with a clear message.
+    steps.push(step("create-access-app", true,
+      `Access deferred — run the lockdown wizard at /app#/settings after \`wrangler deploy\` finishes`,
+      { deferred: true, workerHost },
+      `The Worker has to exist before CF will let us create an Access app for its workers.dev URL. Once your local \`wrangler deploy\` finishes, visit https://${workerHost}/app#/settings → Lock it down — same wizard, runs from inside the deployed Worker.`
+    ));
   }
 
   // --- 7. Optional persistence: Helm Cloud subscriber path ---
@@ -410,7 +426,14 @@ interface DirectDeployInput {
   workerName: string;
   manifestUrl: string;
   d1: { uuid: string; name: string } | null;
-  access: { aud: string; teamDomain: string } | null;
+  /**
+   * Access info to bake into the upload. `teamDomain` may be present
+   * before `aud` because we now create the Access app AFTER the Worker
+   * upload (CF requires the script to exist). When only `teamDomain` is
+   * present, the upload sets CF_ACCESS_TEAM_DOMAIN as a plain_text var;
+   * CF_ACCESS_AUD is set as a secret post-creation in the caller.
+   */
+  access: { aud?: string; teamDomain: string } | null;
   secrets: Record<string, string | undefined>;
   ownerEmail?: string;
   fromEmail?: string;

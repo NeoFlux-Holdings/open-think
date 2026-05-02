@@ -57,7 +57,7 @@ describe("verifyAndListAccounts", () => {
 });
 
 describe("runDeploy · full happy path", () => {
-  it("verifies → resolves subdomain → creates D1 → skips Access on workers.dev → composes wrangler.toml", async () => {
+  it("verifies → resolves subdomain → creates D1 → resolves Access team domain → composes wrangler.toml → defers Access app creation until after upload", async () => {
     const f = routedFetch({
       [`${CF}/user/tokens/verify`]: () => ok({ id: "tok-1", status: "active" }),
       // Subdomain lookup — runDeploy resolves this once so the URL it
@@ -66,8 +66,10 @@ describe("runDeploy · full happy path", () => {
       [`${CF}/accounts/acc-1/workers/subdomain`]: () => ok({ subdomain: "tom-acct" }),
       [`${CF}/accounts/acc-1/d1/database`]: () => ok({ uuid: "d1-uuid-abc", name: "helm-pa" }),
       [`${CF}/accounts/acc-1/access/organizations`]: () => ok({ auth_domain: "tom.cloudflareaccess.com", name: "Tom" })
-      // No access/apps mock — the workers.dev short-circuit means we
-      // never call it, even when enableAccess: true.
+      // No /access/apps mock — directDeploy isn't configured in this
+      // test, so the Access app creation step is deferred (the Worker
+      // doesn't exist on the server side, only a wrangler.toml is
+      // composed for local deploy).
     });
 
     const r = await runDeploy(
@@ -92,18 +94,16 @@ describe("runDeploy · full happy path", () => {
     // The advertised URL uses the resolved subdomain.
     expect(r.workerUrl).toBe("https://helm.tom-acct.workers.dev");
 
-    // Access skipped (not "create-access-app failed" — a clean skip
-    // with the workers.dev limitation marker).
+    // Access creation deferred — we have the team domain but the Worker
+    // doesn't exist yet (no directDeploy in this test). The deferred
+    // step succeeds with a clear "run lockdown wizard at /app#/settings"
+    // message.
     const accessStep = r.steps.find((s) => s.kind === "create-access-app");
     expect(accessStep?.ok).toBe(true);
-    expect(accessStep?.summary).toMatch(/workers\.dev|skipped/i);
+    expect(accessStep?.summary).toMatch(/deferred|lockdown wizard|after/i);
 
     // Wrangler.toml carries the new IDs.
     expect(r.wranglerToml).toMatch(/database_id = "d1-uuid-abc"/);
-    // CF_ACCESS_TEAM_DOMAIN is NOT set when Access was skipped on
-    // workers.dev — caller deliberately leaves it to be wired later
-    // via custom domain or manual dashboard setup.
-    expect(r.wranglerToml).not.toMatch(/CF_ACCESS_TEAM_DOMAIN/);
     expect(r.wranglerToml).toMatch(/OWNER_EMAIL = "tom@example.com"/);
     // CF_ACCESS_AUD lives only in secrets, not in wrangler.toml [vars].
     expect(r.wranglerToml).not.toMatch(/CF_ACCESS_AUD = /);
