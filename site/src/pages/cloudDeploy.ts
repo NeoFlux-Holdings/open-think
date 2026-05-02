@@ -527,7 +527,7 @@ export function renderCloudDeploy(): string {
         // legacy "<name>.workers.dev" pattern, which doesn't actually
         // resolve — only used if the server didn't return workerUrl.
         const fullUrl = data.workerUrl || ('https://' + workerName + '.workers.dev');
-        urlSpan.textContent = fullUrl.replace(/^https?:\/\//, '');
+        urlSpan.textContent = fullUrl.replace(/^https?:\\/\\//, '');
         // Three result states:
         //   1. directDeployed=true → green "live" panel
         //   2. attempted but failed → orange "almost there" panel + open fallback
