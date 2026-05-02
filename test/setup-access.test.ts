@@ -497,9 +497,12 @@ describe("ACCESS_WIZARD_TOKEN_URL + scopes", () => {
     expect(parsed).toEqual([
       { key: "workers_scripts", type: "edit" },
       { key: "access", type: "edit" },
-      { key: "cloudflare_zero_trust", type: "read" },
+      // `teams` is the URL key for "Zero Trust" — NOT
+      // `cloudflare_zero_trust` (silently dropped by CF's dash parser).
+      { key: "teams", type: "read" },
       { key: "d1", type: "edit" },
-      { key: "workers_r2_storage", type: "edit" },
+      // `workers_r2` (no _storage suffix). Verified against shipped CLIs.
+      { key: "workers_r2", type: "edit" },
       { key: "workers_kv_storage", type: "edit" },
       { key: "artifacts", type: "edit" },
       { key: "account_settings", type: "read" },

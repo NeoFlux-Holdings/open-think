@@ -163,12 +163,15 @@ const TOKEN_TEMPLATE_PERMISSIONS = encodeURIComponent(
   JSON.stringify([
     { key: "workers_scripts", type: "edit" },
     { key: "access", type: "edit" },
-    // cloudflare_zero_trust:read powers /access/organizations — Apps and
-    // Policies:Edit alone isn't enough, the org lookup lives under
-    // Zero Trust.
-    { key: "cloudflare_zero_trust", type: "read" },
+    // `teams:read` (NOT `cloudflare_zero_trust`) — that's the dash's
+    // URL key for "Zero Trust:Read", which is what /access/organizations
+    // requires. The longer name gets silently dropped by the parser.
+    { key: "teams", type: "read" },
     { key: "d1", type: "edit" },
-    { key: "workers_r2_storage", type: "edit" },
+    // `workers_r2` (no _storage suffix) — yes, inconsistent with KV
+    // below. Verified against shipped CLIs (nuxt-hub/core,
+    // orange-framework). `workers_r2_storage` is silently dropped.
+    { key: "workers_r2", type: "edit" },
     { key: "workers_kv_storage", type: "edit" },
     { key: "artifacts", type: "edit" },
     { key: "account_settings", type: "read" },

@@ -624,14 +624,18 @@ const ACCESS_WIZARD_TOKEN_PERMISSIONS = encodeURIComponent(
   JSON.stringify([
     { key: "workers_scripts", type: "edit" },
     { key: "access", type: "edit" },
-    // `cloudflare_zero_trust:read` is needed for `/access/organizations` —
-    // the lockdown wizard's first call. Without it the user gets
-    // "Authentication error" even when the access:edit scope is granted,
-    // because organization lookup lives under Zero Trust, not Apps and
-    // Policies. (Yes, CF's permission split is unintuitive.)
-    { key: "cloudflare_zero_trust", type: "read" },
+    // `teams:read` is the dash URL key for "Zero Trust:Read" (NOT
+    // "cloudflare_zero_trust" — that gets silently dropped). It powers
+    // /access/organizations, which the lockdown wizard's first call
+    // hits. Without it the user gets "Authentication error" on the org
+    // lookup even when access:edit is granted.
+    { key: "teams", type: "read" },
     { key: "d1", type: "edit" },
-    { key: "workers_r2_storage", type: "edit" },
+    // `workers_r2` (not `workers_r2_storage`) — yes, inconsistent with
+    // `workers_kv_storage` below. CF's URL parser is finicky about
+    // these short keys; cross-checked against shipped CLIs (nuxt-hub,
+    // orange-framework). `workers_r2_storage` gets silently dropped.
+    { key: "workers_r2", type: "edit" },
     { key: "workers_kv_storage", type: "edit" },
     { key: "artifacts", type: "edit" },
     { key: "account_settings", type: "read" },
