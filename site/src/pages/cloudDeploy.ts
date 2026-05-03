@@ -503,14 +503,78 @@ export function renderCloudDeploy(): string {
       });
       const data = await r.json();
       stepsList.innerHTML = '';
-      for (const s of (data.steps || [])) {
+      // Render a CONCISE log by default. Implementation noise the user
+      // doesn't need to see (manifest fetch, wrangler.toml compose,
+      // local-fallback commands when direct-deploy succeeded, individual
+      // secret puts, redundant subdomain-enable when upload already
+      // confirmed it) gets folded into either summaries or dropped.
+      // Failed steps ALWAYS render so the user can act on them.
+      const allSteps = (data.steps || []);
+      const directDeployed = !!data.directDeployed;
+      const dropKindsOnSuccess = new Set([
+        'compose-wrangler-toml',     // implementation detail
+        'render-cli-commands',       // only matters when direct-deploy fails
+        'fetch-bundle',              // implementation detail
+        'enable-subdomain'           // redundant with upload-worker's "Worker live at..."
+      ]);
+      const visible = [];
+      const setSecretGroup = [];
+      for (const s of allSteps) {
+        // Always show failures + errors regardless of kind.
+        if (!s.ok || s.error) {
+          // Flush any pending set-secret group before the failure.
+          if (setSecretGroup.length > 0) {
+            visible.push({
+              ok: setSecretGroup.every((x) => x.ok),
+              summary: setSecretGroup.length === 1
+                ? setSecretGroup[0].summary
+                : 'Secrets set (' + setSecretGroup.length + ')',
+              kind: 'set-secret-group'
+            });
+            setSecretGroup.length = 0;
+          }
+          visible.push(s);
+          continue;
+        }
+        // Group consecutive set-secret rows.
+        if (s.kind === 'set-secret') {
+          setSecretGroup.push(s);
+          continue;
+        }
+        if (setSecretGroup.length > 0) {
+          visible.push({
+            ok: true,
+            summary: setSecretGroup.length === 1
+              ? setSecretGroup[0].summary
+              : 'Secrets set (' + setSecretGroup.length + ')',
+            kind: 'set-secret-group'
+          });
+          setSecretGroup.length = 0;
+        }
+        // Drop implementation-noise kinds when direct-deploy succeeded.
+        if (directDeployed && dropKindsOnSuccess.has(s.kind)) continue;
+        // Trim verbose token-id from the verify summary.
+        if (s.kind === 'verify-token' && /\(id [a-f0-9]/.test(s.summary)) {
+          visible.push({ ...s, summary: 'Cloudflare token verified' });
+          continue;
+        }
+        visible.push(s);
+      }
+      // Flush any trailing set-secret group.
+      if (setSecretGroup.length > 0) {
+        visible.push({
+          ok: true,
+          summary: setSecretGroup.length === 1
+            ? setSecretGroup[0].summary
+            : 'Secrets set (' + setSecretGroup.length + ')',
+          kind: 'set-secret-group'
+        });
+      }
+      for (const s of visible) {
         const li = document.createElement('li');
         li.className = s.ok ? 'ok' : 'fail';
         li.textContent = s.summary;
         if (s.error) {
-          // Errors may be multi-line: the API message on line 1, then a
-          // recovery hint on subsequent lines. Render as a <pre> so the
-          // step-by-step hint stays readable.
           const detail = document.createElement('pre');
           detail.className = 'step-error';
           detail.textContent = s.error;

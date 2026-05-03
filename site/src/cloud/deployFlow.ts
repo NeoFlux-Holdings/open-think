@@ -323,14 +323,34 @@ export async function runDeploy(
         `${apiMsg}\n\n${recovery}`));
     } else {
       accessAud = app.result.aud;
-      await createAccessPolicy(req.token, acc, app.result.id, req.secrets.OWNER_EMAIL, { fetchImpl: options.fetchImpl });
-      steps.push(step("create-access-app", true,
-        `Access app created · AUD=${accessAud.slice(0, 12)}…`, {
-          appId: app.result.id,
-          aud: accessAud,
-          teamDomain: accessTeamDomain,
-          domain: workerHost
-        }));
+      // CRITICAL: capture + surface the policy creation result. Without
+      // a policy, CF Access rejects ALL emails by default — the user
+      // sees the Access login page, types their email, and never gets
+      // an OTP because there's no allow-list to match against. Silently
+      // ignoring this call (as we used to) made that mode invisible.
+      const policy = await createAccessPolicy(
+        req.token, acc, app.result.id, req.secrets.OWNER_EMAIL,
+        { fetchImpl: options.fetchImpl }
+      );
+      if (!policy.success) {
+        const polMsg = policy.errors?.[0]?.message ?? "policy create failed";
+        const polCode = policy.errors?.[0]?.code;
+        steps.push(step("create-access-app", false,
+          `Access app created but policy FAILED · ${polMsg}`,
+          { appId: app.result.id, aud: accessAud, teamDomain: accessTeamDomain, domain: workerHost },
+          `${polMsg}\n\nThe Access app exists (aud=${accessAud.slice(0, 12)}…) but has NO policy attached, which means CF Access rejects ALL emails by default — including yours. That's why you're not getting a verification email.\n\nFix:\n  1. Dash → Zero Trust → Access → Applications → "Helm — ${name}" → Policies → Add policy → Allow → Include "${req.secrets.OWNER_EMAIL}" → Save.\n  2. Or delete the app and re-run the lockdown wizard at https://${workerHost}/app#/settings (it has the right scopes once the token is correct).\n\n${explainCfError(polMsg, polCode, "Access: Apps and Policies:Edit", acc)}`
+        ));
+      } else {
+        steps.push(step("create-access-app", true,
+          `Access app + policy created · AUD=${accessAud.slice(0, 12)}… · allows ${req.secrets.OWNER_EMAIL}`, {
+            appId: app.result.id,
+            aud: accessAud,
+            policyId: policy.result?.id,
+            teamDomain: accessTeamDomain,
+            domain: workerHost,
+            allowedEmail: req.secrets.OWNER_EMAIL
+          }));
+      }
       // Push CF_ACCESS_AUD as a secret on the live Worker. Without this
       // the deployed agent can't enforce Access (CF_ACCESS_TEAM_DOMAIN
       // alone isn't enough — auth.ts checks both).
@@ -338,9 +358,7 @@ export async function runDeploy(
         req.token, acc, name, "CF_ACCESS_AUD", accessAud,
         { fetchImpl: options.fetchImpl }
       );
-      if (audPut.success) {
-        steps.push(step("set-secret", true, `secret CF_ACCESS_AUD: set`));
-      } else {
+      if (!audPut.success) {
         const errMsg = audPut.errors?.[0]?.message ?? "secret put failed";
         steps.push(step("set-secret", false,
           `secret CF_ACCESS_AUD: failed · ${errMsg}`,
@@ -348,6 +366,9 @@ export async function runDeploy(
           `Access app was created (aud=${accessAud.slice(0, 12)}…) but persisting CF_ACCESS_AUD as a Worker secret failed. Set it via /app#/settings → Manage secrets, or run \`wrangler secret put CF_ACCESS_AUD\` locally with the value above.`
         ));
       }
+      // Note: success row for CF_ACCESS_AUD is now folded into the
+      // create-access-app step's summary above (clearer narrative
+      // when both succeed) — only push a separate step on failure.
     }
   } else if (req.enableAccess && req.secrets?.OWNER_EMAIL && !directDeployed) {
     // User asked for Access + we have an owner email + but Worker upload
