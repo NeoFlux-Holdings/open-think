@@ -229,11 +229,13 @@ describe("composeWranglerToml · invariants", () => {
       access: null
     });
     // The deployed Worker needs cloudflare-admin + helm-setup +
-    // helm-artifacts + mcp-client to self-administer (run cf-* skills,
+    // mcp-client to self-administer (run cf-* skills,
     // helm-setup-deploy, drift sync) right out of the gate.
+    // (helm-artifacts is intentionally absent until the published
+    // manifest bundle catches up to v0.11 — see the comment in
+    // deployFlow.ts ENABLED_PLUGINS for context.)
     expect(t).toMatch(/ENABLED_PLUGINS = ".*cloudflare-admin/);
     expect(t).toMatch(/ENABLED_PLUGINS = ".*helm-setup/);
-    expect(t).toMatch(/ENABLED_PLUGINS = ".*helm-artifacts/);
     expect(t).toMatch(/ENABLED_PLUGINS = ".*mcp-client/);
     // ALLOWED_HOSTS must be non-empty or the runtime errors
     // E_INTERNAL "ALLOWED_HOSTS must include at least one host"

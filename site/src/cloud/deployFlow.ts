@@ -544,10 +544,20 @@ async function runDirectDeploy(input: DirectDeployInput): Promise<DirectDeployRe
   const modelDefault = hasOpenRouter
     ? (input.openRouterDefaultModel ?? "openrouter/auto")
     : "@cf/openai/gpt-oss-120b";
+  // ENABLED_PLUGINS must list ONLY plugin ids the published bundle
+  // (input.manifestUrl) actually contains. The runtime throws
+  // E_PLUGIN_UNKNOWN on bootstrap if it sees an enabled id with no
+  // registered plugin (older bundles don't have the warn-and-filter
+  // tolerance fix).
+  //
+  // Current published manifest is the v0.10.x bundle. Newer plugin
+  // ids (helm-artifacts, etc.) ship in source but aren't in the
+  // bundle yet — adding them here would brick every deploy. When
+  // the bundle republishes, append the new ids on a new line.
   const vars: Record<string, string> = {
     MODEL_DEFAULT: modelDefault,
     ENABLED_PLUGINS:
-      "admin,helm-setup,helm-artifacts,helm-toml,helm-github,cloudflare-admin,mcp-client,workers-ai,openrouter,memory,email,notifier",
+      "admin,helm-setup,helm-toml,helm-github,cloudflare-admin,mcp-client,workers-ai,openrouter,memory,email,notifier",
     ALLOWED_HOSTS:
       "api.cloudflare.com,mcp.cloudflare.com,api.anthropic.com,api.openai.com,openrouter.ai,api.github.com",
     AGENT_NAME: input.workerName
@@ -707,7 +717,10 @@ export function composeWranglerToml(input: WranglerComposeInput): string {
   const modelDefault = input.openRouterDefaultModel ?? "openrouter/auto";
   lines.push(`MODEL_DEFAULT = "${modelDefault}"`);
   lines.push(
-    `ENABLED_PLUGINS = "admin,helm-setup,helm-artifacts,helm-toml,helm-github,cloudflare-admin,mcp-client,workers-ai,openrouter,memory,email,notifier"`
+    // Keep in sync with the runtime defaults in deployFlow runDirectDeploy.
+    // helm-artifacts is intentionally absent until the published manifest
+    // bundle catches up to v0.11.
+    `ENABLED_PLUGINS = "admin,helm-setup,helm-toml,helm-github,cloudflare-admin,mcp-client,workers-ai,openrouter,memory,email,notifier"`
   );
   lines.push(
     `ALLOWED_HOSTS = "api.cloudflare.com,mcp.cloudflare.com,api.anthropic.com,api.openai.com,openrouter.ai,api.github.com"`
