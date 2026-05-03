@@ -554,7 +554,9 @@ export function renderCloudDeploy(): string {
         // Drop implementation-noise kinds when direct-deploy succeeded.
         if (directDeployed && dropKindsOnSuccess.has(s.kind)) continue;
         // Trim verbose token-id from the verify summary.
-        if (s.kind === 'verify-token' && /\(id [a-f0-9]/.test(s.summary)) {
+        // NOTE: \\(  → \( in the rendered page → /(...)/ regex paren.
+        // Single backslash gets eaten by the outer template literal.
+        if (s.kind === 'verify-token' && /\\(id [a-f0-9]/.test(s.summary)) {
           visible.push({ ...s, summary: 'Cloudflare token verified' });
           continue;
         }
