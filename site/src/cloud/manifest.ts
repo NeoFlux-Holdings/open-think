@@ -37,6 +37,17 @@ export interface BundleManifest {
   metadata: BundleMetadata;
   moduleUrl: string;
   moduleSize?: number;
+  /**
+   * Plugin ids the runtime bundle actually registers. When present, the
+   * deploy form intersects its ENABLED_PLUGINS default with this list so
+   * an older bundle doesn't get told to enable a plugin id it doesn't
+   * have (older runtimes throw E_PLUGIN_UNKNOWN on unknown ids).
+   *
+   * Optional for backward-compat with manifests built before this field
+   * was added — when missing, the deploy form falls back to a known-safe
+   * minimal set.
+   */
+  plugins?: string[];
 }
 
 export async function fetchManifest(

@@ -33,7 +33,8 @@ import {
   statSync,
   mkdirSync,
   copyFileSync,
-  existsSync
+  existsSync,
+  readdirSync
 } from "node:fs";
 import { createHash } from "node:crypto";
 import { resolve, dirname } from "node:path";
@@ -110,6 +111,30 @@ const compatibilityFlags = compatibilityFlagsRaw
   .map((s) => s.trim().replace(/^"|"$/g, ""))
   .filter(Boolean);
 
+/* ---------------- 3.5. extract the plugin id list ---------------- */
+// Scan src/plugins/*.ts for `readonly id = "..."` declarations so the
+// deploy form can intersect its ENABLED_PLUGINS default with what the
+// bundle actually ships. Without this, an older bundle + newer
+// ENABLED_PLUGINS default = E_PLUGIN_UNKNOWN on bootstrap.
+
+const pluginsDir = resolve(root, "src/plugins");
+const pluginIds = [];
+try {
+  const files = readdirSync(pluginsDir).filter(
+    (f) => f.endsWith(".ts") && !f.endsWith(".test.ts") && f !== "registry.ts"
+  );
+  for (const file of files) {
+    const src = readFileSync(resolve(pluginsDir, file), "utf8");
+    // Match `readonly id = "<id>"` (the conventional plugin-id declaration).
+    // Uses string literal — no template-literal/computed shenanigans expected.
+    const m = /readonly\s+id\s*=\s*["']([a-z0-9-]+)["']/.exec(src);
+    if (m) pluginIds.push(m[1]);
+  }
+  pluginIds.sort();
+} catch (err) {
+  console.warn(`[bundle] plugin-id scan failed (${err.message}) — manifest will omit plugins[]`);
+}
+
 /* ---------------- 4. assemble the manifest ---------------- */
 
 const manifest = {
@@ -119,6 +144,12 @@ const manifest = {
   gitSha,
   moduleUrl,
   moduleSize,
+  // Plugin ids the runtime bundle ships with. The deploy form
+  // intersects this with its ENABLED_PLUGINS default so a v0.10 bundle
+  // doesn't get told to enable a v0.11-only plugin (which would throw
+  // E_PLUGIN_UNKNOWN on older bundles that don't have the runtime
+  // tolerance fix).
+  plugins: pluginIds,
   metadata: {
     // Modules format — Workers API key for the entry module name.
     main_module: "helm.mjs",
@@ -163,6 +194,7 @@ console.log(`[bundle] ✓ manifest.json  version=${version}`);
 console.log(`[bundle]   moduleUrl   = ${moduleUrl}`);
 console.log(`[bundle]   bindings    = ${manifest.metadata.bindings.length}`);
 console.log(`[bundle]   migrations  = ${manifest.metadata.migrations?.length ?? 0}`);
+console.log(`[bundle]   plugins     = ${manifest.plugins.length} (${manifest.plugins.slice(0, 4).join(",")}${manifest.plugins.length > 4 ? ", …" : ""})`);
 console.log("");
 console.log("[bundle] release artifacts ready under " + out);
 

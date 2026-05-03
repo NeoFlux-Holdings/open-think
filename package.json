@@ -17,7 +17,8 @@
     "plugin:new": "node ./scripts/create_plugin.mjs",
     "vapid:generate": "node ./scripts/generate_vapid_keys.mjs",
     "pa:setup": "node ./scripts/pa_setup.mjs",
-    "shell": "node ./scripts/open-think-shell.mjs"
+    "shell": "node ./scripts/open-think-shell.mjs",
+    "ship": "node ./scripts/ship.mjs"
   },
   "cloudflare": {
     "_comment": "Three optional secrets prompted at deploy time. OPENROUTER_API_KEY is the strong default for chat (auto-routes to the best model). The two CLOUDFLARE/OWNER fields shortcut the `Lock it down` wizard at /app#/settings. All three are skippable; defaults still work. Workers AI is bound automatically.",

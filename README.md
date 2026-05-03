@@ -241,6 +241,28 @@ See [`docs/PLUGIN_SDK.md`](./docs/PLUGIN_SDK.md) for the contract and best pract
 
 Full runbook: [`docs/DEPLOYMENT_RUNBOOK.md`](./docs/DEPLOYMENT_RUNBOOK.md).
 
+### Shipping a new release (bundle + site together)
+
+The runtime bundle (what users get when they deploy via `/deploy/cloud`) and the marketing-site Worker deploy on different cadences and used to drift — the form would default to a plugin list newer than the published bundle and brick every fresh deploy with `E_PLUGIN_UNKNOWN`. `npm run ship` now ties both halves together:
+
+```bash
+npm run ship                       # interactive — prompts for version
+npm run ship -- --version v0.12.0  # explicit
+npm run ship -- --skip-bundle      # site-only redeploy (e.g. UI fix)
+npm run ship -- --skip-site        # bundle-only release
+npm run ship -- --dry-run          # walk through the steps without doing anything
+```
+
+What it does:
+1. Pre-flight: branch check, clean tree, up-to-date with origin
+2. Typecheck + test (main + site) unless `--skip-checks`
+3. Bump `package.json` version, commit
+4. Tag `v<version>` and push → triggers `.github/workflows/release-bundle.yml` (builds `helm.mjs` + `manifest.json`, uploads to GitHub Releases)
+5. `cd site && wrangler deploy`
+6. Prints the GH Actions URL so you can watch the bundle build
+
+The manifest now embeds a `plugins[]` array (extracted at build time from `src/plugins/*.ts`). The deploy form intersects its `ENABLED_PLUGINS` default with that list, so an older bundle silently drops newer plugin ids instead of bricking the Worker — the version skew that kept biting us is now a non-issue.
+
 ---
 
 ## Community & quality
