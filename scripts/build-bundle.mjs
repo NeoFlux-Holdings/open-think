@@ -93,7 +93,7 @@ const moduleUrl =
   process.env.MODULE_URL ??
   `https://github.com/${repo}/releases/latest/download/helm.mjs`;
 
-/* ---------------- 3. read wrangler.toml for compat date + flags ---------------- */
+/* ---------------- 3. read wrangler.toml for compat + bindings + migrations ---------------- */
 
 const wranglerToml = readFileSync(resolve(root, "wrangler.toml"), "utf8");
 const compatibilityDate = matchOne(
@@ -110,6 +110,71 @@ const compatibilityFlags = compatibilityFlagsRaw
   .split(",")
   .map((s) => s.trim().replace(/^"|"$/g, ""))
   .filter(Boolean);
+
+/**
+ * Parse every [[durable_objects.bindings]] block out of wrangler.toml.
+ * The previous build hardcoded only AGENT_SESSIONS + STREAM_HUBS, so the
+ * deployed Worker shipped without CHAT_SESSIONS / SHELL_CONTAINER /
+ * SHELL_REGISTRY / CLI_AUTH bindings — chat WebSocket then 503'd with
+ * E_DO_BINDING_MISSING because env.CHAT_SESSIONS was undefined.
+ *
+ * We also pull every [[migrations]] block so DO classes get registered
+ * on the customer's Worker on the very first push.
+ */
+function parseTomlArrayTables(toml, header) {
+  // Match each `[[<header>]]\n<keys>` chunk up to the next [[ table or [ table.
+  const re = new RegExp(`\\[\\[${header.replace(".", "\\.")}\\]\\]([\\s\\S]*?)(?=\\n\\[|$)`, "g");
+  const out = [];
+  let m;
+  while ((m = re.exec(toml)) !== null) {
+    const block = {};
+    for (const line of m[1].split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const kv = /^([a-z_]+)\s*=\s*(.+)$/i.exec(trimmed);
+      if (!kv) continue;
+      const key = kv[1];
+      let val = kv[2].trim();
+      // Strip trailing inline comments
+      if (val.includes("#") && !val.startsWith('"')) val = val.split("#")[0].trim();
+      // Parse value: "string" | [array] | bare
+      if (val.startsWith('"') && val.endsWith('"')) {
+        block[key] = val.slice(1, -1);
+      } else if (val.startsWith("[") && val.endsWith("]")) {
+        block[key] = val.slice(1, -1)
+          .split(",")
+          .map((s) => s.trim().replace(/^"|"$/g, ""))
+          .filter(Boolean);
+      } else if (val === "true" || val === "false") {
+        block[key] = val === "true";
+      } else if (/^-?\d+$/.test(val)) {
+        block[key] = Number(val);
+      } else {
+        block[key] = val;
+      }
+    }
+    out.push(block);
+  }
+  return out;
+}
+
+const doBindings = parseTomlArrayTables(wranglerToml, "durable_objects.bindings").map((b) => ({
+  type: "durable_object_namespace",
+  name: b.name,
+  class_name: b.class_name
+}));
+const tomlMigrations = parseTomlArrayTables(wranglerToml, "migrations").map((m) => {
+  const out = {};
+  if (m.tag) out.tag = m.tag;
+  if (Array.isArray(m.new_classes)) out.new_classes = m.new_classes;
+  if (Array.isArray(m.new_sqlite_classes)) out.new_sqlite_classes = m.new_sqlite_classes;
+  if (Array.isArray(m.deleted_classes)) out.deleted_classes = m.deleted_classes;
+  if (Array.isArray(m.renamed_classes)) out.renamed_classes = m.renamed_classes;
+  return out;
+});
+
+console.log(`[bundle] DO bindings from wrangler.toml: ${doBindings.length}`);
+console.log(`[bundle] migrations from wrangler.toml: ${tomlMigrations.length}`);
 
 /* ---------------- 3.5. extract the plugin id list ---------------- */
 // Scan src/plugins/*.ts for `readonly id = "..."` declarations so the
@@ -155,26 +220,18 @@ const manifest = {
     main_module: "helm.mjs",
     compatibility_date: compatibilityDate,
     compatibility_flags: compatibilityFlags,
-    // Abstract bindings — names + types only. The push step preserves the
-    // customer's existing IDs (D1, secrets) by reading their script's
-    // current metadata before pushing.
+    // Abstract bindings — names + types only. Customer-specific IDs (D1
+    // database_id, secret values) are layered on at push time by the
+    // site Worker's runDeploy / pushUpdates which reads the customer's
+    // existing script settings + merges. AI + every DO from wrangler.toml.
     bindings: [
       { type: "ai", name: "AI" },
-      {
-        type: "durable_object_namespace",
-        name: "AGENT_SESSIONS",
-        class_name: "AgentSessionDO"
-      },
-      {
-        type: "durable_object_namespace",
-        name: "STREAM_HUBS",
-        class_name: "StreamHubDO"
-      }
+      ...doBindings
     ],
-    migrations: [
-      { tag: "v1", new_sqlite_classes: ["AgentSessionDO"] },
-      { tag: "v2", new_classes: ["StreamHubDO"] }
-    ]
+    // Every migration from wrangler.toml. CF API expects the full ladder
+    // — `flattenMigrationsForCfApi` collapses to `{ new_tag, new_classes,
+    // new_sqlite_classes }` at upload time.
+    migrations: tomlMigrations
   }
 };
 

@@ -111,7 +111,15 @@ function runStream(cmd, args, options = {}) {
     console.log(`[dry-run] $ ${cmd} ${args.join(" ")}`);
     return 0;
   }
-  const r = spawnSync(cmd, args, { cwd: root, stdio: "inherit", ...rest });
+  // shell: true is required on Windows so `npm`, `npx`, etc. resolve via
+  // PATHEXT (npm.cmd) — without it spawnSync returns ENOENT and the
+  // ship script falsely reports "typecheck failed". Harmless on macOS/Linux.
+  const r = spawnSync(cmd, args, {
+    cwd: root,
+    stdio: "inherit",
+    shell: true,
+    ...rest
+  });
   return r.status ?? 1;
 }
 
