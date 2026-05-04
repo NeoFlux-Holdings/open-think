@@ -8,7 +8,7 @@
  * full miniflare runtime. This keeps the test fast and focused on the
  * route logic in src/index.ts.
  */
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 
 // Tiny in-memory R2 bucket. Implements just the methods our /persist
 // proxy uses: get, put, delete, list.
@@ -103,6 +103,16 @@ function envWithBucket(extras: Record<string, unknown> = {}) {
 }
 
 describe("/persist proxy", () => {
+  // Pre-warm the import so the FIRST test doesn't pay the cold-load cost
+  // (every plugin, every DO class, every route handler in src/index.ts).
+  // On Windows + cold disk that import can push past 5s, which used to
+  // flake the first test ("returns 503…") because it was racing the
+  // 5000ms vitest default. Loading once up front amortizes the cost so
+  // every test sees a hot module cache and runs in <500ms.
+  beforeAll(async () => {
+    await import("../src/index");
+  }, 30_000);
+
   it("returns 503 with helpful error when WORKSPACE binding missing", async () => {
     const env = envWithBucket({ WORKSPACE: undefined });
     const r = await runRoute(env, new Request("https://helm.test/persist/some-key"));
