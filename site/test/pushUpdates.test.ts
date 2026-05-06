@@ -9,7 +9,13 @@
  * deployments.test.ts fake but trimmed to what runUpdatePush actually calls.
  */
 import { describe, expect, it, vi } from "vitest";
-import { listStuckDeployments, mergeBindings, runUpdatePush } from "../src/cloud/pushUpdates";
+import {
+  isCustomDeployFlagged,
+  isDeploymentSelfManaged,
+  listStuckDeployments,
+  mergeBindings,
+  runUpdatePush
+} from "../src/cloud/pushUpdates";
 import { encryptCfToken } from "../src/cloud/crypto";
 
 const MASTER = "x".repeat(64);
@@ -63,6 +69,26 @@ function fakeDb(seed: DeployRow[] = []): { db: D1Database; rows: DeployRow[]; lo
           return { meta: { changes: 0 } };
         },
         async first<T = unknown>() {
+          // getDeployment uses `WHERE id = ?` + .first()
+          if (collapsed.includes("WHERE id = ?")) {
+            const [id] = this._binds as [string];
+            const r = rows.find((x) => x.id === id);
+            if (!r) return null as unknown as T;
+            return ({
+              id: r.id,
+              customerId: r.customer_id,
+              accountId: r.account_id,
+              workerName: r.worker_name,
+              encryptedTokenB64: r.encrypted_token_b64,
+              encryptionIvB64: r.encryption_iv_b64,
+              workerUrl: r.worker_url,
+              buildSha: r.build_sha,
+              paused: r.paused,
+              createdAt: r.created_at,
+              lastPushedAt: r.last_pushed_at,
+              lastPushError: r.last_push_error
+            }) as unknown as T;
+          }
           return null as unknown as T;
         },
         async all<T = unknown>() {
@@ -307,6 +333,230 @@ describe("runUpdatePush", () => {
     expect(bindings.find((b) => b.name === "AI")).toBeTruthy();
   });
 
+  it("single-deployment branch (deploymentId) pushes only that one", async () => {
+    const a = await makeRow("a", false, "oldsha");
+    const b = await makeRow("b", false, "oldsha");
+    const { db, rows, logs } = fakeDb([a, b]);
+    const r = await runUpdatePush(
+      { DB: db, CLOUD_MASTER_KEY: MASTER, HELM_BUNDLE_MANIFEST_URL: MANIFEST_URL },
+      { fetchImpl: makeFetch({}), deploymentId: "b" }
+    );
+    expect(r.ok).toBe(true);
+    expect(r.considered).toBe(1);
+    expect(r.pushed).toBe(1);
+    // Only `b` was touched; `a` stays on oldsha.
+    expect(rows.find((x) => x.id === "a")!.build_sha).toBe("oldsha");
+    expect(rows.find((x) => x.id === "b")!.build_sha).toBe("newsha123");
+    expect(logs.some((l) => l.startsWith("a:"))).toBe(false);
+    expect(logs.some((l) => l === "b:push-success")).toBe(true);
+  });
+
+  it("single-deployment branch reports already-up-to-date without uploading", async () => {
+    const a = await makeRow("a", false, "newsha123");
+    const { db } = fakeDb([a]);
+    let uploadCalls = 0;
+    const fetchImpl = makeFetch({
+      upload: () => {
+        uploadCalls += 1;
+        return new Response(JSON.stringify({ success: true, result: { id: "a" } }), { status: 200 });
+      }
+    });
+    const r = await runUpdatePush(
+      { DB: db, CLOUD_MASTER_KEY: MASTER, HELM_BUNDLE_MANIFEST_URL: MANIFEST_URL },
+      { fetchImpl, deploymentId: "a" }
+    );
+    expect(r.ok).toBe(true);
+    expect(r.skippedUpToDate).toBe(1);
+    expect(r.pushed).toBe(0);
+    expect(uploadCalls).toBe(0);
+  });
+
+  it("single-deployment branch errors cleanly when deploymentId not found", async () => {
+    const { db } = fakeDb([]);
+    const r = await runUpdatePush(
+      { DB: db, CLOUD_MASTER_KEY: MASTER, HELM_BUNDLE_MANIFEST_URL: MANIFEST_URL },
+      { fetchImpl: makeFetch({}), deploymentId: "ghost" }
+    );
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/'ghost' not found/);
+  });
+
+  it("single-deployment branch ignores the paused = 0 filter (admin override)", async () => {
+    const paused = await makeRow("p", true, "oldsha");
+    const { db, rows } = fakeDb([paused]);
+    const r = await runUpdatePush(
+      { DB: db, CLOUD_MASTER_KEY: MASTER, HELM_BUNDLE_MANIFEST_URL: MANIFEST_URL },
+      { fetchImpl: makeFetch({}), deploymentId: "p" }
+    );
+    expect(r.ok).toBe(true);
+    expect(r.pushed).toBe(1);
+    expect(rows.find((x) => x.id === "p")!.build_sha).toBe("newsha123");
+  });
+
+  it("stamps BUILD_SHA as a plain_text binding on every push", async () => {
+    const a = await makeRow("a", false, "oldsha");
+    const { db } = fakeDb([a]);
+    let uploadedMetadata: Record<string, unknown> | null = null;
+    const fetchImpl = (async (input: RequestInfo, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url === MANIFEST_URL) {
+        return new Response(JSON.stringify(SAMPLE_MANIFEST), { status: 200 });
+      }
+      if (url === MODULE_URL) {
+        return new Response(new ArrayBuffer(2048), { status: 200 });
+      }
+      if (url.endsWith("/settings")) {
+        return new Response(
+          JSON.stringify({ success: true, result: { bindings: [] } }),
+          { status: 200 }
+        );
+      }
+      if (url.includes("/workers/scripts/")) {
+        const form = await (init?.body as FormData);
+        const meta = form?.get?.("metadata") as Blob | null;
+        if (meta) uploadedMetadata = JSON.parse(await meta.text());
+        return new Response(JSON.stringify({ success: true, result: { id: "a" } }), { status: 200 });
+      }
+      return new Response("not found", { status: 404 });
+    }) as unknown as typeof fetch;
+    const r = await runUpdatePush(
+      { DB: db, CLOUD_MASTER_KEY: MASTER, HELM_BUNDLE_MANIFEST_URL: MANIFEST_URL },
+      { fetchImpl }
+    );
+    expect(r.ok).toBe(true);
+    const bindings = (uploadedMetadata as { bindings: Array<Record<string, unknown>> }).bindings;
+    const buildSha = bindings.find((b) => b.name === "BUILD_SHA");
+    expect(buildSha).toBeTruthy();
+    expect(buildSha?.type).toBe("plain_text");
+    expect(buildSha?.text).toBe("newsha123");
+  });
+
+  it("BUILD_SHA replaces (not duplicates) any prior plain_text binding of the same name", async () => {
+    const a = await makeRow("a", false, "oldsha");
+    const { db } = fakeDb([a]);
+    let uploadedMetadata: Record<string, unknown> | null = null;
+    const fetchImpl = (async (input: RequestInfo, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url === MANIFEST_URL) {
+        return new Response(JSON.stringify(SAMPLE_MANIFEST), { status: 200 });
+      }
+      if (url === MODULE_URL) {
+        return new Response(new ArrayBuffer(2048), { status: 200 });
+      }
+      if (url.endsWith("/settings")) {
+        // Customer's live Worker already has an OLD BUILD_SHA — must be replaced.
+        return new Response(
+          JSON.stringify({
+            success: true,
+            result: {
+              bindings: [{ type: "plain_text", name: "BUILD_SHA", text: "stale-sha-aaa" }]
+            }
+          }),
+          { status: 200 }
+        );
+      }
+      if (url.includes("/workers/scripts/")) {
+        const form = await (init?.body as FormData);
+        const meta = form?.get?.("metadata") as Blob | null;
+        if (meta) uploadedMetadata = JSON.parse(await meta.text());
+        return new Response(JSON.stringify({ success: true, result: { id: "a" } }), { status: 200 });
+      }
+      return new Response("not found", { status: 404 });
+    }) as unknown as typeof fetch;
+    await runUpdatePush(
+      { DB: db, CLOUD_MASTER_KEY: MASTER, HELM_BUNDLE_MANIFEST_URL: MANIFEST_URL },
+      { fetchImpl }
+    );
+    const bindings = (uploadedMetadata as { bindings: Array<Record<string, unknown>> }).bindings;
+    const shas = bindings.filter((b) => b.name === "BUILD_SHA");
+    expect(shas).toHaveLength(1);
+    expect(shas[0].text).toBe("newsha123");
+  });
+
+  it("cron skips deployments flagged HELM_CUSTOM_DEPLOY (self-managed)", async () => {
+    // Customer ran helm-artifacts-deploy → has HELM_CUSTOM_DEPLOY=1.
+    // The cron must NOT overwrite their custom code with upstream bytes.
+    const a = await makeRow("a", false, "oldsha");
+    const b = await makeRow("b", false, "oldsha");
+    const { db, rows, logs } = fakeDb([a, b]);
+    let uploadCalls = 0;
+    const fetchImpl = (async (input: RequestInfo, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url === MANIFEST_URL) {
+        return new Response(JSON.stringify(SAMPLE_MANIFEST), { status: 200 });
+      }
+      if (url === MODULE_URL) {
+        return new Response(new ArrayBuffer(2048), { status: 200 });
+      }
+      if (url.endsWith("/settings")) {
+        // `a` is self-managed → should be skipped. `b` is regular → pushed.
+        const m = url.match(/\/scripts\/([^/]+)\/settings$/);
+        const name = m?.[1];
+        const bindings = name === "a"
+          ? [{ type: "secret_text", name: "HELM_CUSTOM_DEPLOY" }]
+          : [{ type: "ai", name: "AI" }];
+        return new Response(JSON.stringify({ success: true, result: { bindings } }), { status: 200 });
+      }
+      if (url.match(/\/workers\/scripts\/[^/]+$/)) {
+        uploadCalls += 1;
+        const m = url.match(/\/scripts\/([^/]+)$/);
+        return new Response(
+          JSON.stringify({ success: true, result: { id: m?.[1] ?? "x" } }),
+          { status: 200 }
+        );
+      }
+      return new Response("not found", { status: 404 });
+    }) as unknown as typeof fetch;
+    const r = await runUpdatePush(
+      { DB: db, CLOUD_MASTER_KEY: MASTER, HELM_BUNDLE_MANIFEST_URL: MANIFEST_URL },
+      { fetchImpl }
+    );
+    expect(r.ok).toBe(true);
+    expect(r.considered).toBe(2);
+    expect(r.pushed).toBe(1); // only b
+    expect(r.skippedCustomDeploy).toBe(1); // a
+    expect(uploadCalls).toBe(1);
+    // The skipped one keeps its old build_sha (cron didn't touch it).
+    expect(rows.find((x) => x.id === "a")!.build_sha).toBe("oldsha");
+    expect(rows.find((x) => x.id === "b")!.build_sha).toBe("newsha123");
+    // No push-failure log row for the skip — would inflate stuck-detection.
+    expect(logs.some((l) => l === "a:push-failure")).toBe(false);
+  });
+
+  it("single-deployment push (admin Push Now) bypasses HELM_CUSTOM_DEPLOY by default", async () => {
+    // Customer flagged themselves but explicitly clicked "Push now".
+    // The handler caller would have prompted for confirmation; here the
+    // bypass is implied via deploymentId branch. This makes runUpdatePush
+    // honor the explicit ask.
+    const a = await makeRow("a", false, "oldsha");
+    const { db, rows } = fakeDb([a]);
+    const fetchImpl = (async (input: RequestInfo) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url === MANIFEST_URL) return new Response(JSON.stringify(SAMPLE_MANIFEST), { status: 200 });
+      if (url === MODULE_URL) return new Response(new ArrayBuffer(2048), { status: 200 });
+      if (url.endsWith("/settings")) {
+        return new Response(
+          JSON.stringify({
+            success: true,
+            result: { bindings: [{ type: "secret_text", name: "HELM_CUSTOM_DEPLOY" }] }
+          }),
+          { status: 200 }
+        );
+      }
+      if (url.match(/\/workers\/scripts\/[^/]+$/)) {
+        return new Response(JSON.stringify({ success: true, result: { id: "a" } }), { status: 200 });
+      }
+      return new Response("not found", { status: 404 });
+    }) as unknown as typeof fetch;
+    const r = await runUpdatePush(
+      { DB: db, CLOUD_MASTER_KEY: MASTER, HELM_BUNDLE_MANIFEST_URL: MANIFEST_URL },
+      { fetchImpl, deploymentId: "a" }
+    );
+    expect(r.ok).toBe(true);
+    expect(r.pushed).toBe(1);
+    expect(rows.find((x) => x.id === "a")!.build_sha).toBe("newsha123");
+  });
+
   it("manifest fetch failure short-circuits the whole run", async () => {
     const a = await makeRow("a", false, null);
     const { db, logs } = fakeDb([a]);
@@ -403,6 +653,109 @@ describe("listStuckDeployments", () => {
     ]);
     const stuck = await listStuckDeployments(db, 3);
     expect(stuck).toEqual([]);
+  });
+});
+
+describe("isCustomDeployFlagged", () => {
+  it("returns true when any binding by that name is present (any type)", () => {
+    expect(isCustomDeployFlagged([{ type: "secret_text", name: "HELM_CUSTOM_DEPLOY" }])).toBe(true);
+    expect(isCustomDeployFlagged([{ type: "plain_text", name: "HELM_CUSTOM_DEPLOY", text: "1" }])).toBe(true);
+    // Even an oddly-typed binding by the same name flips the flag — the
+    // user's choice; we honor it.
+    expect(isCustomDeployFlagged([{ type: "kv_namespace", name: "HELM_CUSTOM_DEPLOY", namespace_id: "x" }])).toBe(true);
+  });
+
+  it("returns false on empty / unrelated bindings", () => {
+    expect(isCustomDeployFlagged([])).toBe(false);
+    expect(isCustomDeployFlagged([{ type: "ai", name: "AI" }])).toBe(false);
+    expect(isCustomDeployFlagged([{ type: "plain_text", name: "BUILD_SHA", text: "abc" }])).toBe(false);
+  });
+});
+
+describe("isDeploymentSelfManaged", () => {
+  it("reports selfManaged:true when the binding is found", async () => {
+    const a = await makeRow("a", false, "oldsha");
+    const fetchImpl = (async (input: RequestInfo) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url.endsWith("/settings")) {
+        return new Response(
+          JSON.stringify({
+            success: true,
+            result: { bindings: [{ type: "secret_text", name: "HELM_CUSTOM_DEPLOY" }] }
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response("not found", { status: 404 });
+    }) as unknown as typeof fetch;
+    const r = await isDeploymentSelfManaged(
+      { CLOUD_MASTER_KEY: MASTER },
+      {
+        id: a.id,
+        customerId: a.customer_id,
+        accountId: a.account_id,
+        workerName: a.worker_name,
+        encryptedTokenB64: a.encrypted_token_b64,
+        encryptionIvB64: a.encryption_iv_b64,
+        workerUrl: a.worker_url,
+        buildSha: a.build_sha,
+        paused: a.paused,
+        createdAt: a.created_at,
+        lastPushedAt: a.last_pushed_at,
+        lastPushError: a.last_push_error
+      },
+      { fetchImpl }
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.selfManaged).toBe(true);
+  });
+
+  it("returns ok:false when CLOUD_MASTER_KEY is missing", async () => {
+    const a = await makeRow("a", false, null);
+    const r = await isDeploymentSelfManaged({}, {
+      id: a.id,
+      customerId: a.customer_id,
+      accountId: a.account_id,
+      workerName: a.worker_name,
+      encryptedTokenB64: a.encrypted_token_b64,
+      encryptionIvB64: a.encryption_iv_b64,
+      workerUrl: a.worker_url,
+      buildSha: a.build_sha,
+      paused: a.paused,
+      createdAt: a.created_at,
+      lastPushedAt: a.last_pushed_at,
+      lastPushError: a.last_push_error
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/CLOUD_MASTER_KEY/);
+  });
+
+  it("treats unreadable settings as not-self-managed (fail-open)", async () => {
+    const a = await makeRow("a", false, null);
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ success: false, errors: [{ message: "auth" }] }), {
+        status: 401
+      })) as unknown as typeof fetch;
+    const r = await isDeploymentSelfManaged(
+      { CLOUD_MASTER_KEY: MASTER },
+      {
+        id: a.id,
+        customerId: a.customer_id,
+        accountId: a.account_id,
+        workerName: a.worker_name,
+        encryptedTokenB64: a.encrypted_token_b64,
+        encryptionIvB64: a.encryption_iv_b64,
+        workerUrl: a.worker_url,
+        buildSha: a.build_sha,
+        paused: a.paused,
+        createdAt: a.created_at,
+        lastPushedAt: a.last_pushed_at,
+        lastPushError: a.last_push_error
+      },
+      { fetchImpl }
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.selfManaged).toBe(false);
   });
 });
 

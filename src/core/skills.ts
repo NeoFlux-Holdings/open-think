@@ -461,6 +461,29 @@ const SKILL_CATALOG: SkillDefinition[] = [
     }
   },
   {
+    id: "helm-setup-update",
+    name: "Helm Setup Update (self-update)",
+    description:
+      "Self-update the live Worker. Fetches the upstream bundle manifest (env.HELM_BUNDLE_MANIFEST_URL or the central opentink.dev URL), compares manifest.sha to env.BUILD_SHA, and PUTs a fresh upload to this Worker via the CF API when the upstream is newer. Preserves customer bindings (D1 ids, secret_text, KV namespaces, extras) by reading the live Worker's settings first and overlaying them onto the manifest's binding floor. Idempotent — running it when already up-to-date is a no-op. Pass force:true to upload even when shas match (e.g. corrupted Worker, manifest changed without sha bump). DANGEROUS — replaces the running Worker.",
+    pluginId: "helm-setup",
+    action: "update",
+    tags: ["setup", "deploy", "self-update"],
+    dangerous: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        manifestUrl: {
+          type: "string",
+          description: "Override env.HELM_BUNDLE_MANIFEST_URL for this call (e.g. point at a beta channel)"
+        },
+        force: {
+          type: "boolean",
+          description: "Upload even when env.BUILD_SHA matches the manifest sha. Default false."
+        }
+      }
+    }
+  },
+  {
     id: "helm-setup-deploy",
     name: "Helm Setup Deploy (full)",
     description:
@@ -1208,6 +1231,73 @@ const SKILL_CATALOG: SkillDefinition[] = [
         depth: { type: "number" }
       },
       required: ["url"]
+    }
+  },
+  {
+    id: "helm-artifacts-reconcile",
+    name: "Helm Artifacts Reconcile (bidirectional sync)",
+    description:
+      "Auto-fix drift in BOTH directions between the Artifacts repo (canonical) and the live Worker. (a) When wrangler.toml has bindings the Worker lacks → runs helm-artifacts-deploy so the Worker matches source. (b) When the Worker has bindings the toml lacks → runs helm-artifacts-sync-toml apply:true to commit them back. Idempotent — when in sync, exits without writes. The simplest \"true reconciliation\" loop: Artifacts is the desired state, drift is auto-resolved on each call. Pass skipDeploy:true or skipCommit:true to disable one direction. DANGEROUS — both branches mutate state.",
+    pluginId: "helm-artifacts",
+    action: "reconcile",
+    tags: ["artifacts", "drift", "reconcile", "auto"],
+    dangerous: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        skipDeploy: {
+          type: "boolean",
+          description: "When true, only commit drift back; never deploy. Default false."
+        },
+        skipCommit: {
+          type: "boolean",
+          description: "When true, only deploy; never commit drift. Default false."
+        },
+        useWrangler: {
+          type: "boolean",
+          description: "Forwarded to helm-artifacts-deploy. Default true (full multi-module fidelity)."
+        },
+        scriptName: { type: "string", description: "Override Worker name; auto-resolves." },
+        repo: { type: "string" },
+        branch: { type: "string" },
+        tomlPath: { type: "string", description: "Default wrangler.toml" }
+      }
+    }
+  },
+  {
+    id: "helm-artifacts-pull-upstream",
+    name: "Helm Artifacts Pull Upstream",
+    description:
+      "Pull source-level changes from the upstream open-think repo into the customer's Artifacts fork so they can roll forward on a release without losing their custom commits. Adds upstream as a git remote, fetches, computes ahead/behind, and (with apply:true, default) merges or rebases into the local branch. Pushes to Artifacts on clean merge (push:true, default). Surfaces conflicting paths on merge failure and aborts to keep the tree clean — the agent can resolve via helm-exec or hand off to the user. After a successful pull, run helm-artifacts-deploy / helm-artifacts-reconcile to roll the merged source forward to the live Worker. DANGEROUS — modifies the Artifacts repo's history.",
+    pluginId: "helm-artifacts",
+    action: "pull-upstream",
+    tags: ["artifacts", "git", "upstream", "merge"],
+    dangerous: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: {
+          type: "string",
+          description: "Override env.HELM_UPSTREAM_URL. Default: NeoFlux-Holdings/open-think canonical."
+        },
+        branch: {
+          type: "string",
+          description: "Upstream branch to merge from. Default env.HELM_UPSTREAM_BRANCH or \"main\"."
+        },
+        apply: {
+          type: "boolean",
+          description: "When false, only fetch + report behindBy/aheadBy without modifying the working tree. Default true."
+        },
+        push: {
+          type: "boolean",
+          description: "Push the merged result to Artifacts on clean merge. Default true. Ignored on conflict."
+        },
+        strategy: {
+          type: "string",
+          enum: ["merge", "rebase"],
+          description: "Default 'merge' (preserves history). Use 'rebase' for a linear history; harder to abort."
+        }
+      }
     }
   },
   {

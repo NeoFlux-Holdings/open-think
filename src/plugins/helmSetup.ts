@@ -166,6 +166,15 @@ export class HelmSetupPlugin implements AgentPlugin {
       return await this.runDeploy(input);
     }
 
+    if (action === "update") {
+      // Self-update: agent uploads a fresher version of itself to its
+      // own Worker. Compares env.BUILD_SHA against the upstream manifest
+      // sha; downloads + uploads when different (or always, with force).
+      // Preserves customer bindings + auto-stamps the new BUILD_SHA so
+      // a subsequent call short-circuits.
+      return await this.runUpdate(input);
+    }
+
     if (action === "auto") {
       // Mirror of POST /setup/auto — we run the same chain inline so
       // the agent can call this as a single skill instead of orchestrating
@@ -303,6 +312,194 @@ export class HelmSetupPlugin implements AgentPlugin {
     }
 
     return { ok: false, error: `Unknown action: ${action}` };
+  }
+
+  /* ---------------- helpers for self-update ---------------- */
+
+  /**
+   * Self-update: fetch the upstream bundle manifest, compare to
+   * env.BUILD_SHA, and (when newer) PUT a fresh upload to our own
+   * Worker via the CF API. The new BUILD_SHA is stamped as a plain_text
+   * binding so subsequent calls short-circuit.
+   *
+   * Idempotency: when env.BUILD_SHA === manifest.sha and `force` isn't
+   * set, returns `action: "already-up-to-date"` without making any
+   * upload. The Worker's bindings are NOT re-read in that fast path
+   * (we don't even need a CF token to short-circuit).
+   *
+   * Preserves customer state: GETs /settings/bindings before upload and
+   * keeps every binding NOT in the upstream manifest (so customer-added
+   * D1 IDs, secret_text values, KV namespaces, etc. ride through).
+   */
+  private async runUpdate(input: unknown): Promise<PluginResult> {
+    if (!this.ctx) return { ok: false, error: "Plugin not initialized" };
+    const env = this.ctx.env as Env;
+    const o = asObj(input) as { manifestUrl?: string; force?: boolean };
+
+    const manifestUrl = (typeof o.manifestUrl === "string" && o.manifestUrl)
+      || env.HELM_BUNDLE_MANIFEST_URL
+      || "https://opentink.dev/helm/manifest.json";
+    const currentSha = env.BUILD_SHA ?? null;
+
+    // 1. Fetch manifest.
+    let manifest: {
+      sha: string;
+      version?: string;
+      moduleUrl: string;
+      metadata: {
+        main_module: string;
+        compatibility_date?: string;
+        compatibility_flags?: string[];
+        bindings?: Array<Record<string, unknown> & { name?: unknown; type?: unknown }>;
+        migrations?: Array<Record<string, unknown>>;
+      };
+    };
+    try {
+      const r = await this.ctx.fetch(manifestUrl, {
+        headers: { accept: "application/json" }
+      });
+      if (!r.ok) {
+        return { ok: false, error: `manifest fetch ${r.status}: ${(await r.text()).slice(0, 200)}` };
+      }
+      manifest = await r.json();
+      if (!manifest.sha || !manifest.moduleUrl || !manifest.metadata) {
+        return { ok: false, error: "manifest missing required fields (sha, moduleUrl, metadata)" };
+      }
+    } catch (err) {
+      return { ok: false, error: `manifest fetch failed: ${(err as Error).message}` };
+    }
+
+    // 2. Short-circuit when already up-to-date.
+    if (!o.force && currentSha && currentSha === manifest.sha) {
+      return {
+        ok: true,
+        data: {
+          action: "already-up-to-date",
+          currentSha,
+          manifestSha: manifest.sha,
+          version: manifest.version ?? null,
+          manifestUrl,
+          note: "BUILD_SHA matches the upstream manifest — no upload needed."
+        }
+      };
+    }
+
+    // 3. From here we need the CF token + script identity.
+    const token = env.CLOUDFLARE_API_TOKEN ?? env.CLOUDFLARE_AGENT_TOKEN ?? "";
+    if (!token) {
+      return {
+        ok: false,
+        error: "CLOUDFLARE_API_TOKEN missing. Self-update needs the same token used for deploy. Paste it in /app#/settings → Manage secrets."
+      };
+    }
+    const accountResolve = await this.resolveAccount(token, env.CLOUDFLARE_ACCOUNT_ID);
+    if (!accountResolve.ok) return { ok: false, error: accountResolve.error };
+    const accountId = accountResolve.id;
+    const scriptName = await this.resolveScript(token, accountId);
+
+    // 4. Read current bindings so we don't clobber D1 IDs / secrets / extras.
+    let existingBindings: Array<Record<string, unknown> & { name?: unknown; type?: unknown }> = [];
+    try {
+      const settings = await this.ctx.fetch(
+        `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/workers/scripts/${encodeURIComponent(scriptName)}/settings`,
+        { headers: { Authorization: `Bearer ${token}`, accept: "application/json" } }
+      );
+      if (settings.ok) {
+        const j = (await settings.json().catch(() => ({}))) as {
+          result?: { bindings?: Array<Record<string, unknown> & { name?: unknown; type?: unknown }> };
+        };
+        existingBindings = j.result?.bindings ?? [];
+      }
+    } catch {
+      // Non-fatal — proceed with manifest-only bindings.
+    }
+
+    // 5. Merge: manifest is the floor (defines required names), customer
+    //    bindings overlay (preserve type-specific fields like database_id),
+    //    customer-only names ride through (their additions).
+    const manifestBindings = manifest.metadata.bindings ?? [];
+    const merged = mergeBindingsByName(manifestBindings, existingBindings);
+
+    // 6. Stamp BUILD_SHA fresh (drop any prior to avoid duplicates).
+    const finalBindings = merged.filter(
+      (b) => !(b.type === "plain_text" && b.name === "BUILD_SHA")
+    );
+    finalBindings.push({
+      type: "plain_text",
+      name: "BUILD_SHA",
+      text: manifest.sha
+    });
+
+    // 7. Fetch the bundle bytes.
+    let moduleBytes: ArrayBuffer;
+    try {
+      const r = await this.ctx.fetch(manifest.moduleUrl, {
+        headers: { accept: "application/javascript+module" }
+      });
+      if (!r.ok) {
+        return { ok: false, error: `module fetch ${r.status}: ${(await r.text()).slice(0, 200)}` };
+      }
+      moduleBytes = await r.arrayBuffer();
+    } catch (err) {
+      return { ok: false, error: `module fetch failed: ${(err as Error).message}` };
+    }
+
+    // 8. Build metadata + flatten migrations (CF API expects single
+    //    object, not array). Identical shape to deployFlow / pushUpdates.
+    const metadata: Record<string, unknown> = {
+      main_module: manifest.metadata.main_module,
+      compatibility_date: manifest.metadata.compatibility_date,
+      compatibility_flags: manifest.metadata.compatibility_flags,
+      bindings: finalBindings
+    };
+    const flatMigrations = flattenMigrations(manifest.metadata.migrations);
+    if (flatMigrations) metadata.migrations = flatMigrations;
+
+    // 9. Upload via multipart form (CF Workers Scripts API contract).
+    const uploadResult = await uploadWorkerMultipart({
+      fetchImpl: this.ctx.fetch,
+      token,
+      accountId,
+      scriptName,
+      mainModuleName: manifest.metadata.main_module,
+      moduleBytes,
+      metadata
+    });
+    if (!uploadResult.ok) {
+      return { ok: false, error: uploadResult.error };
+    }
+
+    // Clear HELM_CUSTOM_DEPLOY — the user explicitly opted into upstream
+    // by calling this skill, so hand the deployment back to the cron.
+    // 404 (no flag set) is success. Silent on failure: the upload is
+    // what matters; the flag-clear is a follow-up hint.
+    let clearedSelfManaged = false;
+    try {
+      const r = await this.ctx.fetch(
+        `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/workers/scripts/${encodeURIComponent(scriptName)}/secrets/HELM_CUSTOM_DEPLOY`,
+        { method: "DELETE", headers: { Authorization: `Bearer ${token}` } }
+      );
+      clearedSelfManaged = r.ok || r.status === 404;
+    } catch {
+      // Non-fatal — the upstream upload already succeeded.
+    }
+
+    return {
+      ok: true,
+      data: {
+        action: "updated",
+        previousSha: currentSha,
+        newSha: manifest.sha,
+        version: manifest.version ?? null,
+        manifestUrl,
+        scriptName,
+        moduleBytes: moduleBytes.byteLength,
+        clearedSelfManaged,
+        note: currentSha
+          ? `Updated from ${currentSha.slice(0, 8)} → ${manifest.sha.slice(0, 8)}. CF will reload the Worker (~15s).${clearedSelfManaged ? " HELM_CUSTOM_DEPLOY cleared; upstream cron will resume on the next tick." : ""}`
+          : `Uploaded ${manifest.sha.slice(0, 8)}. CF will reload the Worker (~15s).`
+      }
+    };
   }
 
   /* ---------------- helpers for deploy-everything ---------------- */
@@ -999,4 +1196,143 @@ export class HelmSetupPlugin implements AgentPlugin {
     }
     return { ok: true, detail: "patched" };
   }
+}
+
+/* ---------------- module-level helpers used by runUpdate ----------------
+ *
+ * These mirror the marketing-site cron path (site/src/cloud/pushUpdates.ts
+ * + cfApi.ts) so the agent's self-update produces an identical upload to
+ * what the cron would push. Duplicated rather than imported because the
+ * agent runtime can't pull from the marketing site at build time.
+ */
+
+/**
+ * Manifest bindings are the floor — every name we expect must end up in
+ * the merged set. Customer bindings overlay so type-specific fields
+ * (database_id, secret_text values, KV namespace_id) survive the upload.
+ * Extra customer-only names ride through unchanged.
+ */
+function mergeBindingsByName(
+  manifest: Array<Record<string, unknown> & { name?: unknown; type?: unknown }>,
+  customer: Array<Record<string, unknown> & { name?: unknown; type?: unknown }>
+): Array<Record<string, unknown> & { name?: unknown; type?: unknown }> {
+  const byName = new Map<string, Record<string, unknown> & { name?: unknown; type?: unknown }>();
+  for (const b of manifest) {
+    if (typeof b.name === "string") byName.set(b.name, { ...b });
+  }
+  for (const b of customer) {
+    if (typeof b.name !== "string") continue;
+    const existing = byName.get(b.name);
+    if (existing) {
+      if (existing.type === b.type) {
+        byName.set(b.name, { ...existing, ...b });
+      }
+      // Type mismatch — keep manifest's view; customer's binding will
+      // be replaced. Rare; not worth a console.warn from a plugin.
+    } else {
+      byName.set(b.name, { ...b });
+    }
+  }
+  return Array.from(byName.values());
+}
+
+/**
+ * CF Workers Scripts API expects metadata.migrations as a SINGLE object
+ * describing the diff to apply, not the wrangler.toml-shaped historical
+ * array. Collapse [v1, v2, v3] into one {new_tag, new_classes,
+ * new_sqlite_classes, ...} using the LAST entry's tag as new_tag.
+ *
+ * Returns null when there are no migrations — caller should drop the
+ * field entirely.
+ */
+function flattenMigrations(
+  migrations: Array<Record<string, unknown>> | undefined
+): Record<string, unknown> | null {
+  if (!migrations || migrations.length === 0) return null;
+  const last = migrations[migrations.length - 1];
+  const newClasses = new Set<string>();
+  const newSqliteClasses = new Set<string>();
+  const renamedClasses: Array<Record<string, unknown>> = [];
+  const transferredClasses: Array<Record<string, unknown>> = [];
+  const deletedClasses = new Set<string>();
+  for (const m of migrations) {
+    for (const c of (m.new_classes as string[] | undefined) ?? []) newClasses.add(c);
+    for (const c of (m.new_sqlite_classes as string[] | undefined) ?? []) newSqliteClasses.add(c);
+    for (const r of (m.renamed_classes as Array<Record<string, unknown>> | undefined) ?? []) renamedClasses.push(r);
+    for (const t of (m.transferred_classes as Array<Record<string, unknown>> | undefined) ?? []) transferredClasses.push(t);
+    for (const d of (m.deleted_classes as string[] | undefined) ?? []) deletedClasses.add(d);
+  }
+  const flat: Record<string, unknown> = { new_tag: String(last.tag ?? "") };
+  if (newClasses.size > 0) flat.new_classes = Array.from(newClasses);
+  if (newSqliteClasses.size > 0) flat.new_sqlite_classes = Array.from(newSqliteClasses);
+  if (renamedClasses.length > 0) flat.renamed_classes = renamedClasses;
+  if (transferredClasses.length > 0) flat.transferred_classes = transferredClasses;
+  if (deletedClasses.size > 0) flat.deleted_classes = Array.from(deletedClasses);
+  return flat;
+}
+
+/**
+ * PUT /workers/scripts/{name} as a multipart form with metadata + the
+ * main module bytes. Idempotent (CF replaces the script atomically).
+ *
+ * Auto-recovers from "Actor migration tag precondition failed" — when
+ * the live Worker is already at a newer migration than our `new_tag`,
+ * we either drop migrations entirely (same tag) or set old_tag to the
+ * expected value (older tag) and retry.
+ */
+async function uploadWorkerMultipart(input: {
+  fetchImpl: typeof fetch;
+  token: string;
+  accountId: string;
+  scriptName: string;
+  mainModuleName: string;
+  moduleBytes: ArrayBuffer;
+  metadata: Record<string, unknown>;
+}): Promise<{ ok: true; etag?: string } | { ok: false; error: string }> {
+  const url = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(input.accountId)}/workers/scripts/${encodeURIComponent(input.scriptName)}`;
+  const buildBody = (metadata: Record<string, unknown>): FormData => {
+    const fd = new FormData();
+    fd.append(
+      "metadata",
+      new Blob([JSON.stringify(metadata)], { type: "application/json" }),
+      "metadata"
+    );
+    fd.append(
+      input.mainModuleName,
+      new Blob([input.moduleBytes], { type: "application/javascript+module" }),
+      input.mainModuleName
+    );
+    return fd;
+  };
+  const send = async (metadata: Record<string, unknown>): Promise<Response> =>
+    input.fetchImpl(url, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${input.token}` },
+      body: buildBody(metadata)
+    });
+
+  let resp = await send(input.metadata);
+  if (!resp.ok) {
+    const text = await resp.text();
+    const tagMismatch = /migration tag precondition failed.*expected tag is ['"]([^'"]+)['"]/i.exec(text);
+    const flat = input.metadata.migrations as Record<string, unknown> | undefined;
+    if (tagMismatch && flat) {
+      const expected = tagMismatch[1];
+      const retryMeta = { ...input.metadata };
+      if (expected === flat.new_tag) {
+        delete (retryMeta as { migrations?: unknown }).migrations;
+      } else {
+        retryMeta.migrations = { ...flat, old_tag: expected };
+      }
+      resp = await send(retryMeta);
+      if (!resp.ok) {
+        const t2 = await resp.text();
+        return { ok: false, error: `upload failed after migration-tag retry (${resp.status}): ${t2.slice(0, 200)}` };
+      }
+    } else {
+      return { ok: false, error: `upload failed (${resp.status}): ${text.slice(0, 200)}` };
+    }
+  }
+  const j = (await resp.json().catch(() => ({}))) as { result?: { etag?: string } };
+  return { ok: true, etag: j.result?.etag };
 }

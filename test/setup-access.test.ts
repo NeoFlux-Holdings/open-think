@@ -369,6 +369,82 @@ describe("runLockdown · failure paths", () => {
     expect(r.appId).toBe("app-1"); // still surfaces the breadcrumb
   });
 
+  it("CF_ACCESS_TEAM_DOMAIN already a plain_text var with same value → secret-set succeeds (reused)", async () => {
+    // Simulates the deploy-then-wizard sequence: deployFlow.ts uploaded
+    // the Worker with CF_ACCESS_TEAM_DOMAIN as a plain_text var. Now
+    // the in-app wizard runs — its first PUT-secret returns 10053
+    // ("binding name already in use"), then we GET the script's
+    // settings, see the binding has the same value, and treat it as a
+    // no-op. The CF_ACCESS_AUD + ALLOWED_EMAILS PUTs proceed normally.
+    let putCallNum = 0;
+    const f = routedFetch({
+      [`${CF}/accounts/acc-1/access/organizations`]: () =>
+        ok({ auth_domain: "tom.cloudflareaccess.com", name: "Tom" }),
+      [`${CF}/accounts/acc-1/access/apps/app-1/policies`]: () => ok({ id: "p" }),
+      [`${CF}/accounts/acc-1/access/apps`]: () =>
+        ok({ id: "app-1", uid: "app-1", aud: "AUD-X", name: "n", domain: "d", type: "self_hosted" }),
+      [`${CF}/accounts/acc-1/workers/scripts/h/secrets`]: () => {
+        putCallNum += 1;
+        // Only the first PUT (CF_ACCESS_TEAM_DOMAIN) hits the conflict.
+        if (putCallNum === 1) return err(10053, "Binding name 'CF_ACCESS_TEAM_DOMAIN' already in use.");
+        return ok({ name: "set", type: "secret_text" });
+      },
+      [`${CF}/accounts/acc-1/workers/scripts/h/settings`]: () =>
+        ok({
+          bindings: [
+            { name: "CF_ACCESS_TEAM_DOMAIN", type: "plain_text", text: "https://tom.cloudflareaccess.com" }
+          ]
+        })
+    });
+    const r = await runLockdown(
+      {
+        token: "tok",
+        accountId: "acc-1",
+        scriptName: "h",
+        appName: "h",
+        workerHost: "h.dev",
+        allowedEmails: ["a@x.com"]
+      },
+      { fetchImpl: f }
+    );
+    expect(r.ok).toBe(true);
+    const teamStep = r.steps.find((s) => s.kind === "set-secret-team-domain");
+    expect(teamStep?.ok).toBe(true);
+    expect(teamStep?.summary).toMatch(/already present as plain_text/);
+  });
+
+  it("CF_ACCESS_TEAM_DOMAIN already plain_text with DIFFERENT value → fails with concrete recovery", async () => {
+    const f = routedFetch({
+      [`${CF}/accounts/acc-1/access/organizations`]: () =>
+        ok({ auth_domain: "tom.cloudflareaccess.com", name: "Tom" }),
+      [`${CF}/accounts/acc-1/access/apps/app-1/policies`]: () => ok({ id: "p" }),
+      [`${CF}/accounts/acc-1/access/apps`]: () =>
+        ok({ id: "app-1", uid: "app-1", aud: "AUD-X", name: "n", domain: "d", type: "self_hosted" }),
+      [`${CF}/accounts/acc-1/workers/scripts/h/secrets`]: () =>
+        err(10053, "Binding name 'CF_ACCESS_TEAM_DOMAIN' already in use."),
+      [`${CF}/accounts/acc-1/workers/scripts/h/settings`]: () =>
+        ok({
+          bindings: [
+            { name: "CF_ACCESS_TEAM_DOMAIN", type: "plain_text", text: "https://OLD.cloudflareaccess.com" }
+          ]
+        })
+    });
+    const r = await runLockdown(
+      {
+        token: "tok",
+        accountId: "acc-1",
+        scriptName: "h",
+        appName: "h",
+        workerHost: "h.dev",
+        allowedEmails: ["a@x.com"]
+      },
+      { fetchImpl: f }
+    );
+    expect(r.ok).toBe(false);
+    expect(r.recovery).toMatch(/different value/i);
+    expect(r.recovery).toContain("Settings → Variables");
+  });
+
   it("empty allowedEmails list → fails create-policy step before calling CF", async () => {
     const f = routedFetch({
       [`${CF}/accounts/acc-1/access/organizations`]: () =>

@@ -447,5 +447,165 @@ Three patterns, in order of preference:
 
 When choosing: 1 for binding/var changes the user will accept on faith;
 2 when you have authority and the user said "deploy"; 3 when reviewing.
+`.trim(),
+
+  /* --------------------- the update-flow loop --------------------- */
+  "update-flow": `
+HOW HELM STAYS UP TO DATE — AND HOW IT DIVERGES.
+
+Mental model: every Helm deployment lives at the intersection of two
+sources:
+  upstream open-think     (NeoFlux-Holdings/open-think)  — the public release
+  customer's Artifacts    (private CF Artifacts repo)    — their fork
+  live Worker             (the running CF Worker)        — what users hit
+
+There are three pathways for changes to flow:
+
+  ┌──────────────────────┐   helm-setup-update     ┌──────────────────┐
+  │  upstream manifest   │  ─────────────────────▶ │    live Worker   │
+  │ (opentink.dev .json) │   cron pushUpdates      └──────────────────┘
+  └──────────┬───────────┘                                  ▲
+             │ helm-artifacts-pull-upstream                 │
+             ▼                                              │ helm-artifacts-deploy
+  ┌──────────────────────┐                                  │  (or reconcile)
+  │ customer's Artifacts │ ─────────────────────────────────┘
+  │   (their fork repo)  │
+  └──────────────────────┘
+
+The two modes:
+
+  1. UPSTREAM MODE (default)
+     The hourly cron pushes the latest opentink.dev bundle to the live
+     Worker. Customer never touches code. Their secrets/bindings ride
+     through (mergeBindings preserves D1 IDs, secrets, custom KV, etc.).
+     env.BUILD_SHA is stamped on every push so the Worker knows its
+     own version.
+     Manual "Push now" button on the manage page does the same thing
+     out of band.
+     Customer can also run helm-setup-update from chat to pull upstream
+     on demand — same effect as Push now but agent-initiated.
+
+  2. SELF-MANAGED MODE
+     Customer (or agent) ran helm-artifacts-deploy, which deploys their
+     own code from their Artifacts repo via 'wrangler deploy' inside the
+     helm-shell container. Side effect: HELM_CUSTOM_DEPLOY=1 is set as
+     a Worker secret. The cron checks for this binding's NAME on every
+     pushOne and SKIPS the deployment if found. The customer's custom
+     code is now safe from upstream cron clobbering.
+
+     The Push now button still works but warns the user before
+     overwriting their custom code with upstream bytes.
+
+     helm-setup-update also still works — it's the explicit "go back
+     to upstream" handle. After a successful upload it clears
+     HELM_CUSTOM_DEPLOY so the cron resumes.
+
+THE DIVERGE-AND-RECONCILE LOOP
+
+Customer wants to evolve their fork while keeping up with upstream:
+
+  a. EDIT (in shell or locally):
+     The customer or agent edits files in the Artifacts checkout.
+     Use helm-artifacts-write-file (atomic edit + commit + push) for
+     small changes, or helm-exec into the container for multi-file
+     edits + 'git commit' + 'git push'.
+
+  b. DEPLOY (Artifacts → live Worker):
+     helm-artifacts-deploy — runs 'wrangler deploy' from the checkout.
+     Auto-sets HELM_CUSTOM_DEPLOY=1 so the upstream cron skips them
+     going forward. Pass {claimCanonical: false} for one-shot tests
+     you want overwritten by the next cron tick.
+
+  c. RECONCILE BINDINGS (both directions):
+     helm-artifacts-reconcile — picks up wrangler.toml drift in either
+     direction:
+       • TOML has bindings the live Worker lacks → runs deploy
+       • Live Worker has bindings the TOML lacks → commits them back
+     Idempotent — no drift = single git pull + settings GET, no writes.
+
+  d. PULL UPSTREAM (sync with open-think):
+     helm-artifacts-pull-upstream — adds the open-think repo as the
+     'upstream' remote, fetches, and merges into the local branch.
+     Reports behindBy/aheadBy on dry-run (apply:false). On clean merge
+     pushes back to Artifacts. On conflict aborts the merge and
+     surfaces conflicting paths so the agent or user can resolve.
+
+     After a successful pull, run reconcile or deploy to roll the
+     merged code forward to the live Worker.
+
+  e. PR UPSTREAM (optional):
+     The customer's Artifacts repo is just a git remote — they can
+     'git remote add github https://github.com/them/their-fork' from
+     their local clone, push, and open a PR via gh. Nothing in the
+     update-flow assumes Artifacts is the only mirror.
+
+KEY ENV VARS
+
+  BUILD_SHA                 stamped on every cron / direct deploy / self-update
+  HELM_BUNDLE_MANIFEST_URL  where to fetch the upstream manifest from
+  HELM_UPSTREAM_URL         git URL for pull-upstream (default: open-think canonical)
+  HELM_UPSTREAM_BRANCH      upstream branch (default: "main")
+  HELM_CUSTOM_DEPLOY        secret value "1" → cron skips this Worker
+  ARTIFACTS_REPO            this Worker's Artifacts repo name
+  ARTIFACTS_AUTO_SYNC       "1" → cron-sync runs every cron firing
+`.trim(),
+
+  /* --------------------- divergence quickstart --------------------- */
+  "divergence": `
+QUICKSTART: HOW TO DIVERGE FROM UPSTREAM AND THEN KEEP UP.
+
+The agent can evolve its own code while staying in sync with the
+open-think project. Three commands cover the loop:
+
+  # 1. Customize. Edits live in the Artifacts repo (canonical).
+  helm-artifacts-write-file {path: "src/myCustom.ts", content: "..."}
+  helm-artifacts-deploy
+       — runs 'wrangler deploy' from Artifacts
+       — sets HELM_CUSTOM_DEPLOY=1 so the cron stops overwriting
+
+  # 2. Pull upstream fixes when they land.
+  helm-artifacts-pull-upstream {apply: false}
+       — dry-run: shows behindBy / aheadBy
+  helm-artifacts-pull-upstream
+       — applies the merge; pushes to Artifacts on success
+       — surfaces conflict paths if merge fails
+
+  # 3. After pull, roll forward.
+  helm-artifacts-deploy
+       — re-deploy from the merged Artifacts source
+
+To go back to upstream-managed mode (give up your customizations):
+
+  helm-setup-update
+       — fetches upstream bundle bytes, uploads
+       — clears HELM_CUSTOM_DEPLOY so the cron resumes
+
+Or, more nuclear, restore from a known-good upstream tag:
+
+  helm-artifacts-pull-upstream {branch: "v0.6.0", strategy: "rebase"}
+  helm-artifacts-deploy
+
+GOTCHAS
+
+  • The upstream cron's 'Push now' button on the manage page is
+    DESIGNED to overwrite custom deploys (it bypasses the flag with
+    confirmation). If the customer doesn't want that, they should
+    pause the deployment OR rely on their Artifacts pipeline.
+
+  • Conflicts on pull-upstream abort the merge — the working tree is
+    left clean. To resolve, helm-exec into the container and run
+    'git pull upstream main', resolve in vim, 'git commit', 'git push'.
+    Or clone locally and resolve there.
+
+  • helm-artifacts-deploy uses 'wrangler deploy', which respects the
+    customer's wrangler.toml. If the toml drifted from the live Worker
+    (helm-artifacts-sync-toml shows missingFromToml > 0), deploy will
+    DROP those bindings. Run reconcile first, then deploy.
+
+  • BUILD_SHA only tracks the upstream manifest sha. After a custom
+    deploy, BUILD_SHA reflects whatever was in wrangler.toml's vars at
+    the time — which might not be the customer's git sha. The agent
+    can stamp its own version (e.g. 'wrangler deploy --var
+    BUILD_SHA:custom-\\$(git rev-parse HEAD)') if it cares.
 `.trim()
 };

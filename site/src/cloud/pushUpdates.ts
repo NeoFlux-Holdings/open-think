@@ -21,6 +21,7 @@
 import { flattenMigrationsForCfApi, getWorkerSettings, uploadWorkerScript } from "./cfApi";
 import { decryptCfToken } from "./crypto";
 import {
+  getDeployment,
   listActiveDeployments,
   recordPushFailure,
   recordPushSuccess,
@@ -90,6 +91,18 @@ export interface PushOptions {
   fetchImpl?: typeof fetch;
   /** Override clock for tests; defaults to Date.now. */
   now?: () => number;
+  /**
+   * Limit the run to a single deployment id. Used by the admin "Push now"
+   * action so a customer can trigger an update outside the hourly cadence
+   * (e.g. just shipped a bug fix and don't want to wait an hour).
+   *
+   * Differences from the cron path:
+   *   - Bypasses the `paused = 0` filter — single-deployment pushes are
+   *     intentional, not bulk; the customer asked for it.
+   *   - Skips the stuck-deployment scan; that's a global health metric,
+   *     not relevant to a one-off push.
+   */
+  deploymentId?: string;
 }
 
 export interface PushSummary {
@@ -98,10 +111,38 @@ export interface PushSummary {
   considered: number;
   pushed: number;
   skippedUpToDate: number;
+  /**
+   * Deployments that flipped HELM_CUSTOM_DEPLOY=1 (or any binding by that
+   * name) to claim canonical-source from the cron's perspective. The
+   * customer is self-managing via Artifacts; the cron should NOT overwrite
+   * their custom code with upstream. They can still trigger a manual
+   * upstream push from the manage page.
+   */
+  skippedCustomDeploy?: number;
   failures: Array<{ deploymentId: string; error: string }>;
   /** Deployments that have failed 3+ pushes since their last success. */
   stuck?: string[];
   error?: string;
+}
+
+/**
+ * Marker binding name. Any binding with this exact name on the live Worker
+ * tells the upstream cron "I'm self-managing — skip me." Type doesn't
+ * matter: we honor plain_text "1", secret_text (value hidden but presence
+ * is the signal), even an oddly-named D1 binding (it'd be the user's
+ * choice and we should respect it). Set by helm-artifacts-deploy on every
+ * successful self-deploy; cleared by helm-setup-update.
+ */
+export const CUSTOM_DEPLOY_BINDING_NAME = "HELM_CUSTOM_DEPLOY";
+
+/**
+ * Exported so the manage-page handlers can mirror the same check (e.g.
+ * to warn the user when they click "Push update now" while flagged).
+ */
+export function isCustomDeployFlagged(
+  bindings: Array<Record<string, unknown> & { name?: unknown }>
+): boolean {
+  return bindings.some((b) => b.name === CUSTOM_DEPLOY_BINDING_NAME);
 }
 
 /**
@@ -130,10 +171,81 @@ export async function runUpdatePush(
     return summary({ ok: false, error: `manifest fetch: ${(err as Error).message}` });
   }
 
+  // Single-deployment branch: customer-initiated "Push now". Skip the
+  // active-only filter (the customer asked, even if their deployment is
+  // paused) and skip the stuck-scan (one-off, not a fleet check).
+  if (options.deploymentId) {
+    const single = await getDeployment(env.DB, options.deploymentId);
+    if (!single) {
+      return summary({
+        ok: false,
+        manifestSha: manifest.sha,
+        error: `deployment '${options.deploymentId}' not found`
+      });
+    }
+    if (single.buildSha === manifest.sha) {
+      return summary({
+        ok: true,
+        manifestSha: manifest.sha,
+        considered: 1,
+        pushed: 0,
+        skippedUpToDate: 1
+      });
+    }
+    try {
+      const moduleBytes = await fetchModuleBytes(manifest.moduleUrl, fetchImpl);
+      // Admin-initiated push BYPASSES the self-managed flag — the
+      // customer explicitly clicked "Push now", they know what they're
+      // doing. The button on the manage page surfaces a warning when
+      // the flag is set so they can opt out before clicking.
+      const result = await pushOne({
+        env,
+        deployment: single,
+        manifest,
+        moduleBytes,
+        fetchImpl,
+        bypassCustomDeployFlag: true
+      });
+      if (result.skipped) {
+        // Shouldn't happen given bypass=true, but covered for completeness.
+        return summary({
+          ok: true,
+          manifestSha: manifest.sha,
+          considered: 1,
+          pushed: 0,
+          skippedCustomDeploy: 1
+        });
+      }
+      return summary({
+        ok: true,
+        manifestSha: manifest.sha,
+        considered: 1,
+        pushed: 1,
+        skippedUpToDate: 0
+      });
+    } catch (err) {
+      const msg = (err as Error).message;
+      try {
+        await recordPushFailure(env.DB, single.id, manifest.sha, msg);
+      } catch {
+        /* never let audit-log failure mask the original error */
+      }
+      return summary({
+        ok: false,
+        manifestSha: manifest.sha,
+        considered: 1,
+        pushed: 0,
+        skippedUpToDate: 0,
+        failures: [{ deploymentId: single.id, error: msg }]
+      });
+    }
+  }
+
   const deployments = await listActiveDeployments(env.DB);
   const failures: PushSummary["failures"] = [];
   let pushed = 0;
   let skipped = 0;
+  let skippedCustomDeploy = 0;
 
   // Pre-fetch the bundle once and reuse it across every deployment.
   let bundleBytes: ArrayBuffer | null = null;
@@ -147,13 +259,21 @@ export async function runUpdatePush(
       if (!bundleBytes) {
         bundleBytes = await fetchModuleBytes(manifest.moduleUrl, fetchImpl);
       }
-      await pushOne({
+      const result = await pushOne({
         env,
         deployment,
         manifest,
         moduleBytes: bundleBytes,
         fetchImpl
       });
+      if (result.skipped) {
+        skippedCustomDeploy += 1;
+        // Don't write a push-failure row — that would inflate the
+        // stuck-detection counter. The skippedCustomDeploy counter on
+        // PushSummary is what the operator dashboard reads. Customers
+        // see the "self-managed" badge on the manage page.
+        continue;
+      }
       pushed += 1;
     } catch (err) {
       const msg = (err as Error).message;
@@ -184,6 +304,7 @@ export async function runUpdatePush(
     considered: deployments.length,
     pushed,
     skippedUpToDate: skipped,
+    skippedCustomDeploy,
     failures,
     stuck: stuck.map((s) => s.deploymentId)
   });
@@ -229,15 +350,79 @@ export async function listStuckDeployments(
   }));
 }
 
+/**
+ * Is this deployment currently self-managed? Decrypts the CF token, GETs
+ * /workers/scripts/{name}/settings, and checks the bindings array for the
+ * marker. Used by the manage page's push-now handler to gate the action
+ * with a confirmation when pushing upstream would clobber custom code.
+ *
+ * Returns {ok: false, error} on token decrypt or CF API failure rather
+ * than throwing — the caller can decide how loud to be about it. Without
+ * this safeguard, "Push now" silently overwrites a customer's Artifacts
+ * deploy with upstream bytes; with it, the UI gets a chance to warn.
+ */
+export async function isDeploymentSelfManaged(
+  env: { CLOUD_MASTER_KEY?: string },
+  deployment: CloudDeploymentRow,
+  options: { fetchImpl?: typeof fetch } = {}
+): Promise<{ ok: true; selfManaged: boolean } | { ok: false; error: string }> {
+  const masterKey = env.CLOUD_MASTER_KEY;
+  if (!masterKey) return { ok: false, error: "CLOUD_MASTER_KEY missing" };
+  const fetchImpl = options.fetchImpl ?? fetch;
+  let token: string;
+  try {
+    token = await decryptCfToken(
+      {
+        ciphertextB64: deployment.encryptedTokenB64,
+        ivB64: deployment.encryptionIvB64
+      },
+      masterKey
+    );
+  } catch (err) {
+    return { ok: false, error: `token decrypt failed: ${(err as Error).message}` };
+  }
+  try {
+    const settings = await getWorkerSettings(
+      token,
+      deployment.accountId,
+      deployment.workerName,
+      { fetchImpl }
+    );
+    if (!settings.success || !settings.result?.bindings) {
+      // Treat unreadable settings as "not self-managed" — push proceeds.
+      // Worst case: push succeeds and we missed the warning. Better than
+      // refusing every push when the API is flaky.
+      return { ok: true, selfManaged: false };
+    }
+    return { ok: true, selfManaged: isCustomDeployFlagged(settings.result.bindings) };
+  } catch (err) {
+    return { ok: false, error: (err as Error).message };
+  }
+}
+
 interface PushOneInput {
   env: PushEnv;
   deployment: CloudDeploymentRow;
   manifest: BundleManifest;
   moduleBytes: ArrayBuffer;
   fetchImpl: typeof fetch;
+  /**
+   * When true, ignore the HELM_CUSTOM_DEPLOY flag and push anyway. Set
+   * by the admin "Push now" path so a customer who's self-managing can
+   * still pull a fresh upstream snapshot when they explicitly ask for
+   * one.
+   */
+  bypassCustomDeployFlag?: boolean;
 }
 
-async function pushOne(input: PushOneInput): Promise<void> {
+interface PushOneResult {
+  /** When true, the deployment was skipped without uploading. */
+  skipped?: boolean;
+  /** Human-readable reason when skipped. */
+  reason?: string;
+}
+
+async function pushOne(input: PushOneInput): Promise<PushOneResult> {
   const { env, deployment, manifest, moduleBytes, fetchImpl } = input;
   const masterKey = env.CLOUD_MASTER_KEY;
   if (!masterKey) throw new Error("CLOUD_MASTER_KEY missing");
@@ -256,11 +441,14 @@ async function pushOne(input: PushOneInput): Promise<void> {
     throw new Error(`token decrypt failed: ${(err as Error).message}`);
   }
 
-  // Read the customer's existing bindings so we don't clobber their D1 ID,
-  // secret_text values, or any extras they added. If the GET fails (script
-  // missing — happens on a deploy that hasn't actually run yet), fall
-  // through with manifest-only bindings.
-  let mergedBindings = manifest.metadata.bindings;
+  // Read the customer's existing bindings — used for two things:
+  //   1. Detect HELM_CUSTOM_DEPLOY → skip if customer is self-managing.
+  //   2. Merge customer's D1 IDs / secret_text values / extras into the
+  //      upload so we don't clobber them.
+  // If the GET fails (script missing — happens on a deploy that hasn't
+  // actually run yet), fall through with manifest-only bindings; the
+  // self-managed flag only matters for already-deployed Workers.
+  let existingBindings: Array<Record<string, unknown> & { name?: unknown; type?: unknown }> = [];
   try {
     const settings = await getWorkerSettings(
       token,
@@ -269,10 +457,7 @@ async function pushOne(input: PushOneInput): Promise<void> {
       { fetchImpl }
     );
     if (settings.success && settings.result?.bindings) {
-      mergedBindings = mergeBindings(
-        manifest.metadata.bindings,
-        settings.result.bindings
-      );
+      existingBindings = settings.result.bindings;
     }
   } catch (err) {
     // Non-fatal — push proceeds with the manifest-only view.
@@ -280,6 +465,36 @@ async function pushOne(input: PushOneInput): Promise<void> {
       `[cloud-push] could not read existing bindings for ${deployment.workerName}: ${(err as Error).message}`
     );
   }
+
+  // Self-managed short-circuit. The customer flipped HELM_CUSTOM_DEPLOY
+  // (typically via helm-artifacts-deploy auto-setting it on a custom
+  // deploy). The upstream cron should NOT overwrite their custom code
+  // with our manifest's bytes. They can still trigger a manual push
+  // from the manage page (which sets bypassCustomDeployFlag=true).
+  if (!input.bypassCustomDeployFlag && isCustomDeployFlagged(existingBindings)) {
+    return {
+      skipped: true,
+      reason: `${CUSTOM_DEPLOY_BINDING_NAME} binding present — customer is self-managing via Artifacts.`
+    };
+  }
+
+  let mergedBindings = manifest.metadata.bindings;
+  if (existingBindings.length > 0) {
+    mergedBindings = mergeBindings(manifest.metadata.bindings, existingBindings);
+  }
+  // Stamp BUILD_SHA on every push so the live Worker can introspect
+  // its own version (helm-setup-update reads env.BUILD_SHA to decide
+  // whether the upstream manifest is newer than what's running). We
+  // replace any existing BUILD_SHA rather than relying on mergeBindings
+  // because the cron is the canonical source of truth for the version.
+  mergedBindings = mergedBindings.filter(
+    (b) => !(b.type === "plain_text" && b.name === "BUILD_SHA")
+  );
+  mergedBindings.push({
+    type: "plain_text",
+    name: "BUILD_SHA",
+    text: manifest.sha
+  });
 
   // Flatten the manifest's migrations array (wrangler.toml-shape) into the
   // single-object shape CF's Workers Scripts API expects. Without this,
@@ -324,6 +539,7 @@ async function pushOne(input: PushOneInput): Promise<void> {
   if (env.DB) {
     await recordPushSuccess(env.DB, deployment.id, manifest.sha);
   }
+  return {};
 }
 
 function summary(partial: Partial<PushSummary>): PushSummary {

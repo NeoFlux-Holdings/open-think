@@ -4493,10 +4493,19 @@ async function mountLockdownWizard() {
     }
 
     // Now poll /health for auth_mode flip — Worker is auto-redeploying.
-    setStepState('verify-strict', 'is-running', 'Worker is redeploying…');
-    const ok = await pollForStrictMode();
+    // The summary is rewritten with elapsed seconds on each poll tick so
+    // the user knows progress is being made (vs. a static "Worker is
+    // redeploying…" that looks frozen during the inevitable 10-30s wait).
+    setStepState('verify-strict', 'is-running', 'Worker is redeploying… (0s)');
+    const pollStart = Date.now();
+    const ok = await pollForStrictMode((elapsedMs) => {
+      const secs = Math.floor(elapsedMs / 1000);
+      setStepState('verify-strict', 'is-running', 'Worker is redeploying… (' + secs + 's)');
+    });
+    const totalSecs = Math.floor((Date.now() - pollStart) / 1000);
     setStepState('verify-strict', ok ? 'is-done' : 'is-failed',
-      ok ? null : 'still in progress — refresh in a moment');
+      ok ? 'strict mode active (' + totalSecs + 's)'
+         : 'still propagating after ' + totalSecs + 's — refresh in a moment');
 
     // Show success regardless — even if poll timed out, the secrets are set.
     showSuccess(result?.data || result);
@@ -4514,20 +4523,32 @@ async function mountLockdownWizard() {
     }
   }
 
-  async function pollForStrictMode() {
-    const deadline = Date.now() + 60_000; // 60s budget
+  async function pollForStrictMode(onTick) {
+    // 120s deadline (was 60s) — secret-set redeploys can take 30-60s on
+    // busy accounts. Adaptive backoff: 1s for first 5 attempts, 2s for
+    // next 15, 4s after that. The aggressive early polling keeps the
+    // median wait under 5s; the fallback is gentle on the Worker.
+    const start = Date.now();
+    const deadline = start + 120_000;
+    let attempts = 0;
     while (Date.now() < deadline) {
+      attempts += 1;
       try {
-        const r = await fetch('/health');
-        const d = await r.json();
-        // /setup/status is more accurate; check the auth capability there.
-        const s = await fetch('/setup/status');
+        const s = await fetch('/setup/status', { cache: 'no-store' });
+        // 401/403 means strict-mode IS now active (Access is gating us).
+        // That's actually success from this code's perspective.
+        if (s.status === 401 || s.status === 403) return true;
         const sd = await s.json();
-        const auth = sd?.data?.capabilities?.find((c) => c.id === 'auth');
-        if (auth?.configured) return true;
-        // Fallback: also accept presence of CF_ACCESS_AUD via the health response if exposed.
+        const auth = sd && sd.data && sd.data.capabilities
+          && sd.data.capabilities.find(function (c) { return c.id === 'auth'; });
+        if (auth && auth.configured) return true;
       } catch { /* keep polling */ }
-      await new Promise((r) => setTimeout(r, 2500));
+      const elapsedMs = Date.now() - start;
+      if (typeof onTick === 'function') {
+        try { onTick(elapsedMs); } catch { /* ignore */ }
+      }
+      const delay = attempts <= 5 ? 1_000 : attempts <= 20 ? 2_000 : 4_000;
+      await new Promise(function (r) { return setTimeout(r, delay); });
     }
     return false;
   }

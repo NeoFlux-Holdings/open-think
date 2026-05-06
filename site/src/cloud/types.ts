@@ -49,6 +49,14 @@ export interface DeployRequest {
   enableD1: boolean;
   /** Optional Access app — strongly recommended for any non-localhost use. */
   enableAccess: boolean;
+  /**
+   * Additional emails to include in the Access app's allow policy, on top
+   * of `secrets.OWNER_EMAIL`. Use this to invite collaborators (e.g. the
+   * other person on a shared PA, a co-founder, or a support handoff
+   * address). Each becomes its own `include` entry in the CF policy. Empty
+   * strings + non-email values are filtered out server-side.
+   */
+  additionalAllowedEmails?: string[];
   /** Optional secrets to set after Worker upload. */
   secrets?: DeployRequestSecrets;
   /**
@@ -57,6 +65,42 @@ export interface DeployRequest {
    * unset (OR's auto-router picks the best model per prompt).
    */
   openRouterDefaultModel?: string;
+  /**
+   * High-level chat model preset selected on the deploy form. Drives the
+   * auto-resolution of MODEL_DEFAULT to the right provider+model combo:
+   *
+   *   - "kimi-k2.6"   — default; works zero-key via cf-ai-gateway →
+   *                     `workers-ai/@cf/moonshotai/kimi-k2.6`. If the
+   *                     user pasted an OpenRouter key, prefers
+   *                     `moonshotai/kimi-k2.6` (better latency).
+   *   - "gpt-5.5"     — needs OpenRouter (OPENROUTER_API_KEY) since we
+   *                     don't ship a direct-OpenAI provider yet.
+   *                     Resolves to `openai/gpt-5.5`.
+   *   - "opus-4.7"    — prefers ANTHROPIC_API_KEY (`claude-opus-4-7`),
+   *                     falls back to OpenRouter (`anthropic/claude-opus-4-7`).
+   *   - "sonnet-4.6"  — same fallback chain as opus, with `claude-sonnet-4-6`.
+   *   - "custom"      — uses `customModelId` verbatim. Provider auto-detected
+   *                     by selectProvider's standard precedence.
+   *
+   * When undefined, runDeploy falls back to the legacy
+   * `openRouterDefaultModel` field (when an OR key is present) or the
+   * cf-ai-gateway zero-key default.
+   */
+  modelPreset?: "kimi-k2.6" | "gpt-5.5" | "opus-4.7" | "sonnet-4.6" | "custom";
+  /** Used when modelPreset === "custom". Validated as a non-empty string. */
+  customModelId?: string;
+  /**
+   * Optional reasoning effort. Routed through to the provider request:
+   *   - GPT-5.5 → `reasoning.effort` (none|low|medium|high|xhigh)
+   *   - Anthropic models → `extended_thinking` toggle (treats "off" as
+   *     disabled, anything else as enabled)
+   *   - Kimi K2.6 → not yet supported by Moonshot/OpenRouter; ignored.
+   *
+   * The runtime conductor needs to consume MODEL_REASONING_EFFORT to make
+   * this take effect end-to-end. For now the deploy form persists it as
+   * a Worker var so future bundles can plug it in without redeploying.
+   */
+  modelReasoningEffort?: "none" | "low" | "medium" | "high" | "xhigh";
   /**
    * When true, the deploy will NOT persist CLOUDFLARE_API_TOKEN +
    * CLOUDFLARE_ACCOUNT_ID + WORKER_SCRIPT_NAME as Worker secrets. Default
@@ -71,13 +115,15 @@ export interface DeployRequest {
 export type DeployStepKind =
   | "verify-token"
   | "create-d1"
+  | "create-ai-gateway"
   | "create-access-app"
   | "compose-wrangler-toml"
   | "render-cli-commands"
   | "fetch-bundle"
   | "upload-worker"
   | "set-secret"
-  | "enable-subdomain";
+  | "enable-subdomain"
+  | "verify-strict";
 
 export interface DeployStepResult {
   kind: DeployStepKind;
@@ -88,6 +134,13 @@ export interface DeployStepResult {
   data?: Record<string, unknown>;
   /** Set when `ok === false`. */
   error?: string;
+  /**
+   * Set when ok=true but something didn't work as planned (e.g. AI Gateway
+   * creation failed but the deploy continues without it). The UI renders
+   * these with an amber ⚠ marker instead of a red ✗ — they're informational,
+   * not blocking. Distinct from `error` (which always implies ok=false).
+   */
+  warning?: string;
 }
 
 export interface DeployResponse {
@@ -138,6 +191,10 @@ export const TOKEN_SCOPES = [
   { resource: "Account", permission: "Workers R2 Storage:Edit" },
   { resource: "Account", permission: "Workers KV Storage:Edit" },
   { resource: "Account", permission: "Artifacts:Edit" },
+  // AI Gateway:Edit is what lets the deploy auto-create a CF AI Gateway
+  // for the Worker. Without it, chat needs an API key (OpenRouter etc.)
+  // because the conductor's stream-tools has no provider to route through.
+  { resource: "Account", permission: "AI Gateway:Edit" },
   { resource: "Account", permission: "Account Settings:Read" },
   { resource: "User", permission: "User Details:Read" }
 ] as const;
@@ -174,6 +231,15 @@ const TOKEN_TEMPLATE_PERMISSIONS = encodeURIComponent(
     { key: "workers_r2", type: "edit" },
     { key: "workers_kv_storage", type: "edit" },
     { key: "artifacts", type: "edit" },
+    // `aig:edit` — short key the dash recognizes for "AI Gateway:Edit".
+    // CF's permission group catalog labels these `aig_read` / `aig_edit`
+    // / `aig_run`; the dash strips the `_<type>` suffix and uses `aig`
+    // as the URL key. Verified against nuxt-hub/core's create-token
+    // template + the public permission_groups catalog. The longer
+    // `ai_gateway` (the Terraform resource name) is silently dropped
+    // by the dashboard URL parser, same way `cloudflare_zero_trust`
+    // and `workers_r2_storage` were.
+    { key: "aig", type: "edit" },
     { key: "account_settings", type: "read" },
     { key: "user_details", type: "read" }
   ])

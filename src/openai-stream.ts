@@ -84,6 +84,18 @@ export async function* runOpenAICompatibleToolStream(
       tool_choice: "auto"
     };
     if (config.maxTokens !== undefined) body.max_tokens = config.maxTokens;
+    // Reasoning effort. Two acceptable shapes for the same parameter:
+    //   - GPT-5.5 / OpenRouter expect `reasoning: { effort: "<level>" }`
+    //   - Some legacy providers accept `reasoning_effort: "<level>"` as a
+    //     top-level string. Sending both is harmless: a provider that
+    //     doesn't recognize one ignores it. CF AI Gateway forwards the
+    //     body unchanged to the upstream provider.
+    // "none" is the user's explicit "don't think" — we drop the field
+    // so providers fall through to their non-reasoning fast path.
+    if (config.reasoningEffort && config.reasoningEffort !== "none") {
+      body.reasoning = { effort: config.reasoningEffort };
+      body.reasoning_effort = config.reasoningEffort;
+    }
 
     const headers: Record<string, string> = {
       "content-type": "application/json",

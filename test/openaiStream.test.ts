@@ -220,6 +220,90 @@ describe("runOpenAICompatibleToolStream", () => {
     }
   });
 
+  it("forwards reasoning effort as `reasoning.effort` + legacy `reasoning_effort`", async () => {
+    let capturedBody: Record<string, unknown> | null = null;
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      capturedBody = JSON.parse(String(init?.body));
+      return new Response(
+        sseStream([
+          chunk({ choices: [{ delta: { content: "ok" } }] }),
+          chunk({ choices: [{ delta: {}, finish_reason: "stop" }] }),
+          "data: [DONE]\n\n"
+        ])
+      );
+    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = fetchMock as typeof globalThis.fetch;
+    try {
+      const events: LoopEvent[] = [];
+      for await (const e of runOpenAICompatibleToolStream({
+        env: { ENABLED_PLUGINS: "openrouter", ALLOWED_HOSTS: "openrouter.ai" },
+        runtime: fakeRuntime(async () => ({ ok: true })),
+        skillList: [],
+        systemPrompt: "test",
+        messages: [],
+        userContent: "hi",
+        baseUrl: "https://openrouter.ai/api/v1",
+        model: "openai/gpt-5.5",
+        reasoningEffort: "high"
+      })) {
+        events.push(e);
+      }
+      expect(capturedBody).not.toBeNull();
+      // Both shapes are present so newer (GPT-5.5 nested) and legacy
+      // (top-level reasoning_effort) providers both pick it up.
+      const body = capturedBody as unknown as {
+        reasoning?: { effort?: string };
+        reasoning_effort?: string;
+      };
+      expect(body.reasoning?.effort).toBe("high");
+      expect(body.reasoning_effort).toBe("high");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("omits the reasoning fields when reasoningEffort is undefined or 'none'", async () => {
+    let capturedBody: Record<string, unknown> | null = null;
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      capturedBody = JSON.parse(String(init?.body));
+      return new Response(
+        sseStream([
+          chunk({ choices: [{ delta: { content: "ok" } }] }),
+          chunk({ choices: [{ delta: {}, finish_reason: "stop" }] }),
+          "data: [DONE]\n\n"
+        ])
+      );
+    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = fetchMock as typeof globalThis.fetch;
+    try {
+      const events: LoopEvent[] = [];
+      for await (const e of runOpenAICompatibleToolStream({
+        env: { ENABLED_PLUGINS: "openrouter", ALLOWED_HOSTS: "openrouter.ai" },
+        runtime: fakeRuntime(async () => ({ ok: true })),
+        skillList: [],
+        systemPrompt: "test",
+        messages: [],
+        userContent: "hi",
+        baseUrl: "https://openrouter.ai/api/v1",
+        model: "openai/gpt-5.5",
+        reasoningEffort: "none"
+      })) {
+        events.push(e);
+      }
+      expect(capturedBody).not.toBeNull();
+      const body = capturedBody as unknown as {
+        reasoning?: unknown;
+        reasoning_effort?: unknown;
+      };
+      expect(body.reasoning).toBeUndefined();
+      expect(body.reasoning_effort).toBeUndefined();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("sends extra headers (e.g. cf-aig-authorization)", async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       const headers = init?.headers as Record<string, string>;

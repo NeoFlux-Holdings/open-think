@@ -87,6 +87,7 @@ export function renderCloudManage(input: ManagePageInput): string {
 <section class="reveal cloud-step">
   <div class="section-ref"><span>§11.2 · Actions</span><span class="rule"></span></div>
   <div class="manage-actions">
+    <button id="push-now" class="btn primary">Push update now</button>
     <button id="toggle-pause" class="btn ${paused ? "primary" : "ghost"}" data-paused="${paused}">
       ${paused ? "Resume updates" : "Pause updates"}
     </button>
@@ -227,6 +228,52 @@ export function renderCloudManage(input: ManagePageInput): string {
     if (r.ok && r.url) { location.href = r.url; }
     else { say('portal error: ' + (r.error || 'unknown'), true); }
   });
+  // Push now — fetches the latest manifest + uploads to the customer's
+  // Worker out-of-band from the hourly cron. The button stays disabled
+  // until the request resolves so a double-click can't fire two parallel
+  // pushes.
+  //
+  // Self-managed gate: if the live Worker has HELM_CUSTOM_DEPLOY set
+  // (customer is deploying their own fork via Artifacts), the server
+  // returns 409 with selfManaged:true. We confirm() with the user before
+  // re-calling with confirm:true to override.
+  const pushBtn = document.getElementById('push-now');
+  if (pushBtn) {
+    pushBtn.addEventListener('click', async () => {
+      pushBtn.disabled = true;
+      say('pushing latest bundle…');
+      try {
+        let r = await call('push-now');
+        if (!r.ok && r.selfManaged) {
+          const proceed = window.confirm(
+            'This deployment is self-managed via Artifacts. ' +
+            'Pushing upstream will OVERWRITE your custom code with the latest open-think release. ' +
+            'Are you sure you want to continue?'
+          );
+          if (!proceed) {
+            say('cancelled — your custom deploy is untouched.');
+            return;
+          }
+          say('confirmed — pushing upstream over custom code…');
+          r = await call('push-now', { confirm: true });
+        }
+        if (r.ok && r.alreadyUpToDate) {
+          say(r.message || 'Already on the latest bundle.');
+        } else if (r.ok) {
+          say((r.message || 'Pushed.') + ' Reload to see the new build sha.');
+          // Give the CF API a moment to settle before reloading so the
+          // page reflects the new last_pushed_at + audit-log row.
+          setTimeout(() => location.reload(), 1500);
+        } else {
+          say('push failed: ' + (r.error || 'unknown'), true);
+        }
+      } catch (err) {
+        say('push failed: ' + ((err && err.message) || 'network error'), true);
+      } finally {
+        pushBtn.disabled = false;
+      }
+    });
+  }
   // Forget my deployment — typed-confirmation gate so a misclick can't trigger it.
   const forgetBtn = document.getElementById('forget-submit');
   if (forgetBtn) {

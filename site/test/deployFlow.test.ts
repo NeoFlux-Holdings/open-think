@@ -10,7 +10,7 @@
  *   - Secret commands are emitted in the right order.
  */
 import { describe, expect, it } from "vitest";
-import { composeWranglerToml, renderFinalCommands, runDeploy, verifyAndListAccounts } from "../src/cloud/deployFlow";
+import { composeWranglerToml, renderFinalCommands, resolveModelPreset, runDeploy, verifyAndListAccounts } from "../src/cloud/deployFlow";
 
 const CF = "https://api.cloudflare.com/client/v4";
 
@@ -44,6 +44,30 @@ describe("verifyAndListAccounts", () => {
     expect(r.ok).toBe(true);
     expect(r.accounts).toHaveLength(1);
     expect(r.accounts[0].id).toBe("acc-1");
+  });
+
+  it("returns userEmail when /user is reachable (token has User Details:Read)", async () => {
+    // The deploy form uses this email to pre-fill the Owner-Email input
+    // so the user can hit Deploy without retyping what CF already knows.
+    const f = routedFetch({
+      [`${CF}/user/tokens/verify`]: () => ok({ id: "tok-1", status: "active" }),
+      [`${CF}/user`]: () => ok({ id: "u-1", email: "tom@example.com" }),
+      [`${CF}/accounts`]: () => ok([{ id: "acc-1", name: "Tom" }])
+    });
+    const r = await verifyAndListAccounts("token", { fetchImpl: f });
+    expect(r.ok).toBe(true);
+    expect(r.userEmail).toBe("tom@example.com");
+  });
+
+  it("succeeds without userEmail when /user is not reachable (token missing the scope)", async () => {
+    const f = routedFetch({
+      [`${CF}/user/tokens/verify`]: () => ok({ id: "tok-1", status: "active" }),
+      [`${CF}/user`]: () => err(9109, "Insufficient permissions"),
+      [`${CF}/accounts`]: () => ok([{ id: "acc-1", name: "Tom" }])
+    });
+    const r = await verifyAndListAccounts("token", { fetchImpl: f });
+    expect(r.ok).toBe(true);
+    expect(r.userEmail).toBeUndefined();
   });
 
   it("surfaces token-verify failures", async () => {
@@ -196,6 +220,108 @@ describe("runDeploy · failure modes", () => {
     expect(d1Step?.error).toMatch(/quota exceeded/);
   });
 
+  it("AI Gateway create fails (auth error) → warning step, deploy continues", async () => {
+    // Token missing "AI Gateway:Edit" — the most common reason a freshly
+    // created v0.12 token doesn't get a gateway. The deploy should keep
+    // going (chat just won't work zero-key).
+    const f = routedFetch({
+      [`${CF}/user/tokens/verify`]: () => ok({ id: "tok", status: "active" }),
+      [`${CF}/accounts/acc-1/workers/subdomain`]: () => ok({ subdomain: "acct" }),
+      [`${CF}/accounts/acc-1/ai-gateway/gateways`]: () => err(10000, "Authentication error")
+    });
+    const r = await runDeploy(
+      {
+        token: "t",
+        accountId: "acc-1",
+        workerName: "helm",
+        enableD1: false,
+        enableAccess: false,
+        secrets: {}
+      },
+      { fetchImpl: f }
+    );
+    expect(r.ok).toBe(true);
+    const aiStep = r.steps.find((s) => s.kind === "create-ai-gateway");
+    expect(aiStep?.ok).toBe(true);
+    expect(aiStep?.warning).toBeTruthy();
+    expect(aiStep?.summary).toMatch(/AI Gateway skipped/i);
+    expect(aiStep?.warning).toMatch(/AI Gateway:Edit/);
+  });
+
+  it("AI Gateway create succeeds → step kind is create-ai-gateway with reused flag false on first run", async () => {
+    const f = routedFetch({
+      [`${CF}/user/tokens/verify`]: () => ok({ id: "tok", status: "active" }),
+      [`${CF}/accounts/acc-1/workers/subdomain`]: () => ok({ subdomain: "acct" }),
+      [`${CF}/accounts/acc-1/ai-gateway/gateways`]: () => ok({ id: "helm" })
+    });
+    const r = await runDeploy(
+      {
+        token: "t",
+        accountId: "acc-1",
+        workerName: "helm",
+        enableD1: false,
+        enableAccess: false,
+        secrets: {}
+      },
+      { fetchImpl: f }
+    );
+    const aiStep = r.steps.find((s) => s.kind === "create-ai-gateway");
+    expect(aiStep?.ok).toBe(true);
+    expect(aiStep?.warning).toBeUndefined();
+    expect(aiStep?.summary).toMatch(/AI Gateway: helm/);
+    expect((aiStep?.data as { reused?: boolean })?.reused).toBe(false);
+  });
+
+  it("R2 bucket auto-provisions + lands as a [[r2_buckets]] WORKSPACE block in wrangler.toml", async () => {
+    const f = routedFetch({
+      [`${CF}/user/tokens/verify`]: () => ok({ id: "tok", status: "active" }),
+      [`${CF}/accounts/acc-1/workers/subdomain`]: () => ok({ subdomain: "acct" }),
+      [`${CF}/accounts/acc-1/r2/buckets`]: () => ok({ name: "helm-workspace" })
+    });
+    const r = await runDeploy(
+      {
+        token: "t",
+        accountId: "acc-1",
+        workerName: "helm",
+        enableD1: false,
+        enableAccess: false,
+        secrets: {}
+      },
+      { fetchImpl: f }
+    );
+    expect(r.ok).toBe(true);
+    expect(r.wranglerToml).toMatch(/\[\[r2_buckets\]\]/);
+    expect(r.wranglerToml).toMatch(/binding = "WORKSPACE"/);
+    expect(r.wranglerToml).toMatch(/bucket_name = "helm-workspace"/);
+  });
+
+  it("R2 bucket auth error → warning step, deploy continues without WORKSPACE binding", async () => {
+    const f = routedFetch({
+      [`${CF}/user/tokens/verify`]: () => ok({ id: "tok", status: "active" }),
+      [`${CF}/accounts/acc-1/workers/subdomain`]: () => ok({ subdomain: "acct" }),
+      [`${CF}/accounts/acc-1/r2/buckets`]: () => err(10000, "Authentication error")
+    });
+    const r = await runDeploy(
+      {
+        token: "t",
+        accountId: "acc-1",
+        workerName: "helm",
+        enableD1: false,
+        enableAccess: false,
+        secrets: {}
+      },
+      { fetchImpl: f }
+    );
+    expect(r.ok).toBe(true);
+    // The warning lands as a set-secret-kind step (R2 doesn't have its
+    // own kind yet — it shares the catch-all infra-provision channel).
+    const r2Step = r.steps.find((s) => /R2 bucket skipped/i.test(s.summary));
+    expect(r2Step?.ok).toBe(true);
+    expect(r2Step?.warning).toMatch(/Workers R2 Storage:Edit/);
+    // wrangler.toml does NOT include the WORKSPACE block when R2 was skipped.
+    expect(r.wranglerToml).not.toMatch(/binding = "WORKSPACE"/);
+  });
+
   it("Access org has no team domain → continues without Access (warning step)", async () => {
     const f = routedFetch({
       [`${CF}/user/tokens/verify`]: () => ok({ id: "tok", status: "active" }),
@@ -214,9 +340,142 @@ describe("runDeploy · failure modes", () => {
     );
     expect(r.ok).toBe(true); // Access is optional; we soldier on
     const accessStep = r.steps.find((s) => s.kind === "create-access-app");
-    expect(accessStep?.ok).toBe(false);
-    expect(accessStep?.summary).toMatch(/team domain/);
+    // Non-fatal: ok=true (deploy continues) but `warning` is set so the
+    // UI renders ⚠ instead of ✗. Summary mentions "team name" so the
+    // user sees what specifically is wrong; warning copy points them at
+    // the dash → Zero Trust → Settings fix.
+    expect(accessStep?.ok).toBe(true);
+    expect(accessStep?.warning).toBeTruthy();
+    expect(accessStep?.summary).toMatch(/team name|Access skipped/i);
+    expect(accessStep?.warning).toMatch(/Zero Trust/);
     expect(r.wranglerToml).not.toMatch(/CF_ACCESS_TEAM_DOMAIN/);
+  });
+});
+
+describe("resolveModelPreset", () => {
+  it("kimi-k2.6 default → Workers AI gateway when no key + AI Gateway provisioned", () => {
+    const r = resolveModelPreset({
+      preset: "kimi-k2.6",
+      hasOpenRouter: false,
+      hasAnthropic: false,
+      hasAiGateway: true
+    });
+    expect(r.modelId).toBe("workers-ai/@cf/moonshotai/kimi-k2.6");
+    expect(r.warning).toBeUndefined();
+  });
+
+  it("kimi-k2.6 with OpenRouter → routes through OR for lower latency", () => {
+    const r = resolveModelPreset({
+      preset: "kimi-k2.6",
+      hasOpenRouter: true,
+      hasAnthropic: false,
+      hasAiGateway: true
+    });
+    expect(r.modelId).toBe("moonshotai/kimi-k2.6");
+  });
+
+  it("gpt-5.5 with OpenRouter → openai/gpt-5.5", () => {
+    const r = resolveModelPreset({
+      preset: "gpt-5.5",
+      hasOpenRouter: true,
+      hasAnthropic: false,
+      hasAiGateway: true
+    });
+    expect(r.modelId).toBe("openai/gpt-5.5");
+    expect(r.warning).toBeUndefined();
+  });
+
+  it("gpt-5.5 without OpenRouter → falls back to Kimi + warns", () => {
+    const r = resolveModelPreset({
+      preset: "gpt-5.5",
+      hasOpenRouter: false,
+      hasAnthropic: false,
+      hasAiGateway: true
+    });
+    expect(r.modelId).toBe("workers-ai/@cf/moonshotai/kimi-k2.6");
+    expect(r.warning).toMatch(/GPT-5\.5 needs an OpenRouter API key/);
+  });
+
+  it("opus-4.7 with Anthropic key → direct (preferred over OR)", () => {
+    const r = resolveModelPreset({
+      preset: "opus-4.7",
+      hasOpenRouter: true, // OR also pasted, but Anthropic wins
+      hasAnthropic: true,
+      hasAiGateway: false
+    });
+    expect(r.modelId).toBe("claude-opus-4-7");
+  });
+
+  it("opus-4.7 with only OpenRouter → routes through OR", () => {
+    const r = resolveModelPreset({
+      preset: "opus-4.7",
+      hasOpenRouter: true,
+      hasAnthropic: false,
+      hasAiGateway: false
+    });
+    expect(r.modelId).toBe("anthropic/claude-opus-4-7");
+  });
+
+  it("opus-4.7 with neither key → falls back + warns", () => {
+    const r = resolveModelPreset({
+      preset: "opus-4.7",
+      hasOpenRouter: false,
+      hasAnthropic: false,
+      hasAiGateway: true
+    });
+    expect(r.modelId).toBe("workers-ai/@cf/moonshotai/kimi-k2.6");
+    expect(r.warning).toMatch(/Anthropic or OpenRouter/);
+  });
+
+  it("sonnet-4.6 with Anthropic key → claude-sonnet-4-6", () => {
+    const r = resolveModelPreset({
+      preset: "sonnet-4.6",
+      hasOpenRouter: false,
+      hasAnthropic: true,
+      hasAiGateway: false
+    });
+    expect(r.modelId).toBe("claude-sonnet-4-6");
+  });
+
+  it("custom preset uses customModelId verbatim", () => {
+    const r = resolveModelPreset({
+      preset: "custom",
+      customModelId: "openrouter/x-ai/grok-4",
+      hasOpenRouter: true,
+      hasAnthropic: false,
+      hasAiGateway: false
+    });
+    expect(r.modelId).toBe("openrouter/x-ai/grok-4");
+  });
+
+  it("custom preset without an id falls back + warns", () => {
+    const r = resolveModelPreset({
+      preset: "custom",
+      hasOpenRouter: false,
+      hasAnthropic: false,
+      hasAiGateway: true
+    });
+    expect(r.modelId).toBe("workers-ai/@cf/moonshotai/kimi-k2.6");
+    expect(r.warning).toMatch(/no id provided/);
+  });
+
+  it("undefined preset honors legacy openRouterDefaultModel when an OR key is present", () => {
+    const r = resolveModelPreset({
+      legacyOpenRouterModel: "openrouter/anthropic/claude-haiku-4-5",
+      hasOpenRouter: true,
+      hasAnthropic: false,
+      hasAiGateway: true
+    });
+    expect(r.modelId).toBe("openrouter/anthropic/claude-haiku-4-5");
+  });
+
+  it("no preset, no AI Gateway → bare workers-ai model id (last-resort)", () => {
+    const r = resolveModelPreset({
+      hasOpenRouter: false,
+      hasAnthropic: false,
+      hasAiGateway: false
+    });
+    expect(r.modelId).toBe("@cf/moonshotai/kimi-k2.6");
   });
 });
 
@@ -241,9 +500,10 @@ describe("composeWranglerToml · invariants", () => {
     // E_INTERNAL "ALLOWED_HOSTS must include at least one host"
     // on every request.
     expect(t).toMatch(/ALLOWED_HOSTS = "api\.cloudflare\.com,/);
-    // Default chat model: openrouter/auto (best when OPENROUTER_API_KEY
-    // is set; falls back to Workers AI in runtime when key missing).
-    expect(t).toMatch(/MODEL_DEFAULT = "openrouter\/auto"/);
+    // Default chat model: Kimi K2.6 via Workers AI (zero-key); when an
+    // OpenRouter key is present, runDeploy upgrades this to the OR
+    // routing path before calling composeWranglerToml.
+    expect(t).toMatch(/MODEL_DEFAULT = "@cf\/moonshotai\/kimi-k2\.6"/);
   });
 
   it("honors openRouterDefaultModel override (e.g. pinning kimi)", () => {
@@ -252,9 +512,9 @@ describe("composeWranglerToml · invariants", () => {
       accountId: "acc-1",
       d1: null,
       access: null,
-      openRouterDefaultModel: "openrouter/moonshotai/kimi-k2-0905"
+      openRouterDefaultModel: "openrouter/moonshotai/kimi-k2.6"
     });
-    expect(t).toMatch(/MODEL_DEFAULT = "openrouter\/moonshotai\/kimi-k2-0905"/);
+    expect(t).toMatch(/MODEL_DEFAULT = "openrouter\/moonshotai\/kimi-k2\.6"/);
   });
 
   it("includes the two DO bindings + their migrations", () => {
@@ -385,6 +645,59 @@ describe("runDeploy · directDeploy", () => {
     expect(setSecrets.find(([n]) => n === "OWNER_EMAIL")).toBeUndefined();
   });
 
+  it("auto-generates HELM_INTERNAL_TOKEN + sets shell env vars (HELM_WORKER_HOST, R2_BUCKET) on direct-deploy", async () => {
+    const seenSecrets: Record<string, string> = {};
+    let capturedMetadata: Record<string, unknown> | null = null;
+    const f = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url === "https://manifest.test/m.json") return new Response(JSON.stringify(SAMPLE_MANIFEST), { status: 200 });
+      if (url === "https://manifest.test/helm.mjs") return new Response(SAMPLE_BUNDLE_BYTES, { status: 200 });
+      if (url.endsWith("/user/tokens/verify")) return ok({ id: "tok", status: "active" });
+      if (/\/workers\/subdomain$/.test(url)) return ok({ subdomain: "acct" });
+      if (/\/r2\/buckets$/.test(url) && init?.method === "POST") return ok({ name: "helm-workspace" });
+      if (/\/ai-gateway\/gateways$/.test(url) && init?.method === "POST") return ok({ id: "helm" });
+      const scriptMatch = url.match(/\/workers\/scripts\/([^/]+)$/);
+      if (scriptMatch && init?.method === "PUT") {
+        const form = init.body as FormData;
+        const meta = form?.get?.("metadata") as Blob | null;
+        if (meta) capturedMetadata = JSON.parse(await meta.text());
+        return ok({ id: scriptMatch[1] });
+      }
+      if (url.endsWith("/secrets") && init?.method === "PUT") {
+        const body = JSON.parse(String(init.body)) as { name: string; text: string };
+        seenSecrets[body.name] = body.text;
+        return ok({ name: body.name, type: "secret_text" });
+      }
+      return new Response(JSON.stringify({ success: false, errors: [{ code: 404, message: "no route" }] }), { status: 404 });
+    }) as unknown as typeof fetch;
+
+    const r = await runDeploy(
+      {
+        token: "tok",
+        accountId: "acc-1",
+        workerName: "helm",
+        enableD1: false,
+        enableAccess: false,
+        secrets: {}
+      },
+      { fetchImpl: f, directDeploy: { manifestUrl: "https://manifest.test/m.json" } }
+    );
+    expect(r.ok).toBe(true);
+    expect(r.directDeployed).toBe(true);
+    // HELM_INTERNAL_TOKEN was generated + set as a secret (32-byte hex = 64 chars).
+    expect(seenSecrets.HELM_INTERNAL_TOKEN).toMatch(/^[a-f0-9]{64}$/);
+    // Shell-related plain_text vars landed in the upload's bindings.
+    expect(capturedMetadata).not.toBeNull();
+    const bindings = (capturedMetadata as { bindings: Array<{ name: string; type: string; text?: string }> }).bindings;
+    const host = bindings.find((b) => b.name === "HELM_WORKER_HOST");
+    expect(host?.type).toBe("plain_text");
+    expect(host?.text).toBe("helm.acct.workers.dev");
+    const bucket = bindings.find((b) => b.name === "R2_BUCKET");
+    expect(bucket?.text).toBe("helm-workspace");
+    const accountIdVar = bindings.find((b) => b.name === "CLOUDFLARE_ACCOUNT_ID" && b.type === "plain_text");
+    expect(accountIdVar?.text).toBe("acc-1");
+  });
+
   it("falls back gracefully when manifest fetch fails", async () => {
     const f = (async () => new Response("upstream offline", { status: 502 })) as unknown as typeof fetch;
     const r = await runDeploy(
@@ -401,6 +714,62 @@ describe("runDeploy · directDeploy", () => {
     // (token verify). For this test, with everything stubbed to fail, runDeploy
     // returns ok=false at verify-token. The point is: directDeploy doesn't crash.
     expect(r.ok).toBe(false);
+  });
+
+  it("migration tag precondition → retries with old_tag dropped/set, deploy succeeds", async () => {
+    // Real-world scenario: re-deploying an existing Worker that's
+    // already at migration tag v1. CF rejects the first PUT with
+    // "Actor migration tag precondition failed, got tag '' when
+    // expected tag is 'v1'" because our metadata sends new_tag without
+    // old_tag. The retry path parses the expected tag and drops the
+    // migrations field (since current === new_tag → no diff).
+    let putCount = 0;
+    const seenMetadata: Array<Record<string, unknown>> = [];
+    const f = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url === "https://manifest.test/m.json") return new Response(JSON.stringify(SAMPLE_MANIFEST), { status: 200 });
+      if (url === "https://manifest.test/helm.mjs") return new Response(SAMPLE_BUNDLE_BYTES, { status: 200 });
+      if (url.endsWith("/user/tokens/verify")) return ok({ id: "tok", status: "active" });
+      if (/\/workers\/subdomain$/.test(url)) return ok({ subdomain: "acct" });
+      const scriptMatch = url.match(/\/workers\/scripts\/([^/]+)$/);
+      if (scriptMatch && init?.method === "PUT") {
+        putCount += 1;
+        const form = init.body as FormData;
+        const meta = form?.get?.("metadata") as Blob | null;
+        if (meta) seenMetadata.push(JSON.parse(await meta.text()));
+        if (putCount === 1) {
+          return new Response(
+            JSON.stringify({
+              success: false,
+              errors: [{ code: 10079, message: "Actor migration tag precondition failed, got tag '' when expected tag is 'v1'." }]
+            }),
+            { status: 400 }
+          );
+        }
+        return ok({ id: scriptMatch[1] });
+      }
+      if (url.endsWith("/secrets") && init?.method === "PUT") return ok({ name: "x", type: "secret_text" });
+      return new Response(JSON.stringify({ success: false, errors: [{ code: 404, message: "no route" }] }), { status: 404 });
+    }) as unknown as typeof fetch;
+
+    const r = await runDeploy(
+      {
+        token: "tok",
+        accountId: "acc-1",
+        workerName: "helm",
+        enableD1: false,
+        enableAccess: false,
+        secrets: {}
+      },
+      { fetchImpl: f, directDeploy: { manifestUrl: "https://manifest.test/m.json" } }
+    );
+    expect(r.ok).toBe(true);
+    expect(r.directDeployed).toBe(true);
+    expect(putCount).toBe(2); // first failed, second succeeded
+    // First request had migrations.new_tag = v1 (no old_tag)
+    expect((seenMetadata[0].migrations as { new_tag?: string }).new_tag).toBe("v1");
+    // Retry dropped migrations entirely (current tag === new_tag)
+    expect(seenMetadata[1].migrations).toBeUndefined();
   });
 
   it("upload failure leaves directDeployed=false but the rest of the flow succeeds", async () => {

@@ -129,6 +129,30 @@ export interface Env {
    */
   WORKER_SCRIPT_NAME?: string;
   /**
+   * Bundle sha of THIS running Worker. Stamped as a plain_text binding by
+   * the cloud-push cron + the helm-setup-update self-update skill. Used by
+   * helm-setup-update to short-circuit when the upstream manifest's sha
+   * matches what's already running. Absent ⇒ unknown ⇒ assume out-of-date.
+   */
+  BUILD_SHA?: string;
+  /**
+   * Where helm-setup-update fetches the manifest describing the latest
+   * upstream bundle. Defaults to the central opentink.dev manifest when
+   * unset; override per-customer to pin to a fork or a beta channel.
+   */
+  HELM_BUNDLE_MANIFEST_URL?: string;
+  /**
+   * Upstream git URL for `helm-artifacts-pull-upstream`. The skill adds
+   * this as the `upstream` remote in the customer's Artifacts checkout
+   * and `git fetch`/`git merge`s into their canonical branch so they
+   * can pull source-level fixes from open-think while keeping their own
+   * customizations on top. Defaults to NeoFlux-Holdings/open-think
+   * when unset; override to point at your own fork.
+   */
+  HELM_UPSTREAM_URL?: string;
+  /** Default branch on the upstream remote for pull-upstream. Default "main". */
+  HELM_UPSTREAM_BRANCH?: string;
+  /**
    * GitHub PAT for helm-github (FALLBACK path — Cloudflare Artifacts is the
    * canonical source-of-truth now; see ARTIFACTS_* below). Fine-grained
    * tokens with repo: contents + pull-requests scopes are sufficient.
@@ -186,6 +210,15 @@ export interface Env {
   ENABLED_PLUGINS: string;
   ALLOWED_HOSTS: string;
   MODEL_DEFAULT?: string;
+  /**
+   * Set by the deploy form's "Default chat model" picker when the user
+   * selects a thinking-capable preset (GPT-5.5, Claude Opus 4.7). The
+   * conductor reads this and forwards it to the provider as
+   * `reasoning.effort` (OpenAI-compat) or `thinking.budget_tokens`
+   * (Anthropic native). One of: none / low / medium / high / xhigh.
+   * Empty / absent = provider defaults apply.
+   */
+  MODEL_REASONING_EFFORT?: string;
   ALERT_WEBHOOK_URL?: string;
   ALERT_ERROR_RATE_PCT?: string;
   /* --- Auth (Cloudflare Access) --- */

@@ -352,4 +352,399 @@ describe("HelmArtifactsPlugin", () => {
     expect(decoded).toContain(`[[r2_buckets]]`);
     expect(decoded).toContain(`bucket_name = "tomtom-persist"`);
   });
+
+  describe("reconcile (bidirectional)", () => {
+    it("returns skipped:true when ARTIFACTS_REPO + AGENT_NAME both unset", async () => {
+      const plugin = new HelmArtifactsPlugin();
+      await plugin.initialize({
+        config: baseConfig(),
+        fetch: globalThis.fetch,
+        env: {
+          ENABLED_PLUGINS: "helm-artifacts",
+          ALLOWED_HOSTS: "api.cloudflare.com",
+          CLOUDFLARE_API_TOKEN: "cf_test"
+        }
+      });
+      const r = await plugin.invoke("reconcile", {});
+      expect(r.ok).toBe(true);
+      const data = r.data as { skipped: boolean; reason: string };
+      expect(data.skipped).toBe(true);
+      expect(data.reason).toMatch(/ARTIFACTS_REPO/);
+    });
+
+    it("reports no actions when live Worker matches the toml", async () => {
+      // Same TOML + same live bindings → drift is empty → reconcile is a no-op.
+      const tomlContent =
+        `name = "tomtom"\n[ai]\nbinding = "AI"\n` +
+        `[[r2_buckets]]\nbinding = "WORKSPACE"\nbucket_name = "tomtom-persist"\n`;
+      const env = envOk({
+        AGENT_OWNER_EMAIL: "user@example.com",
+        ARTIFACTS_TOKEN: "art_v1_pretoken?expires=99999999999"
+      });
+
+      const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" || input instanceof URL ? String(input) : input.url;
+        if (url.includes("/workers/scripts/") && url.includes("/settings")) {
+          return jsonResponse({
+            success: true,
+            result: {
+              bindings: [
+                { type: "ai", name: "AI" },
+                { type: "r2_bucket", name: "WORKSPACE", bucket_name: "tomtom-persist" }
+              ]
+            }
+          });
+        }
+        throw new Error("unexpected: " + url);
+      });
+
+      const shell = mockShellContainer((cmd) => {
+        if (cmd.includes("[ -d '/workspace/tomtom/.git' ]")) return { stdout: "CLONED" };
+        if (cmd.startsWith("git remote set-url origin")) return { stdout: "" };
+        if (/git -c http\.extraHeader.*pull --ff-only/.test(cmd)) return { stdout: "Already up to date." };
+        if (cmd.startsWith("cat 'wrangler.toml'")) return { stdout: tomlContent };
+        return { ok: false, code: 127, stderr: `unmocked: ${cmd.slice(0, 80)}` };
+      });
+
+      const plugin = new HelmArtifactsPlugin();
+      await plugin.initialize({
+        config: baseConfig(),
+        fetch: fetchMock as unknown as typeof globalThis.fetch,
+        env: {
+          ...env,
+          SHELL_CONTAINER: shell as unknown as DurableObjectNamespace
+        } as unknown as Parameters<HelmArtifactsPlugin["initialize"]>[0]["env"]
+      });
+      const r = await plugin.invoke("reconcile", { scriptName: "tomtom" });
+      expect(r.ok).toBe(true);
+      const data = r.data as {
+        inSyncBefore: boolean;
+        actions: Array<{ direction: string; ok: boolean }>;
+        note: string;
+      };
+      expect(data.inSyncBefore).toBe(true);
+      expect(data.actions).toHaveLength(0);
+      expect(data.note).toMatch(/Already in sync/);
+    });
+
+    it("commits Worker→Artifacts when live has bindings the toml lacks", async () => {
+      // TOML says only AI; live Worker has AI + WORKSPACE → drift.missingFromToml has 1.
+      // Reconcile should call sync-toml apply:true to commit the missing block.
+      const tomlContent = `name = "tomtom"\n[ai]\nbinding = "AI"\n`;
+      const env = envOk({
+        AGENT_OWNER_EMAIL: "user@example.com",
+        ARTIFACTS_TOKEN: "art_v1_pretoken?expires=99999999999"
+      });
+
+      const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" || input instanceof URL ? String(input) : input.url;
+        if (url.includes("/workers/scripts/") && url.includes("/settings")) {
+          return jsonResponse({
+            success: true,
+            result: {
+              bindings: [
+                { type: "ai", name: "AI" },
+                { type: "r2_bucket", name: "WORKSPACE", bucket_name: "tomtom-persist" }
+              ]
+            }
+          });
+        }
+        throw new Error("unexpected: " + url);
+      });
+
+      const writes: string[] = [];
+      const shell = mockShellContainer((cmd) => {
+        if (cmd.includes("[ -d '/workspace/tomtom/.git' ]")) return { stdout: "CLONED" };
+        if (cmd.startsWith("git remote set-url origin")) return { stdout: "" };
+        if (/git -c http\.extraHeader.*pull --ff-only/.test(cmd)) return { stdout: "Already up to date." };
+        if (cmd.startsWith("cat 'wrangler.toml'")) return { stdout: tomlContent };
+        if (cmd.startsWith("mkdir -p")) return { stdout: "" };
+        const m = /printf %s '([^']+)' \| base64 -d > 'wrangler\.toml'/.exec(cmd);
+        if (m) {
+          writes.push(m[1]);
+          return { stdout: "" };
+        }
+        if (cmd.startsWith("git diff --no-color -- 'wrangler.toml'")) return { stdout: "+ [[r2_buckets]]\n" };
+        if (cmd.startsWith("git add 'wrangler.toml'")) return { stdout: "" };
+        if (/git -c user\.name=Helm.*commit/.test(cmd)) return { stdout: "[main abc] reconcile" };
+        if (/git -c http\.extraHeader.*push origin/.test(cmd)) return { stdout: "To origin" };
+        if (cmd.startsWith("git rev-parse HEAD")) return { stdout: "abc123\n" };
+        return { ok: false, code: 127, stderr: `unmocked: ${cmd.slice(0, 80)}` };
+      });
+
+      const plugin = new HelmArtifactsPlugin();
+      await plugin.initialize({
+        config: baseConfig(),
+        fetch: fetchMock as unknown as typeof globalThis.fetch,
+        env: {
+          ...env,
+          SHELL_CONTAINER: shell as unknown as DurableObjectNamespace
+        } as unknown as Parameters<HelmArtifactsPlugin["initialize"]>[0]["env"]
+      });
+      // skipDeploy:true so we only exercise the worker→artifacts branch.
+      const r = await plugin.invoke("reconcile", { scriptName: "tomtom", skipDeploy: true });
+      expect(r.ok).toBe(true);
+      const data = r.data as {
+        inSyncBefore: boolean;
+        actions: Array<{ direction: string; ok: boolean }>;
+      };
+      expect(data.inSyncBefore).toBe(false);
+      expect(data.actions).toHaveLength(1);
+      expect(data.actions[0].direction).toBe("worker→artifacts");
+      expect(data.actions[0].ok).toBe(true);
+      // Verify the file we committed includes the new [[r2_buckets]] block.
+      expect(writes.length).toBeGreaterThan(0);
+      const decoded = atob(writes[0]);
+      expect(decoded).toContain("[[r2_buckets]]");
+      expect(decoded).toContain(`bucket_name = "tomtom-persist"`);
+    });
+  });
+
+  describe("deploy claims canonical (HELM_CUSTOM_DEPLOY)", () => {
+    it("sets HELM_CUSTOM_DEPLOY=1 after a successful wrangler deploy", async () => {
+      // ARTIFACTS_TOKEN pre-set so this.git skips token-minting.
+      const env = envOk({
+        AGENT_OWNER_EMAIL: "user@example.com",
+        ARTIFACTS_TOKEN: "art_v1_pretoken?expires=99999999999"
+      });
+      let secretBody: Record<string, unknown> | null = null;
+      const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" || input instanceof URL ? String(input) : input.url;
+        if ((init?.method ?? "GET") === "PUT" && url.endsWith("/secrets")) {
+          secretBody = JSON.parse(String(init?.body ?? "{}"));
+          return jsonResponse({ success: true, result: { name: "HELM_CUSTOM_DEPLOY" } });
+        }
+        throw new Error("unexpected: " + url);
+      });
+      const shell = mockShellContainer((cmd) => {
+        if (cmd.includes("[ -d '/workspace/tomtom/.git' ]")) return { stdout: "CLONED" };
+        if (cmd.startsWith("git remote set-url origin")) return { stdout: "" };
+        if (/git -c http\.extraHeader.*pull --ff-only/.test(cmd)) return { stdout: "Already up to date." };
+        if (cmd.startsWith("CLOUDFLARE_API_TOKEN=") && cmd.includes("wrangler deploy")) {
+          return { stdout: "Deployed to https://tomtom.workers.dev" };
+        }
+        return { ok: false, code: 127, stderr: `unmocked: ${cmd.slice(0, 80)}` };
+      });
+
+      const plugin = new HelmArtifactsPlugin();
+      await plugin.initialize({
+        config: baseConfig(),
+        fetch: fetchMock as unknown as typeof globalThis.fetch,
+        env: {
+          ...env,
+          SHELL_CONTAINER: shell as unknown as DurableObjectNamespace
+        } as unknown as Parameters<HelmArtifactsPlugin["initialize"]>[0]["env"]
+      });
+      const r = await plugin.invoke("deploy", { scriptName: "tomtom" });
+      expect(r.ok).toBe(true);
+      expect(secretBody).not.toBeNull();
+      const body = secretBody as unknown as { name: string; text: string; type: string };
+      expect(body.name).toBe("HELM_CUSTOM_DEPLOY");
+      expect(body.text).toBe("1");
+      expect(body.type).toBe("secret_text");
+      const data = r.data as { claimCanonical: boolean; claim: { ok: boolean } | null };
+      expect(data.claimCanonical).toBe(true);
+      expect(data.claim?.ok).toBe(true);
+    });
+
+    it("skips the flag-set when claimCanonical:false (one-shot test deploy)", async () => {
+      const env = envOk({ ARTIFACTS_TOKEN: "art_v1_pretoken?expires=99999999999" });
+      let secretCalls = 0;
+      const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" || input instanceof URL ? String(input) : input.url;
+        if (url.endsWith("/secrets")) secretCalls += 1;
+        return jsonResponse({ success: true });
+      });
+      const shell = mockShellContainer((cmd) => {
+        if (cmd.includes("[ -d '/workspace/tomtom/.git' ]")) return { stdout: "CLONED" };
+        if (cmd.startsWith("git remote set-url origin")) return { stdout: "" };
+        if (/pull --ff-only/.test(cmd)) return { stdout: "Already up to date." };
+        if (cmd.includes("wrangler deploy")) return { stdout: "Deployed" };
+        return { ok: false, code: 127, stderr: `unmocked: ${cmd.slice(0, 80)}` };
+      });
+      const plugin = new HelmArtifactsPlugin();
+      await plugin.initialize({
+        config: baseConfig(),
+        fetch: fetchMock as unknown as typeof globalThis.fetch,
+        env: {
+          ...env,
+          SHELL_CONTAINER: shell as unknown as DurableObjectNamespace
+        } as unknown as Parameters<HelmArtifactsPlugin["initialize"]>[0]["env"]
+      });
+      const r = await plugin.invoke("deploy", {
+        scriptName: "tomtom",
+        claimCanonical: false
+      });
+      expect(r.ok).toBe(true);
+      expect(secretCalls).toBe(0);
+    });
+  });
+
+  describe("pull-upstream", () => {
+    it("dry-run reports behindBy/aheadBy without merging", async () => {
+      const env = envOk({ ARTIFACTS_TOKEN: "art_v1_pretoken?expires=99999999999" });
+      const shell = mockShellContainer((cmd) => {
+        if (cmd.includes("[ -d '/workspace/tomtom/.git' ]")) return { stdout: "CLONED" };
+        if (cmd.startsWith("git remote set-url origin")) return { stdout: "" };
+        if (/pull --ff-only/.test(cmd)) return { stdout: "Already up to date." };
+        if (cmd.includes("git remote add upstream")) return { stdout: "" };
+        if (cmd.startsWith("git fetch upstream")) return { stdout: "" };
+        if (cmd.includes("rev-list --count HEAD..upstream")) return { stdout: "5\n" };
+        if (cmd.includes("rev-list --count upstream/")) return { stdout: "2\n" };
+        return { ok: false, code: 127, stderr: `unmocked: ${cmd.slice(0, 80)}` };
+      });
+      const plugin = new HelmArtifactsPlugin();
+      await plugin.initialize({
+        config: baseConfig(),
+        fetch: globalThis.fetch,
+        env: {
+          ...env,
+          SHELL_CONTAINER: shell as unknown as DurableObjectNamespace
+        } as unknown as Parameters<HelmArtifactsPlugin["initialize"]>[0]["env"]
+      });
+      const r = await plugin.invoke("pull-upstream", { apply: false });
+      expect(r.ok).toBe(true);
+      const data = r.data as {
+        dryRun: boolean;
+        behindBy: number;
+        aheadBy: number;
+        upstreamUrl: string;
+      };
+      expect(data.dryRun).toBe(true);
+      expect(data.behindBy).toBe(5);
+      expect(data.aheadBy).toBe(2);
+      expect(data.upstreamUrl).toContain("NeoFlux-Holdings/open-think");
+    });
+
+    it("clean merge pushes to Artifacts and reports success", async () => {
+      const env = envOk({ ARTIFACTS_TOKEN: "art_v1_pretoken?expires=99999999999" });
+      const allCmds: string[] = [];
+      const shell = mockShellContainer((cmd) => {
+        allCmds.push(cmd);
+        if (cmd.includes("[ -d '/workspace/tomtom/.git' ]")) return { stdout: "CLONED" };
+        if (cmd.startsWith("git remote set-url origin")) return { stdout: "" };
+        if (/pull --ff-only/.test(cmd)) return { stdout: "Already up to date." };
+        if (cmd.includes("git remote add upstream")) return { stdout: "" };
+        if (cmd.startsWith("git fetch upstream")) return { stdout: "" };
+        if (cmd.includes("rev-list --count HEAD..upstream")) return { stdout: "3\n" };
+        if (cmd.includes("rev-list --count upstream/")) return { stdout: "0\n" };
+        if (cmd.startsWith("git checkout ")) return { stdout: "Switched" };
+        if (cmd.includes("merge --no-edit")) {
+          return { stdout: "Merge made by the 'recursive' strategy." };
+        }
+        if (cmd.startsWith("git rev-parse HEAD")) return { stdout: "merged-sha\n" };
+        if (/git -c http\.extraHeader.*push origin/.test(cmd)) return { stdout: "To origin" };
+        return { ok: false, code: 127, stderr: `unmocked: ${cmd.slice(0, 80)}` };
+      });
+      const plugin = new HelmArtifactsPlugin();
+      await plugin.initialize({
+        config: baseConfig(),
+        fetch: globalThis.fetch,
+        env: {
+          ...env,
+          SHELL_CONTAINER: shell as unknown as DurableObjectNamespace
+        } as unknown as Parameters<HelmArtifactsPlugin["initialize"]>[0]["env"]
+      });
+      const r = await plugin.invoke("pull-upstream", {});
+      // allCmds is captured for ad-hoc debugging during development
+      // (uncomment the next line if you want to see the shell trace).
+      // if (!r.ok) console.log(allCmds);
+      void allCmds;
+      expect(r.ok).toBe(true);
+      const data = r.data as {
+        merged: boolean;
+        pushed: boolean;
+        behindBy: number;
+        mergeSha: string;
+      };
+      expect(data.merged).toBe(true);
+      expect(data.pushed).toBe(true);
+      expect(data.behindBy).toBe(3);
+      expect(data.mergeSha).toBe("merged-sha");
+    });
+
+    it("up-to-date short-circuits without checkout/merge/push", async () => {
+      const env = envOk({ ARTIFACTS_TOKEN: "art_v1_pretoken?expires=99999999999" });
+      let mergeAttempts = 0;
+      const shell = mockShellContainer((cmd) => {
+        if (cmd.includes("[ -d '/workspace/tomtom/.git' ]")) return { stdout: "CLONED" };
+        if (cmd.startsWith("git remote set-url origin")) return { stdout: "" };
+        if (/pull --ff-only/.test(cmd)) return { stdout: "Already up to date." };
+        if (cmd.includes("git remote add upstream")) return { stdout: "" };
+        if (cmd.startsWith("git fetch upstream")) return { stdout: "" };
+        if (cmd.includes("rev-list --count HEAD..upstream")) return { stdout: "0\n" };
+        if (cmd.includes("rev-list --count upstream/")) return { stdout: "1\n" };
+        if (cmd.includes("merge ") || cmd.includes("checkout main")) {
+          mergeAttempts += 1;
+          return { stdout: "" };
+        }
+        return { ok: false, code: 127, stderr: `unmocked: ${cmd.slice(0, 80)}` };
+      });
+      const plugin = new HelmArtifactsPlugin();
+      await plugin.initialize({
+        config: baseConfig(),
+        fetch: globalThis.fetch,
+        env: {
+          ...env,
+          SHELL_CONTAINER: shell as unknown as DurableObjectNamespace
+        } as unknown as Parameters<HelmArtifactsPlugin["initialize"]>[0]["env"]
+      });
+      const r = await plugin.invoke("pull-upstream", {});
+      expect(r.ok).toBe(true);
+      expect(mergeAttempts).toBe(0);
+      const data = r.data as { merged: boolean; behindBy: number };
+      expect(data.merged).toBe(false);
+      expect(data.behindBy).toBe(0);
+    });
+
+    it("conflicts are surfaced + merge is aborted (clean tree)", async () => {
+      const env = envOk({ ARTIFACTS_TOKEN: "art_v1_pretoken?expires=99999999999" });
+      let abortCalls = 0;
+      const allCmds: string[] = [];
+      const shell = mockShellContainer((cmd) => {
+        allCmds.push(cmd);
+        if (cmd.includes("[ -d '/workspace/tomtom/.git' ]")) return { stdout: "CLONED" };
+        if (cmd.startsWith("git remote set-url origin")) return { stdout: "" };
+        if (/pull --ff-only/.test(cmd)) return { stdout: "Already up to date." };
+        if (cmd.includes("git remote add upstream")) return { stdout: "" };
+        if (cmd.startsWith("git fetch upstream")) return { stdout: "" };
+        if (cmd.includes("rev-list --count HEAD..upstream")) return { stdout: "5\n" };
+        if (cmd.includes("rev-list --count upstream/")) return { stdout: "2\n" };
+        if (cmd.startsWith("git checkout ")) return { stdout: "Switched" };
+        if (cmd.includes("merge --no-edit")) {
+          return {
+            ok: false,
+            code: 1,
+            stderr: "CONFLICT (content): Merge conflict in src/conductor.ts",
+            stdout: "Auto-merging src/conductor.ts"
+          };
+        }
+        if (cmd.includes("diff --name-only --diff-filter=U")) {
+          return { stdout: "src/conductor.ts\nsrc/index.ts\n" };
+        }
+        if (cmd.includes("merge --abort")) {
+          abortCalls += 1;
+          return { stdout: "" };
+        }
+        return { ok: false, code: 127, stderr: `unmocked: ${cmd.slice(0, 80)}` };
+      });
+      const plugin = new HelmArtifactsPlugin();
+      await plugin.initialize({
+        config: baseConfig(),
+        fetch: globalThis.fetch,
+        env: {
+          ...env,
+          SHELL_CONTAINER: shell as unknown as DurableObjectNamespace
+        } as unknown as Parameters<HelmArtifactsPlugin["initialize"]>[0]["env"]
+      });
+      const r = await plugin.invoke("pull-upstream", {});
+      void allCmds; // captured for ad-hoc debug; intentionally unused.
+      expect(r.ok).toBe(false);
+      expect(abortCalls).toBe(1);
+      const data = r.data as { conflicts: string[]; aborted: boolean; merged: boolean };
+      expect(data.merged).toBe(false);
+      expect(data.aborted).toBe(true);
+      expect(data.conflicts).toEqual(["src/conductor.ts", "src/index.ts"]);
+    });
+  });
 });

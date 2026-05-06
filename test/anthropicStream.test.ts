@@ -220,4 +220,104 @@ describe("runAnthropicToolStream", () => {
     expect(events).toHaveLength(1);
     expect(events[0].kind).toBe("error");
   });
+
+  it("forwards reasoning effort 'high' as thinking.budget_tokens=16384 + bumps max_tokens", async () => {
+    let capturedBody: Record<string, unknown> | null = null;
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      capturedBody = JSON.parse(String(init?.body));
+      return new Response(
+        sseStream([
+          { event: "content_block_start", data: { type: "content_block_start", index: 0, content_block: { type: "text" } } },
+          { event: "content_block_delta", data: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "ok" } } },
+          { event: "content_block_stop", data: { type: "content_block_stop", index: 0 } },
+          { event: "message_delta", data: { type: "message_delta", delta: { stop_reason: "end_turn" } } },
+          { event: "message_stop", data: { type: "message_stop" } }
+        ])
+      );
+    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = fetchMock as typeof globalThis.fetch;
+    try {
+      const events: LoopEvent[] = [];
+      for await (const e of runAnthropicToolStream({
+        env: { ANTHROPIC_API_KEY: "sk-test", ENABLED_PLUGINS: "anthropic", ALLOWED_HOSTS: "api.anthropic.com" },
+        runtime: fakeRuntime(async () => ({ ok: true })),
+        skillList: [],
+        systemPrompt: "test",
+        messages: [],
+        userContent: "deep think",
+        reasoningEffort: "high"
+      })) {
+        events.push(e);
+      }
+      expect(capturedBody).not.toBeNull();
+      const body = capturedBody as unknown as {
+        thinking?: { type: string; budget_tokens: number };
+        max_tokens: number;
+      };
+      expect(body.thinking?.type).toBe("enabled");
+      expect(body.thinking?.budget_tokens).toBe(16384);
+      // max_tokens must be > budget_tokens or Anthropic rejects the request
+      expect(body.max_tokens).toBeGreaterThan(16384);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("omits the thinking block when reasoningEffort is 'none' or undefined", async () => {
+    let capturedBody: Record<string, unknown> | null = null;
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      capturedBody = JSON.parse(String(init?.body));
+      return new Response(
+        sseStream([
+          { event: "content_block_start", data: { type: "content_block_start", index: 0, content_block: { type: "text" } } },
+          { event: "content_block_delta", data: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "ok" } } },
+          { event: "content_block_stop", data: { type: "content_block_stop", index: 0 } },
+          { event: "message_delta", data: { type: "message_delta", delta: { stop_reason: "end_turn" } } },
+          { event: "message_stop", data: { type: "message_stop" } }
+        ])
+      );
+    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = fetchMock as typeof globalThis.fetch;
+    try {
+      const events: LoopEvent[] = [];
+      for await (const e of runAnthropicToolStream({
+        env: { ANTHROPIC_API_KEY: "sk-test", ENABLED_PLUGINS: "anthropic", ALLOWED_HOSTS: "api.anthropic.com" },
+        runtime: fakeRuntime(async () => ({ ok: true })),
+        skillList: [],
+        systemPrompt: "test",
+        messages: [],
+        userContent: "snappy answer please",
+        reasoningEffort: "none"
+      })) {
+        events.push(e);
+      }
+      expect((capturedBody as unknown as { thinking?: unknown }).thinking).toBeUndefined();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+import { reasoningEffortToAnthropicBudget, readReasoningEffortFromEnv } from "../src/tool-stream-types";
+
+describe("ReasoningEffort helpers", () => {
+  it("maps each effort level to a budget; none → null", () => {
+    expect(reasoningEffortToAnthropicBudget("none")).toBe(null);
+    expect(reasoningEffortToAnthropicBudget("low")).toBe(1024);
+    expect(reasoningEffortToAnthropicBudget("medium")).toBe(4096);
+    expect(reasoningEffortToAnthropicBudget("high")).toBe(16384);
+    expect(reasoningEffortToAnthropicBudget("xhigh")).toBe(32768);
+    expect(reasoningEffortToAnthropicBudget(undefined)).toBe(null);
+  });
+
+  it("readReasoningEffortFromEnv parses + lowercases recognized values", () => {
+    const baseEnv = { ENABLED_PLUGINS: "", ALLOWED_HOSTS: "" } as const;
+    expect(readReasoningEffortFromEnv({ ...baseEnv, MODEL_REASONING_EFFORT: "HIGH" })).toBe("high");
+    expect(readReasoningEffortFromEnv({ ...baseEnv, MODEL_REASONING_EFFORT: "  medium  " })).toBe("medium");
+    expect(readReasoningEffortFromEnv({ ...baseEnv })).toBeUndefined();
+    // Unknown values are silently dropped (rather than crashing).
+    expect(readReasoningEffortFromEnv({ ...baseEnv, MODEL_REASONING_EFFORT: "extreme" })).toBeUndefined();
+  });
 });

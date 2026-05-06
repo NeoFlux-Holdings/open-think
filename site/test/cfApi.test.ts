@@ -8,11 +8,19 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createAccessApp,
   createAccessPolicy,
+  createAiGateway,
   createD1Database,
+  createR2Bucket,
+  ensureAccessApp,
+  ensureAiGateway,
   ensureD1Database,
+  ensureR2Bucket,
+  ensureWorkerSecret,
+  findAccessAppByDestination,
   findD1DatabaseByName,
   flattenMigrationsForCfApi,
   getAccessOrganization,
+  getUserDetails,
   listAccounts,
   listZones,
   putWorkerSecret,
@@ -116,6 +124,35 @@ describe("cfApi.createD1Database", () => {
   });
 });
 
+describe("cfApi.getUserDetails", () => {
+  it("returns the token owner's email from /user", async () => {
+    const f = fakeFetch((url) => {
+      expect(url).toBe("https://api.cloudflare.com/client/v4/user");
+      return new Response(
+        JSON.stringify({
+          success: true,
+          result: { id: "u-1", email: "you@example.com", first_name: "Tom", last_name: "Z" }
+        }),
+        { status: 200 }
+      );
+    });
+    const r = await getUserDetails("t", { fetchImpl: f });
+    expect(r.success).toBe(true);
+    expect(r.result?.email).toBe("you@example.com");
+  });
+
+  it("returns success: false when the token lacks User Details:Read", async () => {
+    const f = fakeFetch(() =>
+      new Response(
+        JSON.stringify({ success: false, errors: [{ code: 9109, message: "Insufficient permissions" }] }),
+        { status: 403 }
+      )
+    );
+    const r = await getUserDetails("t", { fetchImpl: f });
+    expect(r.success).toBe(false);
+  });
+});
+
 describe("cfApi.createAccessApp + createAccessPolicy", () => {
   it("creates a self-hosted Access app with auto_redirect off", async () => {
     let capturedBody = "";
@@ -189,6 +226,53 @@ describe("cfApi.createAccessApp + createAccessPolicy", () => {
     expect(body.include[0].email.email).toBe("you@x.com");
     expect(r.result?.id).toBe("policy-1");
   });
+
+  it("createAccessPolicy emits one include entry per email when given a list", async () => {
+    let capturedBody = "";
+    const f = fakeFetch((_url, init) => {
+      capturedBody = String(init.body);
+      return new Response(JSON.stringify({ success: true, result: { id: "p-2" } }), { status: 200 });
+    });
+    await createAccessPolicy(
+      "t", "acc-1", "app-1",
+      ["you@x.com", "alice@x.com", "bob@x.com"],
+      { fetchImpl: f }
+    );
+    const body = JSON.parse(capturedBody);
+    expect(body.name).toMatch(/allowlist \(3\)/);
+    expect(body.include).toHaveLength(3);
+    expect(body.include.map((i: { email: { email: string } }) => i.email.email)).toEqual([
+      "you@x.com", "alice@x.com", "bob@x.com"
+    ]);
+  });
+
+  it("createAccessPolicy filters empty / non-email entries from a list", async () => {
+    let capturedBody = "";
+    const f = fakeFetch((_url, init) => {
+      capturedBody = String(init.body);
+      return new Response(JSON.stringify({ success: true, result: { id: "p-3" } }), { status: 200 });
+    });
+    await createAccessPolicy(
+      "t", "acc-1", "app-1",
+      ["you@x.com", "  ", "not-an-email", "  alice@x.com  "],
+      { fetchImpl: f }
+    );
+    const body = JSON.parse(capturedBody);
+    expect(body.include).toHaveLength(2);
+    expect(body.include[1].email.email).toBe("alice@x.com");
+  });
+
+  it("createAccessPolicy returns a 400-ish error when no valid emails remain", async () => {
+    let calls = 0;
+    const f = fakeFetch(() => {
+      calls += 1;
+      return new Response("should not be called", { status: 500 });
+    });
+    const r = await createAccessPolicy("t", "acc-1", "app-1", ["not-an-email", "  "], { fetchImpl: f });
+    expect(r.success).toBe(false);
+    expect(r.errors?.[0].code).toBe(400);
+    expect(calls).toBe(0); // never even hit the API
+  });
 });
 
 describe("cfApi.getAccessOrganization", () => {
@@ -231,6 +315,378 @@ describe("cfApi.putWorkerSecret", () => {
     const body = JSON.parse(capturedBody);
     expect(body).toEqual({ name: "ANTHROPIC_API_KEY", text: "sk-ant-test", type: "secret_text" });
     expect(r.success).toBe(true);
+  });
+});
+
+describe("cfApi.findAccessAppByDestination", () => {
+  it("returns the matching app when destinations[].uri matches", async () => {
+    const f = fakeFetch(() =>
+      new Response(
+        JSON.stringify({
+          success: true,
+          result: [
+            {
+              id: "app-other", uid: "app-other", aud: "AUD-O", name: "other", domain: "other", type: "self_hosted",
+              destinations: [{ type: "public", uri: "https://other.workers.dev" }]
+            },
+            {
+              id: "app-match", uid: "app-match", aud: "AUD-M", name: "Helm", domain: "match.example", type: "self_hosted",
+              destinations: [{ type: "public", uri: "https://match.example/" }]
+            }
+          ]
+        }),
+        { status: 200 }
+      )
+    );
+    const r = await findAccessAppByDestination("t", "acc-1", "https://match.example", { fetchImpl: f });
+    expect(r.success).toBe(true);
+    expect(r.result?.id).toBe("app-match");
+  });
+
+  it("falls back to legacy `domain` field for old apps", async () => {
+    const f = fakeFetch(() =>
+      new Response(
+        JSON.stringify({
+          success: true,
+          result: [
+            { id: "legacy", uid: "legacy", aud: "AUD-L", name: "Legacy", domain: "legacy.workers.dev", type: "self_hosted" }
+          ]
+        }),
+        { status: 200 }
+      )
+    );
+    const r = await findAccessAppByDestination("t", "acc-1", "https://legacy.workers.dev", { fetchImpl: f });
+    expect(r.result?.id).toBe("legacy");
+  });
+
+  it("returns null result when nothing matches", async () => {
+    const f = fakeFetch(() =>
+      new Response(
+        JSON.stringify({ success: true, result: [] }),
+        { status: 200 }
+      )
+    );
+    const r = await findAccessAppByDestination("t", "acc-1", "https://nothing.example", { fetchImpl: f });
+    expect(r.success).toBe(true);
+    expect(r.result).toBeNull();
+  });
+});
+
+describe("cfApi.ensureAccessApp", () => {
+  it("create succeeds — passes result through with no `reused` flag", async () => {
+    const f = fakeFetch(() =>
+      new Response(
+        JSON.stringify({
+          success: true,
+          result: { id: "app-new", uid: "app-new", aud: "AUD-N", name: "Helm", domain: "new.example", type: "self_hosted" }
+        }),
+        { status: 200 }
+      )
+    );
+    const r = await ensureAccessApp("t", "acc-1", { name: "Helm", domain: "new.example" }, { fetchImpl: f });
+    expect(r.success).toBe(true);
+    expect(r.result?.id).toBe("app-new");
+    expect(r.reused).toBeUndefined();
+  });
+
+  it("on application_already_exists, falls back to find-by-destination and returns reused: true", async () => {
+    let call = 0;
+    const f = fakeFetch((_url, _init) => {
+      call += 1;
+      if (call === 1) {
+        // POST /access/apps
+        return new Response(
+          JSON.stringify({
+            success: false,
+            errors: [{ code: 12109, message: "access.api.error.application_already_exists" }]
+          }),
+          { status: 409 }
+        );
+      }
+      // GET /access/apps?per_page=100
+      return new Response(
+        JSON.stringify({
+          success: true,
+          result: [
+            {
+              id: "app-existing", uid: "app-existing", aud: "AUD-E", name: "Helm — old", domain: "x.example", type: "self_hosted",
+              destinations: [{ type: "public", uri: "https://x.example" }]
+            }
+          ]
+        }),
+        { status: 200 }
+      );
+    });
+    const r = await ensureAccessApp("t", "acc-1", { name: "Helm", domain: "x.example" }, { fetchImpl: f });
+    expect(r.success).toBe(true);
+    expect(r.result?.id).toBe("app-existing");
+    expect(r.result?.aud).toBe("AUD-E");
+    expect(r.reused).toBe(true);
+  });
+
+  it("on a non-conflict error, surfaces the original failure", async () => {
+    const f = fakeFetch(() =>
+      new Response(
+        JSON.stringify({
+          success: false,
+          errors: [{ code: 9109, message: "Authentication error" }]
+        }),
+        { status: 403 }
+      )
+    );
+    const r = await ensureAccessApp("t", "acc-1", { name: "Helm", domain: "y.example" }, { fetchImpl: f });
+    expect(r.success).toBe(false);
+    expect(r.errors?.[0].code).toBe(9109);
+    expect(r.reused).toBeUndefined();
+  });
+
+  it("application_already_exists but list returns nothing → surfaces original error", async () => {
+    let call = 0;
+    const f = fakeFetch(() => {
+      call += 1;
+      if (call === 1) {
+        return new Response(
+          JSON.stringify({ success: false, errors: [{ code: 12109, message: "duplicate" }] }),
+          { status: 409 }
+        );
+      }
+      return new Response(JSON.stringify({ success: true, result: [] }), { status: 200 });
+    });
+    const r = await ensureAccessApp("t", "acc-1", { name: "Helm", domain: "z.example" }, { fetchImpl: f });
+    expect(r.success).toBe(false);
+    expect(r.errors?.[0].message).toBe("duplicate");
+  });
+});
+
+describe("cfApi.createR2Bucket / ensureR2Bucket", () => {
+  it("createR2Bucket POSTs to /r2/buckets with normalized name", async () => {
+    let capturedBody = "";
+    const f = fakeFetch((url, init) => {
+      capturedBody = String(init.body);
+      expect(url).toBe("https://api.cloudflare.com/client/v4/accounts/acc-1/r2/buckets");
+      return new Response(
+        JSON.stringify({ success: true, result: { name: "helm-workspace" } }),
+        { status: 200 }
+      );
+    });
+    // Pass uppercase + invalid chars — the helper should normalize.
+    await createR2Bucket("t", "acc-1", "Helm_Workspace.X", { fetchImpl: f });
+    expect(JSON.parse(capturedBody)).toEqual({ name: "helm-workspace-x" });
+  });
+
+  it("ensureR2Bucket recovers from already-exists by reusing the same name", async () => {
+    const f = fakeFetch(() =>
+      new Response(
+        JSON.stringify({
+          success: false,
+          errors: [{ code: 10004, message: "The bucket you tried to create already exists" }]
+        }),
+        { status: 409 }
+      )
+    );
+    const r = await ensureR2Bucket("t", "acc-1", "helm-workspace", { fetchImpl: f });
+    expect(r.success).toBe(true);
+    expect(r.reused).toBe(true);
+    expect(r.result?.name).toBe("helm-workspace");
+  });
+
+  it("ensureR2Bucket surfaces non-conflict errors directly", async () => {
+    const f = fakeFetch(() =>
+      new Response(
+        JSON.stringify({ success: false, errors: [{ code: 9109, message: "Authentication error" }] }),
+        { status: 403 }
+      )
+    );
+    const r = await ensureR2Bucket("t", "acc-1", "helm-workspace", { fetchImpl: f });
+    expect(r.success).toBe(false);
+    expect(r.errors?.[0].code).toBe(9109);
+    expect(r.reused).toBeUndefined();
+  });
+});
+
+describe("cfApi.createAiGateway / ensureAiGateway", () => {
+  it("createAiGateway POSTs to /ai-gateway/gateways with a normalized id", async () => {
+    let capturedUrl = "";
+    let capturedBody = "";
+    const f = fakeFetch((url, init) => {
+      capturedUrl = url;
+      capturedBody = String(init.body);
+      return new Response(
+        JSON.stringify({ success: true, result: { id: "open-think" } }),
+        { status: 200 }
+      );
+    });
+    // Pass a name with uppercase + underscores — the helper should
+    // lowercase + hyphenate to match CF's id rules.
+    await createAiGateway("t", "acc-1", "Open_Think", { fetchImpl: f });
+    expect(capturedUrl).toBe("https://api.cloudflare.com/client/v4/accounts/acc-1/ai-gateway/gateways");
+    const body = JSON.parse(capturedBody);
+    expect(body.id).toBe("open-think");
+    // CF's create-gateway endpoint requires all six fields; omitting
+    // any number returns "Expected number, received nan" (code 7001).
+    expect(body.cache_invalidate_on_update).toBe(true);
+    expect(body.cache_ttl).toBe(0);
+    expect(body.collect_logs).toBe(true);
+    expect(body.rate_limiting_interval).toBe(0);
+    expect(body.rate_limiting_limit).toBe(0);
+  });
+
+  it("ensureAiGateway returns success directly on a fresh create", async () => {
+    const f = fakeFetch(() =>
+      new Response(
+        JSON.stringify({ success: true, result: { id: "helm" } }),
+        { status: 200 }
+      )
+    );
+    const r = await ensureAiGateway("t", "acc-1", "helm", { fetchImpl: f });
+    expect(r.success).toBe(true);
+    expect(r.reused).toBeUndefined();
+    expect(r.result?.id).toBe("helm");
+  });
+
+  it("ensureAiGateway recovers from 409/already-exists by reusing the same id", async () => {
+    const f = fakeFetch(() =>
+      new Response(
+        JSON.stringify({
+          success: false,
+          errors: [{ code: 5403, message: "AI gateway with that id already exists" }]
+        }),
+        { status: 409 }
+      )
+    );
+    const r = await ensureAiGateway("t", "acc-1", "Helm", { fetchImpl: f });
+    expect(r.success).toBe(true);
+    expect(r.reused).toBe(true);
+    // Normalized id is what we'd reference at the gateway URL — verify
+    // the helper returns a usable value for downstream code.
+    expect(r.result?.id).toBe("helm");
+  });
+
+  it("ensureAiGateway surfaces non-conflict errors directly", async () => {
+    const f = fakeFetch(() =>
+      new Response(
+        JSON.stringify({ success: false, errors: [{ code: 9109, message: "Authentication error" }] }),
+        { status: 403 }
+      )
+    );
+    const r = await ensureAiGateway("t", "acc-1", "helm", { fetchImpl: f });
+    expect(r.success).toBe(false);
+    expect(r.errors?.[0].code).toBe(9109);
+    expect(r.reused).toBeUndefined();
+  });
+});
+
+describe("cfApi.ensureWorkerSecret", () => {
+  it("PUT succeeds — no settings call needed", async () => {
+    let calls = 0;
+    const f = fakeFetch(() => {
+      calls += 1;
+      return new Response(
+        JSON.stringify({ success: true, result: { name: "X", type: "secret_text" } }),
+        { status: 200 }
+      );
+    });
+    const r = await ensureWorkerSecret("t", "acc-1", "helm", "X", "v", { fetchImpl: f });
+    expect(r.success).toBe(true);
+    expect(r.reused).toBeUndefined();
+    expect(calls).toBe(1);
+  });
+
+  it("on 10053 with matching plain_text — succeeds with reused=value-match-plain-text", async () => {
+    let call = 0;
+    const f = fakeFetch(() => {
+      call += 1;
+      if (call === 1) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            errors: [{ code: 10053, message: "Binding name 'CF_ACCESS_TEAM_DOMAIN' already in use." }]
+          }),
+          { status: 400 }
+        );
+      }
+      // settings GET
+      return new Response(
+        JSON.stringify({
+          success: true,
+          result: {
+            bindings: [
+              { name: "CF_ACCESS_TEAM_DOMAIN", type: "plain_text", text: "https://tom.cloudflareaccess.com" }
+            ]
+          }
+        }),
+        { status: 200 }
+      );
+    });
+    const r = await ensureWorkerSecret("t", "acc-1", "helm", "CF_ACCESS_TEAM_DOMAIN", "https://tom.cloudflareaccess.com", { fetchImpl: f });
+    expect(r.success).toBe(true);
+    expect(r.reused).toBe("value-match-plain-text");
+  });
+
+  it("on 10053 with DIFFERENT plain_text value — fails with concrete recovery", async () => {
+    let call = 0;
+    const f = fakeFetch(() => {
+      call += 1;
+      if (call === 1) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            errors: [{ code: 10053, message: "Binding name 'X' already in use." }]
+          }),
+          { status: 400 }
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          success: true,
+          result: { bindings: [{ name: "X", type: "plain_text", text: "old-value" }] }
+        }),
+        { status: 200 }
+      );
+    });
+    const r = await ensureWorkerSecret("t", "acc-1", "helm", "X", "new-value", { fetchImpl: f });
+    expect(r.success).toBe(false);
+    expect(r.recovery).toMatch(/different value/i);
+    expect(r.recovery).toContain("dash");
+  });
+
+  it("on 10053 with secret_text — succeeds with reused=already-secret", async () => {
+    let call = 0;
+    const f = fakeFetch(() => {
+      call += 1;
+      if (call === 1) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            errors: [{ code: 10053, message: "Binding name 'X' already in use." }]
+          }),
+          { status: 400 }
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          success: true,
+          result: { bindings: [{ name: "X", type: "secret_text" }] }
+        }),
+        { status: 200 }
+      );
+    });
+    const r = await ensureWorkerSecret("t", "acc-1", "helm", "X", "v", { fetchImpl: f });
+    expect(r.success).toBe(true);
+    expect(r.reused).toBe("already-secret");
+  });
+
+  it("on a non-binding-conflict error — surfaces the original error directly", async () => {
+    const f = fakeFetch(() =>
+      new Response(
+        JSON.stringify({ success: false, errors: [{ code: 9109, message: "Authentication error" }] }),
+        { status: 403 }
+      )
+    );
+    const r = await ensureWorkerSecret("t", "acc-1", "helm", "X", "v", { fetchImpl: f });
+    expect(r.success).toBe(false);
+    expect(r.errors?.[0].code).toBe(9109);
+    expect(r.recovery).toBeUndefined();
   });
 });
 

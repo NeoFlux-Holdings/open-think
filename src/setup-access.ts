@@ -459,6 +459,16 @@ export async function runLockdown(
   );
 
   // 4-6. Set the three secrets on the Worker.
+  //
+  // The deploy form (site/src/cloud/deployFlow.ts) uploads the Worker with
+  // CF_ACCESS_TEAM_DOMAIN as a `plain_text` var (it's not actually
+  // sensitive — it's the public team domain that appears in the redirect
+  // URL on the Access login page). When the user later runs THIS wizard,
+  // PUT /secrets fails with code 10053 "Binding name already in use"
+  // because the secrets endpoint can't promote a plain_text binding to
+  // secret_text. setSecretWithFallback handles that: if a binding with
+  // the same name+value already exists (any type), it's a no-op; if it
+  // exists with a different value, we surface clear recovery copy.
   const secretsToSet: Array<{ kind: LockdownStepKind; name: string; text: string }> = [
     { kind: "set-secret-team-domain", name: "CF_ACCESS_TEAM_DOMAIN", text: teamDomain },
     { kind: "set-secret-aud", name: "CF_ACCESS_AUD", text: aud },
@@ -469,20 +479,20 @@ export async function runLockdown(
     }
   ];
   for (const s of secretsToSet) {
-    const r = await cfCall<{ name: string; type: string }>(
+    const r = await setSecretWithFallback(
       input.token,
-      `/accounts/${input.accountId}/workers/scripts/${input.scriptName}/secrets`,
-      {
-        method: "PUT",
-        body: JSON.stringify({ name: s.name, text: s.text, type: "secret_text" }),
-        fetchImpl
-      }
+      input.accountId,
+      input.scriptName,
+      s.name,
+      s.text,
+      fetchImpl
     );
     if (!r.success) {
-      const apiMsg = r.errors?.[0]?.message ?? `setting ${s.name} failed`;
-      const apiCode = r.errors?.[0]?.code;
+      const apiMsg = r.error ?? `setting ${s.name} failed`;
+      const apiCode = r.code;
       steps.push(step(s.kind, false, `${s.name}: ${apiMsg}`, { apiCode }, apiMsg));
-      const scopeRecovery = classifyApiFailure(apiMsg, apiCode, "Workers Scripts:Edit", input.accountId);
+      const scopeRecovery = r.recovery
+        ?? classifyApiFailure(apiMsg, apiCode, "Workers Scripts:Edit", input.accountId);
       return {
         ok: false,
         steps,
@@ -493,7 +503,15 @@ export async function runLockdown(
         teamDomain
       };
     }
-    steps.push(step(s.kind, true, `${s.name} set`, { name: s.name }));
+    const note = r.reused === "value-match-plain-text"
+      ? ` (already present as plain_text var with same value — no change)`
+      : r.reused === "already-secret"
+        ? ` (already a secret with intended value)`
+        : "";
+    steps.push(step(s.kind, true, `${s.name} set${note}`, {
+      name: s.name,
+      reused: r.reused ?? false
+    }));
   }
 
   return { ok: true, steps, teamDomain, aud, appId };
@@ -649,6 +667,114 @@ export const ACCESS_WIZARD_TOKEN_URL =
   `&accountId=*` +
   `&zoneId=all` +
   `&name=${encodeURIComponent("Helm")}`;
+
+/**
+ * Result of a single secret-set step. Shape lets the caller distinguish
+ * "we wrote a new secret" from "the binding was already correct, no-op".
+ */
+interface SetSecretResult {
+  success: boolean;
+  /** When success=true: how we got here. */
+  reused?: "value-match-plain-text" | "already-secret";
+  /** When success=false: the CF error message. */
+  error?: string;
+  /** When success=false: the CF error code (10053 etc.). */
+  code?: number;
+  /** When success=false and we have a specific recovery message. */
+  recovery?: string;
+}
+
+/**
+ * Set a Worker secret, gracefully handling code 10053 ("Binding name
+ * already in use"). 10053 fires when a NON-secret binding (e.g. a
+ * `plain_text` var the deploy form uploaded) already occupies that name —
+ * the secrets endpoint refuses to overwrite a different binding type.
+ *
+ * Recovery strategy:
+ *   1. Try the PUT normally.
+ *   2. On 10053: read the script's settings.
+ *   3. If a `plain_text` binding exists with the SAME value we wanted:
+ *      success — the value is already in env, no change needed.
+ *      (auth.ts reads env.CF_ACCESS_TEAM_DOMAIN agnostic of binding type.)
+ *   4. If a `secret_text` binding exists with that name: success —
+ *      its value isn't readable but we trust the user already set it.
+ *   5. Otherwise (different value or unexpected binding type): surface a
+ *      concrete recovery action — delete the var at dash → Settings →
+ *      Variables, then retry.
+ */
+async function setSecretWithFallback(
+  token: string,
+  accountId: string,
+  scriptName: string,
+  name: string,
+  text: string,
+  fetchImpl?: typeof fetch
+): Promise<SetSecretResult> {
+  const put = await cfCall<{ name: string; type: string }>(
+    token,
+    `/accounts/${accountId}/workers/scripts/${scriptName}/secrets`,
+    {
+      method: "PUT",
+      body: JSON.stringify({ name, text, type: "secret_text" }),
+      fetchImpl
+    }
+  );
+  if (put.success) return { success: true };
+
+  const msg = put.errors?.[0]?.message ?? "";
+  const code = put.errors?.[0]?.code;
+  const looksLikeBindingConflict =
+    code === 10053 ||
+    /binding name.*already in use/i.test(msg) ||
+    /already exists/i.test(msg);
+  if (!looksLikeBindingConflict) {
+    return { success: false, error: msg, code };
+  }
+
+  // Read the script's current bindings to figure out what's at this name.
+  const settings = await cfCall<{
+    bindings?: Array<{ name: string; type: string; text?: string }>;
+  }>(token, `/accounts/${accountId}/workers/scripts/${scriptName}/settings`, {
+    method: "GET",
+    fetchImpl
+  });
+  if (!settings.success || !Array.isArray(settings.result?.bindings)) {
+    // Couldn't read settings — surface the original 10053 with guidance.
+    return {
+      success: false,
+      error: msg,
+      code,
+      recovery: `Cloudflare returned: "${msg}" (code ${code ?? "n/a"}). A binding named ${name} already exists on the script but we couldn't read its current value (token may be missing "Workers Scripts:Edit"). Either: (a) re-run with a token that has Workers Scripts:Edit, or (b) delete the existing ${name} entry at dash → Workers & Pages → ${scriptName} → Settings → Variables and retry.`
+    };
+  }
+  const existing = settings.result!.bindings!.find((b) => b.name === name);
+  if (!existing) {
+    // 10053 said it exists but settings doesn't see it — race or
+    // permission gap. Treat as the original error.
+    return { success: false, error: msg, code };
+  }
+  if (existing.type === "plain_text" && typeof existing.text === "string") {
+    if (existing.text === text) {
+      return { success: true, reused: "value-match-plain-text" };
+    }
+    return {
+      success: false,
+      error: msg,
+      code,
+      recovery: `${name} already exists on the Worker as a plain_text variable with a different value. The wizard wants to set it to "${text}" but the current value is "${existing.text}". Resolve by editing/deleting it at dash → Workers & Pages → ${scriptName} → Settings → Variables (under "Environment variables"), then retry.`
+    };
+  }
+  if (existing.type === "secret_text") {
+    // Secret value isn't readable; trust whoever set it earlier.
+    return { success: true, reused: "already-secret" };
+  }
+  return {
+    success: false,
+    error: msg,
+    code,
+    recovery: `${name} already exists on the Worker as a "${existing.type}" binding, which the secrets endpoint can't overwrite. Delete it at dash → Workers & Pages → ${scriptName} → Settings, then retry.`
+  };
+}
 
 /**
  * Look up an existing self-hosted Access app whose destinations cover the

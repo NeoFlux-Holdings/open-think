@@ -245,21 +245,43 @@ export class CfAiGatewayPlugin implements AgentPlugin {
     const hasGateway = Boolean(context.env.AI_GATEWAY_ID);
     const hasAccount = Boolean(context.env.CLOUDFLARE_ACCOUNT_ID);
     const hasBinding = Boolean(context.env.AI);
+    // Soft init: warn-and-continue when env is missing, so a deploy that
+    // accidentally enables this plugin without provisioning the gateway
+    // doesn't brick every chat request with E_INTERNAL.
+    //
+    // The hard checks happen at invoke time — if a chat actually tries
+    // to route through this plugin it'll get a clear E_CF_GATEWAY_CONFIG
+    // (400, surfaced in the response) instead of the bootstrap-time
+    // E_INTERNAL crash that blocks every endpoint.
     if (!hasGateway) {
-      throw new Error(
-        "cf-ai-gateway requires AI_GATEWAY_ID. Create a gateway at https://dash.cloudflare.com/?to=/:account/ai/ai-gateway"
+      console.warn(
+        "[cf-ai-gateway] AI_GATEWAY_ID not set — plugin loaded but inert. " +
+        "Chat requests routed here will fail with E_CF_GATEWAY_CONFIG. " +
+        "Provision a gateway at https://dash.cloudflare.com/?to=/:account/ai/ai-gateway " +
+        "or remove `cf-ai-gateway` from ENABLED_PLUGINS."
       );
-    }
-    if (!hasBinding && !hasAccount) {
-      throw new Error(
-        "cf-ai-gateway requires either env.AI binding (preferred) or CLOUDFLARE_ACCOUNT_ID for the compat REST path"
+    } else if (!hasBinding && !hasAccount) {
+      console.warn(
+        "[cf-ai-gateway] AI_GATEWAY_ID set but no env.AI binding and no " +
+        "CLOUDFLARE_ACCOUNT_ID — plugin loaded but compat path is unavailable."
       );
     }
     this.ctx = context;
   }
 
   private gatewayId(): string {
-    return this.ctx!.env.AI_GATEWAY_ID!;
+    const id = this.ctx?.env.AI_GATEWAY_ID;
+    if (!id) {
+      // initialize() now warns instead of throws when AI_GATEWAY_ID is
+      // missing, so we hit this path on first actual chat invocation.
+      // 400 (not 500) — the user can fix it by setting the env var.
+      throw new AppError(
+        "E_CF_GATEWAY_CONFIG",
+        "cf-ai-gateway: AI_GATEWAY_ID is not set. Provision a gateway via the deploy form (it now auto-creates one when the token has AI Gateway:Edit) or manually at https://dash.cloudflare.com/?to=/:account/ai/ai-gateway, then set AI_GATEWAY_ID as a Worker variable.",
+        400
+      );
+    }
+    return id;
   }
 
   private compatUrl(): string {

@@ -12,6 +12,7 @@ import { buildAnthropicTools } from "./conductor";
 import {
   DEFAULT_MAX_ITERATIONS,
   MAX_ITERATION_CEILING,
+  reasoningEffortToAnthropicBudget,
   type LoopEvent,
   type ToolLoopConfig
 } from "./tool-stream-types";
@@ -66,6 +67,24 @@ export async function* runAnthropicToolStream(
 
     yield { kind: "turn-start", turn };
 
+    // Map our normalized reasoning effort to Anthropic's `thinking` block.
+    // Anthropic's API requires `max_tokens > thinking.budget_tokens` so we
+    // bump max_tokens above the budget when needed. Default 1024 is fine
+    // when thinking is disabled.
+    const thinkingBudget = reasoningEffortToAnthropicBudget(config.reasoningEffort);
+    const requestBody: Record<string, unknown> = {
+      model,
+      system: config.systemPrompt,
+      max_tokens: config.maxTokens ?? Math.max(1024, (thinkingBudget ?? 0) + 1024),
+      messages,
+      tools,
+      tool_choice: { type: "auto" },
+      stream: true
+    };
+    if (thinkingBudget !== null) {
+      requestBody.thinking = { type: "enabled", budget_tokens: thinkingBudget };
+    }
+
     const response = await fetch(ANTHROPIC_URL, {
       method: "POST",
       headers: {
@@ -74,15 +93,7 @@ export async function* runAnthropicToolStream(
         "anthropic-version": ANTHROPIC_VERSION,
         accept: "text/event-stream"
       },
-      body: JSON.stringify({
-        model,
-        system: config.systemPrompt,
-        max_tokens: config.maxTokens ?? 1024,
-        messages,
-        tools,
-        tool_choice: { type: "auto" },
-        stream: true
-      }),
+      body: JSON.stringify(requestBody),
       signal: config.abortSignal
     });
 

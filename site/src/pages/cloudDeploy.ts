@@ -83,6 +83,9 @@ export function renderCloudDeploy(): string {
           No read access to existing resources. No DNS, no zones, no R2.
           You can revoke any time at dash → API Tokens.
         </p>
+        <p class="mono" style="font-size: 12px; color: var(--muted); margin-top: 8px;">
+          The pre-fill URL uses Cloudflare's exact short keys for each permission group (e.g. <span class="mono">aig:edit</span> for AI Gateway). If any row is missing when the dash opens, click <b>+ Add more</b> and search the permission name — the list is still correct.
+        </p>
       </details>
 
       <div class="field" style="margin-top: 24px;">
@@ -107,51 +110,115 @@ export function renderCloudDeploy(): string {
         <select id="cf-account"></select>
       </div>
       <div class="field">
-        <label for="cf-worker">Worker name <span style="color: var(--muted); font-size: 12px;">— deploys at &lt;name&gt;.&lt;your-account-subdomain&gt;.workers.dev</span></label>
+        <label for="cf-worker">Worker name <span class="field-hint">— deploys at &lt;name&gt;.&lt;your-account-subdomain&gt;.workers.dev</span></label>
         <input id="cf-worker" type="text" placeholder="helm" maxlength="48" />
       </div>
-      <div class="field">
-        <label>
+
+      <fieldset class="opts">
+        <legend>What to provision</legend>
+        <label class="opt-row">
           <input id="cf-d1" type="checkbox" checked />
-          Create a D1 database (memory + scheduler + cost rollups)
+          <span class="opt-label">
+            <span class="opt-title">D1 database</span>
+            <span class="opt-sub">memory · scheduler · cost rollups</span>
+          </span>
         </label>
-      </div>
-      <div class="field">
-        <label>
+        <label class="opt-row">
           <input id="cf-access" type="checkbox" checked />
-          Create a Cloudflare Access app (recommended — gates /app on your email)
+          <span class="opt-label">
+            <span class="opt-title">Cloudflare Access app <span class="badge-rec">recommended</span></span>
+            <span class="opt-sub">gates /app on the emails below</span>
+          </span>
         </label>
-      </div>
-      <div class="field">
-        <label for="cf-owner">Owner email <span style="color: var(--muted); font-size: 12px;">— Access policy + PA notifications</span></label>
-        <input id="cf-owner" type="email" placeholder="you@example.com" />
+      </fieldset>
+
+      <div id="access-emails" class="field">
+        <label for="cf-owner">Owner email <span class="field-hint">— receives Access OTPs &amp; PA notifications</span></label>
+        <input id="cf-owner" type="email" placeholder="you@example.com" autocomplete="email" />
+        <details style="margin-top: 10px;">
+          <summary class="opt-summary">Add additional allowed emails (optional)</summary>
+          <p class="opt-help">
+            One per line. Each becomes an entry in the Access policy and is added to <span class="mono">CF_ACCESS_ALLOWED_EMAILS</span>.
+            Useful for a co-founder, a support handoff, or a shared inbox.
+          </p>
+          <textarea id="cf-extra-emails" rows="3" placeholder="alice@example.com&#10;bob@example.com" autocomplete="off" spellcheck="false"></textarea>
+        </details>
       </div>
 
-      <details style="margin-top: 12px;" open>
-        <summary class="mono" style="cursor: pointer; font-size: 11px; letter-spacing: 0.12em; color: var(--muted); text-transform: uppercase;">Optional model keys</summary>
-        <div class="field">
-          <label for="cf-or">OPENROUTER_API_KEY <span style="color: var(--muted); font-size: 12px;">— recommended; auto-routes across 100+ models</span></label>
-          <input id="cf-or" type="password" autocomplete="off" placeholder="sk-or-… (optional)" />
-          <label style="display: flex; gap: 8px; align-items: center; margin-top: 8px; font-size: 13px;">
-            <input id="cf-or-default" type="checkbox" checked />
-            Use OpenRouter as the default chat model (otherwise falls back to Workers AI)
+      <fieldset class="opts" style="margin-top: 18px;">
+        <legend>Default chat model</legend>
+        <label class="opt-row">
+          <input id="cf-model-kimi" type="radio" name="cf-model" value="kimi-k2.6" checked />
+          <span class="opt-label">
+            <span class="opt-title">Kimi K2.6 <span class="badge-rec">free</span></span>
+            <span class="opt-sub">1T params, 262K context · auto-routes via Workers AI when no key is pasted</span>
+          </span>
+        </label>
+        <label class="opt-row">
+          <input id="cf-model-gpt55" type="radio" name="cf-model" value="gpt-5.5" />
+          <span class="opt-label">
+            <span class="opt-title">GPT-5.5</span>
+            <span class="opt-sub">paste OpenRouter key below · supports reasoning effort</span>
+          </span>
+        </label>
+        <label class="opt-row">
+          <input id="cf-model-opus" type="radio" name="cf-model" value="opus-4.7" />
+          <span class="opt-label">
+            <span class="opt-title">Claude Opus 4.7</span>
+            <span class="opt-sub">paste Anthropic or OpenRouter key · Anthropic preferred (direct, no markup)</span>
+          </span>
+        </label>
+        <label class="opt-row">
+          <input id="cf-model-sonnet" type="radio" name="cf-model" value="sonnet-4.6" />
+          <span class="opt-label">
+            <span class="opt-title">Claude Sonnet 4.6</span>
+            <span class="opt-sub">faster + cheaper than Opus · same Anthropic / OpenRouter key paths</span>
+          </span>
+        </label>
+        <label class="opt-row">
+          <input id="cf-model-custom" type="radio" name="cf-model" value="custom" />
+          <span class="opt-label">
+            <span class="opt-title">Custom model id</span>
+            <span class="opt-sub">advanced — paste any provider/model id you've configured below</span>
+          </span>
+        </label>
+        <div id="cf-model-custom-row" class="field" hidden style="margin-top: 8px;">
+          <input id="cf-model-custom-id" type="text" autocomplete="off" placeholder="e.g. openrouter/x-ai/grok-4 · @cf/qwen/qwen3-30b-a3b-fp8 · anthropic/claude-haiku-4-5" />
+        </div>
+        <div id="cf-model-reasoning-row" class="field" hidden style="margin-top: 12px; padding-top: 8px; border-top: 1px dotted var(--rule);">
+          <label for="cf-model-reasoning">Reasoning effort
+            <span class="field-hint">— <span id="cf-model-reasoning-hint">how hard the model thinks before answering</span></span>
           </label>
-          <details style="margin-top: 6px;">
-            <summary class="mono" style="font-size: 11px; cursor: pointer; color: var(--muted);">Pin a specific model</summary>
-            <input id="cf-or-model" type="text" autocomplete="off" placeholder="openrouter/auto (default) — or e.g. openrouter/moonshotai/kimi-k2-0905" style="margin-top: 6px;" />
-          </details>
+          <select id="cf-model-reasoning">
+            <option value="none">None — fastest, no reasoning</option>
+            <option value="low">Low</option>
+            <option value="medium" selected>Medium (default)</option>
+            <option value="high">High</option>
+            <option value="xhigh">XHigh — slowest, deepest</option>
+          </select>
+        </div>
+      </fieldset>
+
+      <details class="advanced">
+        <summary class="opt-summary">Bring-your-own model keys (optional)</summary>
+        <p class="opt-help">
+          Paste a key for the provider matching the model you picked above. Helm's chat works zero-key with Kimi K2.6 via Workers AI — keys here just unlock the other model presets and (where supported) cheaper routing.
+        </p>
+        <div class="field">
+          <label for="cf-or">OpenRouter API key <span class="field-hint">— covers Kimi, GPT-5.5, Claude, and 100+ others</span></label>
+          <input id="cf-or" type="password" autocomplete="off" placeholder="sk-or-…" />
         </div>
         <div class="field">
-          <label for="cf-anth">ANTHROPIC_API_KEY</label>
-          <input id="cf-anth" type="password" autocomplete="off" placeholder="sk-ant-… (optional)" />
+          <label for="cf-anth">Anthropic API key <span class="field-hint">— direct path for Opus / Sonnet (no OpenRouter markup)</span></label>
+          <input id="cf-anth" type="password" autocomplete="off" placeholder="sk-ant-…" />
         </div>
         <div class="field">
-          <label for="cf-oai">OPENAI_API_KEY</label>
-          <input id="cf-oai" type="password" autocomplete="off" placeholder="sk-… (optional)" />
+          <label for="cf-oai">OpenAI API key <span class="field-hint">— stored as a secret; not yet wired to a default provider</span></label>
+          <input id="cf-oai" type="password" autocomplete="off" placeholder="sk-…" />
         </div>
       </details>
 
-      <button id="deploy-btn" class="btn primary" style="margin-top: 18px;">Deploy →</button>
+      <button id="deploy-btn" class="btn primary" style="margin-top: 22px;">Deploy →</button>
     </div>
   </div>
 </section>
@@ -166,12 +233,16 @@ export function renderCloudDeploy(): string {
       <div class="mono" style="font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: #2d5c3e; margin-bottom: 6px;">✓ Live</div>
       <p style="margin: 0 0 10px;">Your Worker is deployed and running. No terminal step required.</p>
       <p style="margin: 0 0 14px;">Visit it at <a id="deploy-url-live" class="mono" target="_blank" rel="noopener">…</a></p>
-      <p style="margin: 0; font-size: 13px; color: var(--muted);">
-        <b>What's next:</b> open <span class="mono" id="deploy-app-link">/app</span> to chat with Helm,
-        set <span class="mono">CF_ACCESS_AUD</span> via the manage page (if Helm Cloud) or
-        <span class="mono">wrangler secret put</span> to lock down auth, and explore the
-        <a href="/marketplace">marketplace</a> for plugins.
+      <p style="margin: 0 0 14px; font-size: 13px; color: var(--muted);">
+        <b>What works now:</b> chat (via Workers AI through the auto-provisioned gateway), Files (R2-backed /persist), the Access login wall, plus the full plugin stack (memory, email, helm-setup, helm-artifacts, etc.).
       </p>
+      <details style="margin-top: 8px; font-size: 13px; color: var(--muted);">
+        <summary style="cursor: pointer; color: var(--ink);">What still needs a local <span class="mono">wrangler deploy</span></summary>
+        <ul style="margin-top: 8px; padding-left: 20px; line-height: 1.6;">
+          <li><b>Helm Shell</b> (the <span class="mono">/shell</span> tab). Backed by Cloudflare Containers — the bash image is built from <span class="mono">docker/shell/Dockerfile</span> during <span class="mono">wrangler deploy</span>. CF Containers only supports images in their managed registry scoped to the deploying account, so a browser deploy can't push it. Fork the repo, paste the wrangler.toml from below, run <span class="mono">npx wrangler deploy</span> — your shell will appear at <span class="mono" id="deploy-shell-link">/shell</span>.</li>
+          <li><b>R2 persistence inside the shell</b>. The container would <span class="mono">rclone</span>-mount <span class="mono">/persist</span> using <span class="mono">R2_ACCESS_KEY_ID</span> + <span class="mono">R2_SECRET_ACCESS_KEY</span>, but Cloudflare doesn't expose long-lived R2 S3 credentials via API yet. Until they do: dash → R2 → "Manage R2 API Tokens" → create one for your bucket → <span class="mono">wrangler secret put R2_ACCESS_KEY_ID</span>, then <span class="mono">R2_SECRET_ACCESS_KEY</span>.</li>
+        </ul>
+      </details>
     </div>
 
     <div id="deploy-partial" hidden style="margin-top: 24px; padding: 18px 22px; border-left: 3px solid var(--accent); background: rgba(243, 128, 32, 0.05);">
@@ -251,27 +322,205 @@ export function renderCloudDeploy(): string {
 .cloud-steps { padding-left: 22px; line-height: 1.7; font-size: 14px; }
 .cloud-steps li.ok::marker { color: var(--ok, #2d5c3e); }
 .cloud-steps li.fail::marker { color: var(--accent); }
+.cloud-steps li.warn::marker { color: #b88a2c; content: "⚠ "; }
+.cloud-steps li.running {
+  /* "Currently doing X" placeholder shown at the bottom of the list
+     while the deploy streams. Removed when the final event lands. */
+  list-style: none;
+  margin-left: -22px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+.cloud-steps li.running .running-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: helm-pulse 1.2s ease-in-out infinite;
+  flex-shrink: 0;
+}
+.cloud-steps li.running .running-label {
+  flex: 1;
+  font-style: italic;
+}
+.cloud-steps li.running .running-elapsed {
+  color: var(--muted);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+}
+@keyframes helm-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.85); }
+}
 .cloud-steps li small { color: var(--muted); display: block; }
-.cloud-steps li .step-error {
+.cloud-steps li .step-error,
+.cloud-steps li .step-warn {
   display: block;
   white-space: pre-wrap;
   word-wrap: break-word;
   margin: 6px 0 0;
   padding: 8px 12px;
-  background: rgba(243, 128, 32, 0.05);
-  border-left: 2px solid var(--accent);
   font-family: 'IBM Plex Mono', monospace;
   font-size: 12px;
   line-height: 1.55;
   color: var(--ink);
 }
+.cloud-steps li .step-error {
+  background: rgba(243, 128, 32, 0.05);
+  border-left: 2px solid var(--accent);
+}
+.cloud-steps li .step-warn {
+  /* Amber, dimmer than the orange used for hard failures. The whole
+     point of a warning is that the deploy continued — the visual weight
+     should match. */
+  background: rgba(184, 138, 44, 0.05);
+  border-left: 2px solid #b88a2c;
+  color: var(--muted);
+}
 .field { margin: 14px 0; }
 .field label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
-.field input[type="text"], .field input[type="email"], .field input[type="password"], .field select {
+.field-hint { color: var(--muted); font-size: 12px; font-weight: normal; }
+.field input[type="text"], .field input[type="email"], .field input[type="password"], .field select,
+.field textarea {
   width: 100%; max-width: 480px; padding: 10px 12px; font-family: 'IBM Plex Mono', monospace;
   font-size: 14px; border: 1px solid var(--rule); background: transparent; color: var(--ink);
 }
-.field input[type="checkbox"] { margin-right: 6px; }
+.field textarea { line-height: 1.6; resize: vertical; min-height: 64px; }
+
+/* What-to-provision fieldset: keeps the two checkboxes grouped + bordered.
+   The previous markup used bare <label> rows with default checkbox glyphs
+   that browsers (esp. with Forced Colors mode or some dark themes)
+   render as opaque red squares — fixed here with appearance:none + a
+   custom checkmark, plus solid contrast for both ticked + unticked. */
+.opts {
+  margin: 18px 0 8px;
+  padding: 14px 16px;
+  border: 1px solid var(--rule);
+  background: rgba(255, 255, 255, 0.015);
+}
+.opts legend {
+  padding: 0 6px;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.opt-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 0;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--ink);
+}
+.opt-row + .opt-row { border-top: 1px dotted var(--rule); }
+.opt-row-tight { padding: 6px 0; margin-top: 6px; border-top: 1px dotted var(--rule); }
+.opt-row input[type="checkbox"],
+.opt-row input[type="radio"] {
+  /* Reset the platform default — it was rendering as a solid red block in
+     the user's screenshot. Replace with an explicit, theme-consistent box. */
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  border: 1px solid var(--rule);
+  background: transparent;
+  display: inline-block;
+  flex-shrink: 0;
+  cursor: pointer;
+  position: relative;
+  transition: background 120ms, border-color 120ms;
+}
+.opt-row input[type="radio"] { border-radius: 50%; }
+.opt-row input[type="checkbox"]:hover,
+.opt-row input[type="radio"]:hover { border-color: var(--ink); }
+.opt-row input[type="checkbox"]:checked,
+.opt-row input[type="radio"]:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.opt-row input[type="checkbox"]:checked::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 0px;
+  width: 5px;
+  height: 10px;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+.opt-row input[type="radio"]:checked::after {
+  /* Inner dot for the radio's "selected" state — circular, white, centered. */
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #fff;
+}
+.opt-row input[type="checkbox"]:focus-visible,
+.opt-row input[type="radio"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.opt-label { display: flex; flex-direction: column; gap: 2px; line-height: 1.4; }
+.opt-title { color: var(--ink); }
+.opt-sub { color: var(--muted); font-size: 12px; }
+.badge-rec {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-family: 'IBM Plex Mono', monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}
+
+/* Disclosure / collapse styling — uses CSS for the rotation chevron
+   so the BYOK + extra-emails groups feel like one consistent system. */
+.opt-summary {
+  cursor: pointer;
+  font-size: 12px;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 6px 0;
+  list-style: none;
+  user-select: none;
+}
+.opt-summary::-webkit-details-marker { display: none; }
+.opt-summary::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: 8px;
+  transition: transform 120ms;
+  color: var(--muted);
+}
+details[open] > .opt-summary::before { transform: rotate(90deg); }
+.opt-summary-thin { font-size: 11px; }
+.opt-help {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 6px 0 12px;
+  line-height: 1.55;
+  max-width: 480px;
+}
+.advanced {
+  margin-top: 18px;
+  padding: 4px 0 0;
+  border-top: 1px solid var(--rule);
+}
 .snippet-pre {
   background: rgba(0,0,0,0.04);
   border-left: 2px solid var(--accent);
@@ -386,6 +635,38 @@ export function renderCloudDeploy(): string {
   }
   console.info('[deploy] form ready · ' + Object.keys(requiredEls).length + ' elements wired');
 
+  // --- Model preset show/hide logic -------------------------------------
+  // - "Custom" radio reveals the text input row underneath the radios.
+  // - GPT-5.5 + Opus 4.7 reveal the reasoning-effort dropdown; the others
+  //   hide it (Kimi doesn't support reasoning yet on Moonshot's API, and
+  //   Sonnet 4.6's extended_thinking is binary not graded so we hide).
+  // - Reasoning hint text adapts per preset.
+  const modelRadios = document.querySelectorAll('input[name="cf-model"]');
+  const customRow = document.getElementById('cf-model-custom-row');
+  const reasoningRow = document.getElementById('cf-model-reasoning-row');
+  const reasoningHint = document.getElementById('cf-model-reasoning-hint');
+  function syncModelUI() {
+    const sel = document.querySelector('input[name="cf-model"]:checked');
+    const v = sel ? sel.value : 'kimi-k2.6';
+    if (customRow) {
+      if (v === 'custom') customRow.removeAttribute('hidden');
+      else customRow.setAttribute('hidden', '');
+    }
+    if (reasoningRow) {
+      if (v === 'gpt-5.5' || v === 'opus-4.7') reasoningRow.removeAttribute('hidden');
+      else reasoningRow.setAttribute('hidden', '');
+    }
+    if (reasoningHint) {
+      if (v === 'gpt-5.5') {
+        reasoningHint.textContent = 'GPT-5.5 reasoning.effort. Higher = more deliberation, more tokens, slower.';
+      } else if (v === 'opus-4.7') {
+        reasoningHint.textContent = 'Maps to extended_thinking budget on Anthropic. Off / Low keeps it snappy; High lets it think before tool calls.';
+      }
+    }
+  }
+  modelRadios.forEach(function (r) { r.addEventListener('change', syncModelUI); });
+  syncModelUI();
+
   verifyBtn.addEventListener('click', async () => {
     console.info('[deploy] verify clicked');
     const token = tokenInput.value.trim();
@@ -430,7 +711,16 @@ export function renderCloudDeploy(): string {
         opt.textContent = acc.name + '  (' + acc.id.slice(0, 8) + '…)';
         accountSelect.appendChild(opt);
       }
-      verifyOut.textContent = 'token ok · ' + (data.accounts || []).length + ' account(s) found';
+      // Pre-fill the owner email from the token's user-details record so
+      // the user doesn't have to retype something CF already knows. Only
+      // fills empty fields — never overwrites a value the user typed.
+      if (data.userEmail && !ownerInput.value) {
+        ownerInput.value = data.userEmail;
+        ownerInput.placeholder = data.userEmail;
+      }
+      const accountWord = (data.accounts || []).length === 1 ? 'account' : 'accounts';
+      verifyOut.textContent = 'token ok · ' + (data.accounts || []).length + ' ' + accountWord
+        + (data.userEmail ? ' · ' + data.userEmail : '');
       step2.removeAttribute('hidden');
       step2.scrollIntoView({ behavior: 'smooth', block: 'start' });
     } catch (err) {
@@ -451,14 +741,34 @@ export function renderCloudDeploy(): string {
     const enableD1 = $('#cf-d1').checked;
     const enableAccess = $('#cf-access').checked;
     const owner = ownerInput.value.trim();
+    const extraEmailsRaw = ($('#cf-extra-emails')?.value || '').trim();
+    const extraEmails = extraEmailsRaw
+      .split(/[\\n,]+/)
+      .map(function (s) { return s.trim(); })
+      .filter(function (s) { return s.length > 0 && s.indexOf('@') > 0; });
     const anth = $('#cf-anth').value.trim();
     const oai = $('#cf-oai').value.trim();
     const or = $('#cf-or').value.trim();
-    const orDefault = $('#cf-or-default').checked;
-    const orModel = ($('#cf-or-model').value || '').trim();
+
+    // Read the model preset radio + reasoning effort. The custom row's
+    // text input is only used when preset === 'custom'; the reasoning
+    // dropdown is hidden (and ignored) for Kimi which doesn't support it.
+    const modelPresetRadio = document.querySelector('input[name="cf-model"]:checked');
+    const modelPreset = modelPresetRadio ? modelPresetRadio.value : 'kimi-k2.6';
+    const customModelId = ($('#cf-model-custom-id')?.value || '').trim();
+    const modelReasoningEffort = ($('#cf-model-reasoning')?.value || '').trim();
 
     if (!accountId) { alert('Pick an account.'); return; }
     if (!workerName) { alert('Pick a worker name.'); return; }
+    if (enableAccess && !owner) {
+      alert('An owner email is required when Cloudflare Access is enabled (it\\'s the email Access lets in).');
+      ownerInput.focus();
+      return;
+    }
+    if (modelPreset === 'custom' && !customModelId) {
+      alert('Custom model selected but no id provided. Pick a different preset or paste a model id.');
+      return;
+    }
 
     const secrets = {};
     if (owner) secrets.OWNER_EMAIL = owner;
@@ -469,9 +779,53 @@ export function renderCloudDeploy(): string {
 
     step3.removeAttribute('hidden');
     out.setAttribute('hidden', '');
-    stepsList.innerHTML = '<li>kicking off deploy…</li>';
+    stepsList.innerHTML = '';
     deployBtn.disabled = true;
     step3.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+    // Live-deploy state machine. We render each step as it streams in
+    // from the server (NDJSON, one event per line) so the user never
+    // sits on a static "kicking off…" screen while a 60-120s deploy
+    // happens behind the scenes.
+    //
+    // Three event types:
+    //   - { phase: "step", step }      — landed step; render permanently
+    //   - { phase: "running", kind, summary } — slow stage starting; show
+    //                                           a pulsing "doing X..." row
+    //   - { phase: "final", result }   — terminal; show success/error UI
+    const runningLi = document.createElement('li');
+    runningLi.className = 'running';
+    runningLi.innerHTML = '<span class="running-dot"></span><span class="running-label">Connecting to Cloudflare…</span><span class="running-elapsed">0s</span>';
+    stepsList.appendChild(runningLi);
+    const deployStart = Date.now();
+    const tickElapsed = setInterval(function () {
+      const secs = Math.floor((Date.now() - deployStart) / 1000);
+      const elap = runningLi.querySelector('.running-elapsed');
+      if (elap) elap.textContent = secs + 's';
+    }, 1000);
+    const updateRunning = function (summary) {
+      const label = runningLi.querySelector('.running-label');
+      if (label) label.textContent = summary;
+    };
+    const renderStep = function (s) {
+      const li = document.createElement('li');
+      li.className = !s.ok ? 'fail' : s.warning ? 'warn' : 'ok';
+      li.textContent = s.summary;
+      if (s.error) {
+        const detail = document.createElement('pre');
+        detail.className = 'step-error';
+        detail.textContent = s.error;
+        li.appendChild(detail);
+      } else if (s.warning) {
+        const detail = document.createElement('pre');
+        detail.className = 'step-warn';
+        detail.textContent = s.warning;
+        li.appendChild(detail);
+      }
+      // Insert ABOVE the running placeholder so the running row stays at
+      // the bottom as the next-pending stage.
+      stepsList.insertBefore(li, runningLi);
+    };
 
     try {
       const payload = {
@@ -480,16 +834,19 @@ export function renderCloudDeploy(): string {
         workerName,
         enableD1,
         enableAccess,
+        additionalAllowedEmails: extraEmails,
+        modelPreset,
         secrets
       };
-      // Pin a specific OpenRouter model when the user typed one,
-      // otherwise fall back to "openrouter/auto" only when they
-      // checked "use as default" AND pasted a key. When they
-      // unchecked "use as default", we leave MODEL_DEFAULT alone
-      // (Workers AI fallback) so their key stays available for
-      // explicit per-call usage but isn't the chat default.
-      if (or && orDefault) {
-        payload.openRouterDefaultModel = orModel || 'openrouter/auto';
+      if (modelPreset === 'custom' && customModelId) {
+        payload.customModelId = customModelId;
+      }
+      // Reasoning effort applies only to thinking-capable presets
+      // (GPT-5.5, Opus 4.7). The form's UI hides the dropdown for the
+      // others, but we still send the value if set — the server is
+      // the one that knows whether the chosen preset can route it.
+      if (modelReasoningEffort && modelReasoningEffort !== 'medium') {
+        payload.modelReasoningEffort = modelReasoningEffort;
       }
       // Tell the server we want to persist this deploy as a managed
       // subscriber. The server reads our actual customer_id from the
@@ -497,11 +854,65 @@ export function renderCloudDeploy(): string {
       if (subscribed) payload.persist = true;
       const r = await fetch('/api/cloud/deploy', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: {
+          'content-type': 'application/json',
+          // Ask the server to stream NDJSON. The server still falls
+          // back to the legacy single-JSON response if it doesn't
+          // understand this header, in which case the .json() path
+          // below catches the whole result at once.
+          'accept': 'application/x-ndjson'
+        },
         credentials: 'same-origin',
         body: JSON.stringify(payload)
       });
-      const data = await r.json();
+      let data = null;
+      const ctype = (r.headers.get('content-type') || '').toLowerCase();
+      if (ctype.indexOf('x-ndjson') >= 0 && r.body && r.body.getReader) {
+        // Streaming branch — read line-delimited JSON.
+        const reader = r.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+        while (true) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          buf += decoder.decode(chunk.value, { stream: true });
+          let idx;
+          while ((idx = buf.indexOf('\\n')) >= 0) {
+            const line = buf.slice(0, idx).trim();
+            buf = buf.slice(idx + 1);
+            if (!line) continue;
+            try {
+              const evt = JSON.parse(line);
+              if (evt.phase === 'step' && evt.step) {
+                renderStep(evt.step);
+              } else if (evt.phase === 'running' && evt.summary) {
+                updateRunning(evt.summary);
+              } else if (evt.phase === 'final' && evt.result) {
+                data = evt.result;
+              }
+            } catch (parseErr) {
+              console.warn('[deploy] bad NDJSON line:', line, parseErr);
+            }
+          }
+        }
+        if (!data) {
+          throw new Error('deploy stream ended without final result');
+        }
+      } else {
+        // Non-streaming fallback (legacy server, or proxy that buffered
+        // the response). Render whatever steps came back at the end.
+        data = await r.json();
+        for (const s of (data.steps || [])) renderStep(s);
+      }
+      // Stop the elapsed-time ticker + remove the running row now that
+      // the deploy is terminal. The visible step list stays intact.
+      clearInterval(tickElapsed);
+      runningLi.remove();
+      // The post-stream render path below uses the final result and the
+      // existing step-grouping/filtering logic to render the FINAL
+      // summary panels (live URL, partial-deploy banner, fallback
+      // details). The streamed steps were progressive; we re-render
+      // to apply grouping (Secrets set N) + drop noise.
       stepsList.innerHTML = '';
       // Render a CONCISE log by default. Implementation noise the user
       // doesn't need to see (manifest fetch, wrangler.toml compose,
@@ -574,12 +985,22 @@ export function renderCloudDeploy(): string {
       }
       for (const s of visible) {
         const li = document.createElement('li');
-        li.className = s.ok ? 'ok' : 'fail';
+        // Three states: ok (green check), warning (amber, deploy continues),
+        // fail (red x). The "warning" property is set on a step that
+        // succeeded with a caveat (e.g. AI Gateway skipped because the
+        // token was missing a scope) — the deploy does not abort, but
+        // the user should know.
+        li.className = !s.ok ? 'fail' : s.warning ? 'warn' : 'ok';
         li.textContent = s.summary;
         if (s.error) {
           const detail = document.createElement('pre');
           detail.className = 'step-error';
           detail.textContent = s.error;
+          li.appendChild(detail);
+        } else if (s.warning) {
+          const detail = document.createElement('pre');
+          detail.className = 'step-warn';
+          detail.textContent = s.warning;
           li.appendChild(detail);
         }
         stepsList.appendChild(li);
@@ -609,6 +1030,10 @@ export function renderCloudDeploy(): string {
           liveUrl.href = fullUrl;
           if (appLink) {
             appLink.innerHTML = '<a href="' + fullUrl + '/app" target="_blank" rel="noopener">' + fullUrl + '/app</a>';
+          }
+          const shellLink = $('#deploy-shell-link');
+          if (shellLink) {
+            shellLink.textContent = fullUrl + '/shell';
           }
           live.removeAttribute('hidden');
           fallback.open = false;

@@ -505,6 +505,10 @@ export class HelmArtifactsPlugin implements AgentPlugin {
           return await this.actImportGithub(input);
         case "cron-sync":
           return await this.actCronSync(input);
+        case "reconcile":
+          return await this.actReconcile(input);
+        case "pull-upstream":
+          return await this.actPullUpstream(input);
         default:
           return { ok: false, error: `Unknown action: ${action}` };
       }
@@ -1166,6 +1170,12 @@ export class HelmArtifactsPlugin implements AgentPlugin {
    * Reads `worker.js` (or `dist/worker.js` if present) and pushes a
    * single-file Worker. For multi-module deploys, run `wrangler deploy`
    * inside the container instead — same checkout, full fidelity.
+   *
+   * Side effect: on success, sets HELM_CUSTOM_DEPLOY=1 as a secret on
+   * the live Worker so the upstream cron skips this deployment going
+   * forward. The semantics are "I'm deploying my own code; don't
+   * overwrite me with upstream." Pass {claimCanonical: false} to opt
+   * out (e.g. test deploys you want overwritten by the next cron).
    */
   private async actDeploy(input: unknown): Promise<PluginResult> {
     const env = this.env();
@@ -1178,6 +1188,7 @@ export class HelmArtifactsPlugin implements AgentPlugin {
       env.AGENT_NAME ||
       "helm";
     const useWrangler = o.useWrangler !== false; // default true — full fidelity
+    const claimCanonical = o.claimCanonical !== false; // default true
     const accountId = await this.resolveAccountId();
 
     const ensure = await this.ensureClone(input);
@@ -1192,6 +1203,9 @@ export class HelmArtifactsPlugin implements AgentPlugin {
         path,
         180_000
       );
+      const claim = r.ok && claimCanonical
+        ? await this.setSelfManagedFlag(accountId, scriptName, true)
+        : null;
       return {
         ok: r.ok,
         data: {
@@ -1201,8 +1215,10 @@ export class HelmArtifactsPlugin implements AgentPlugin {
           stdout: (r.stdout ?? "").slice(0, 4000),
           stderr: (r.stderr ?? "").slice(0, 2000),
           exitCode: r.code,
+          claimCanonical,
+          claim,
           note: r.ok
-            ? "Deployed via `wrangler deploy`. Live Worker now matches Artifacts source."
+            ? `Deployed via \`wrangler deploy\`. Live Worker now matches Artifacts source.${claim?.ok ? " HELM_CUSTOM_DEPLOY=1 set; upstream cron will skip this deployment." : ""}`
             : "wrangler deploy failed — see stderr. Try useWrangler:false for a single-file fallback."
         }
       };
@@ -1255,6 +1271,9 @@ export class HelmArtifactsPlugin implements AgentPlugin {
       }
     );
     const text = await resp.text();
+    const claim = resp.ok && claimCanonical
+      ? await this.setSelfManagedFlag(accountId, scriptName, true)
+      : null;
     return {
       ok: resp.ok,
       data: {
@@ -1263,9 +1282,64 @@ export class HelmArtifactsPlugin implements AgentPlugin {
         sourceFile: usedPath,
         bytes: workerSrc.length,
         httpStatus: resp.status,
-        response: text.slice(0, 1500)
+        response: text.slice(0, 1500),
+        claimCanonical,
+        claim
       }
     };
+  }
+
+  /**
+   * Toggle HELM_CUSTOM_DEPLOY on the live Worker. Setting (on=true) makes
+   * the upstream cron skip this deployment so a self-managed customer
+   * doesn't get clobbered. Clearing (on=false) hands control back to the
+   * upstream cron — used by helm-setup-update when the user explicitly
+   * asks for an upstream snapshot.
+   *
+   * Implementation: PUT /workers/scripts/{name}/secrets so we don't have
+   * to GET /settings → merge bindings → PATCH back. The secret value "1"
+   * is non-sensitive but the secret_text endpoint is the simplest single-
+   * binding API; the cron's check is name-only (any binding by that name
+   * counts), so plain_text vs secret_text doesn't matter.
+   *
+   * Returns {ok: false, error} on API failure but never throws — callers
+   * report the deploy as successful even when the flag-set fails (the
+   * deploy is what matters; the flag is a hint).
+   */
+  private async setSelfManagedFlag(
+    accountId: string,
+    scriptName: string,
+    on: boolean
+  ): Promise<{ ok: boolean; error?: string; via: "set" | "delete" }> {
+    if (!this.ctx) return { ok: false, error: "no ctx", via: on ? "set" : "delete" };
+    const token = this.requireToken();
+    const flagName = "HELM_CUSTOM_DEPLOY";
+    if (on) {
+      const r = await this.ctx.fetch(
+        `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/workers/scripts/${encodeURIComponent(scriptName)}/secrets`,
+        {
+          method: "PUT",
+          headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: JSON.stringify({ name: flagName, text: "1", type: "secret_text" })
+        }
+      );
+      if (!r.ok) {
+        const t = await r.text().catch(() => "");
+        return { ok: false, error: `set ${flagName} failed (${r.status}): ${t.slice(0, 200)}`, via: "set" };
+      }
+      return { ok: true, via: "set" };
+    }
+    // Clearing — DELETE the secret. 404 is success (it wasn't set).
+    const r = await this.ctx.fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/workers/scripts/${encodeURIComponent(scriptName)}/secrets/${encodeURIComponent(flagName)}`,
+      { method: "DELETE", headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (r.status === 404) return { ok: true, via: "delete" };
+    if (!r.ok) {
+      const t = await r.text().catch(() => "");
+      return { ok: false, error: `clear ${flagName} failed (${r.status}): ${t.slice(0, 200)}`, via: "delete" };
+    }
+    return { ok: true, via: "delete" };
   }
 
   private async actImportGithub(input: unknown): Promise<PluginResult> {
@@ -1346,6 +1420,339 @@ export class HelmArtifactsPlugin implements AgentPlugin {
         notifyBody: data.inSync
           ? null
           : `Live Worker has ${data.drift.missingFromToml.length} binding(s) not in your Artifacts wrangler.toml. Run helm-artifacts-sync-toml apply:true to fix.`
+      }
+    };
+  }
+
+  /**
+   * Bidirectional reconcile: Artifacts is the canonical source-of-truth,
+   * the live Worker is the dependent. Auto-fix drift in BOTH directions
+   * each time we run.
+   *
+   *   Artifacts → Worker:  if `wrangler.toml` declares bindings the live
+   *                        Worker is missing (e.g. user committed a new
+   *                        [[r2_buckets]] block), run helm-artifacts-deploy
+   *                        so the live Worker matches the source. Default
+   *                        path uses `wrangler deploy` for full multi-module
+   *                        fidelity.
+   *
+   *   Worker → Artifacts:  if the live Worker has bindings the source
+   *                        wrangler.toml lacks (e.g. agent ran cf-patch-binding
+   *                        and didn't commit), run helm-artifacts-sync-toml
+   *                        with apply:true to commit the missing blocks
+   *                        back to the repo.
+   *
+   * Idempotent — when the two are already in sync this is a single git pull
+   * + a settings GET; no writes, no deploy, no commit.
+   *
+   * Inputs:
+   *   {
+   *     skipDeploy?: boolean,    // when true, only commit drift back; never deploy
+   *     skipCommit?: boolean,    // when true, only deploy; never commit drift
+   *     useWrangler?: boolean,   // forwarded to actDeploy (default true)
+   *     scriptName?: string,     // forwarded to actDeploy + actSyncToml
+   *     repo?, branch?, tomlPath? // forwarded to actSyncToml
+   *   }
+   */
+  private async actReconcile(input: unknown): Promise<PluginResult> {
+    const env = this.env();
+    if (!env.ARTIFACTS_REPO && !env.AGENT_NAME) {
+      return {
+        ok: true,
+        data: {
+          skipped: true,
+          reason: "ARTIFACTS_REPO not configured; nothing to reconcile."
+        }
+      };
+    }
+    const o = asObj(input);
+    const skipDeploy = Boolean(o.skipDeploy);
+    const skipCommit = Boolean(o.skipCommit);
+
+    // 1. Drift check (also runs ensureClone → git pull, picking up any
+    //    commits the user pushed locally since the last reconcile).
+    const dry = await this.actSyncToml({ ...asObj(input), apply: false });
+    if (!dry.ok) return dry;
+    const dryData = dry.data as {
+      drift: { missingFromToml: unknown[]; missingFromLive: unknown[] };
+      inSync: boolean;
+      scriptName?: string;
+    };
+
+    const actions: Array<{ direction: "artifacts→worker" | "worker→artifacts"; ok: boolean; detail?: string; data?: unknown }> = [];
+
+    // 2. Artifacts → Worker: source has bindings the live Worker lacks.
+    //    The user (or agent) committed wrangler.toml changes; deploy them.
+    if (!skipDeploy && dryData.drift.missingFromLive.length > 0) {
+      console.log(
+        `[helm-artifacts-reconcile] Artifacts→Worker: deploying (${dryData.drift.missingFromLive.length} binding(s) missing on live)`
+      );
+      const deploy = await this.actDeploy({ ...asObj(input) });
+      actions.push({
+        direction: "artifacts→worker",
+        ok: deploy.ok,
+        detail: deploy.ok
+          ? "Deployed wrangler.toml changes from Artifacts."
+          : `deploy failed: ${deploy.error?.slice(0, 200) ?? "unknown"}`,
+        data: deploy.data
+      });
+    }
+
+    // 3. Worker → Artifacts: live has bindings the source lacks.
+    //    Agent or operator made a live cf-patch-binding without committing;
+    //    write the missing blocks back so the next deploy doesn't drop them.
+    if (!skipCommit && dryData.drift.missingFromToml.length > 0) {
+      console.log(
+        `[helm-artifacts-reconcile] Worker→Artifacts: committing (${dryData.drift.missingFromToml.length} binding(s) missing in toml)`
+      );
+      const sync = await this.actSyncToml({ ...asObj(input), apply: true });
+      actions.push({
+        direction: "worker→artifacts",
+        ok: sync.ok,
+        detail: sync.ok
+          ? "Committed live bindings back to Artifacts."
+          : `commit failed: ${sync.error?.slice(0, 200) ?? "unknown"}`,
+        data: sync.data
+      });
+    }
+
+    const overallOk = actions.every((a) => a.ok);
+    const note = actions.length === 0
+      ? "Already in sync — nothing to reconcile."
+      : actions.length === 1
+        ? `Reconciled ${actions[0].direction}.`
+        : "Reconciled both directions (Artifacts→Worker and Worker→Artifacts).";
+
+    return {
+      ok: overallOk,
+      data: {
+        scriptName: dryData.scriptName,
+        inSyncBefore: dryData.inSync,
+        drift: dryData.drift,
+        actions,
+        note
+      }
+    };
+  }
+
+  /**
+   * Pull upstream open-think changes into the customer's Artifacts repo
+   * so they can roll forward on a release without losing their custom
+   * commits. Inside the helm-shell container:
+   *
+   *   git remote add upstream <url>      # idempotent
+   *   git fetch upstream
+   *   (compute behindBy / aheadBy)
+   *   git merge upstream/<branch>        # only when apply:true
+   *   (resolve / report conflicts)
+   *   git push origin <local-branch>     # only on clean merge + push:true
+   *
+   * The customer's Artifacts repo becomes their fork; upstream is the
+   * canonical open-think repo. Conflicts are surfaced as a list of
+   * conflicted paths — the agent can shell in to resolve them, or the
+   * user can clone locally and resolve in their preferred editor.
+   *
+   * Inputs:
+   *   url?:    upstream git URL (default env.HELM_UPSTREAM_URL or the
+   *            NeoFlux-Holdings/open-think canonical)
+   *   branch?: upstream branch to merge from (default env.HELM_UPSTREAM_BRANCH or "main")
+   *   apply?:  perform the merge (default true). When false, only fetch
+   *            + report behindBy/aheadBy without modifying the working tree.
+   *   push?:   push the merged result to Artifacts when the merge is
+   *            clean (default true). Ignored on conflict.
+   *   strategy?: "merge" (default) or "rebase". Rebase produces a
+   *              linear history but is harder to abort cleanly.
+   */
+  private async actPullUpstream(input: unknown): Promise<PluginResult> {
+    const env = this.env();
+    const o = asObj(input);
+    const repoName = resolveRepoName(env, input);
+    const path = resolveCheckoutPath(env, repoName, input);
+    const localBranch = resolveBranch(env, input);
+    const upstreamUrl = (typeof o.url === "string" && o.url)
+      || env.HELM_UPSTREAM_URL
+      || "https://github.com/NeoFlux-Holdings/open-think.git";
+    const upstreamBranch = (typeof o.branch === "string" && o.branch)
+      || env.HELM_UPSTREAM_BRANCH
+      || "main";
+    const apply = o.apply !== false; // default true
+    const push = o.push !== false; // default true
+    const strategy = o.strategy === "rebase" ? "rebase" : "merge";
+
+    // 1. Ensure the Artifacts repo is cloned locally (needed even for
+    //    dry-run — git fetch needs a working tree).
+    const ensure = await this.ensureClone(input);
+    if (!ensure.ok) return { ok: false, error: ensure.error ?? "clone failed" };
+
+    // 2. Add or update the upstream remote. `git remote add` errors when
+    //    the remote already exists, so chain with set-url to make it
+    //    idempotent. Fail-soft on the add (which always errors when the
+    //    remote exists) and rely on set-url to enforce the URL.
+    await this.exec(
+      `git remote add upstream ${shellEscape(upstreamUrl)} 2>/dev/null; ` +
+      `git remote set-url upstream ${shellEscape(upstreamUrl)}`,
+      path
+    );
+
+    // 3. Fetch upstream. Public github URLs need no auth.
+    const fetch = await this.exec(
+      `git fetch upstream ${shellEscape(upstreamBranch)} --depth 200`,
+      path,
+      120_000
+    );
+    if (!fetch.ok) {
+      return {
+        ok: false,
+        error: `git fetch upstream failed: ${(fetch.stderr ?? "").slice(0, 400)}`
+      };
+    }
+
+    // 4. Compute behind/ahead — purely informational for the dry-run case.
+    const behind = await this.exec(
+      `git rev-list --count HEAD..upstream/${shellEscape(upstreamBranch)}`,
+      path
+    );
+    const ahead = await this.exec(
+      `git rev-list --count upstream/${shellEscape(upstreamBranch)}..HEAD`,
+      path
+    );
+    const behindBy = Number((behind.stdout ?? "0").trim()) || 0;
+    const aheadBy = Number((ahead.stdout ?? "0").trim()) || 0;
+
+    if (!apply) {
+      return {
+        ok: true,
+        data: {
+          dryRun: true,
+          upstreamUrl,
+          upstreamBranch,
+          localBranch,
+          behindBy,
+          aheadBy,
+          inSync: behindBy === 0,
+          note: behindBy === 0
+            ? "Already up to date with upstream."
+            : `Local is behind upstream by ${behindBy} commit${behindBy === 1 ? "" : "s"}. Re-run with apply:true to ${strategy}.`
+        }
+      };
+    }
+
+    // 5. Already-up-to-date short-circuit.
+    if (behindBy === 0) {
+      return {
+        ok: true,
+        data: {
+          dryRun: false,
+          upstreamUrl,
+          upstreamBranch,
+          localBranch,
+          behindBy: 0,
+          aheadBy,
+          merged: false,
+          pushed: false,
+          note: "Already up to date — no merge needed."
+        }
+      };
+    }
+
+    // 6. Make sure we're on the right local branch before merging.
+    const checkout = await this.exec(
+      `git checkout ${shellEscape(localBranch)}`,
+      path
+    );
+    if (!checkout.ok) {
+      return {
+        ok: false,
+        error: `git checkout ${localBranch} failed: ${(checkout.stderr ?? "").slice(0, 200)}`
+      };
+    }
+
+    // 7. Merge / rebase. Configure user.* so commits don't fail on a
+    //    bare container. -X ours / -X theirs not used: surface conflicts
+    //    so the user/agent makes the call.
+    const userArgs =
+      `-c user.email=helm-agent@invalid -c user.name=Helm-Agent`;
+    let mergeCmd: string;
+    if (strategy === "rebase") {
+      mergeCmd = `git ${userArgs} rebase upstream/${shellEscape(upstreamBranch)}`;
+    } else {
+      mergeCmd = `git ${userArgs} merge --no-edit -m ${shellEscape(`helm: pull upstream ${upstreamBranch} (${behindBy} commit${behindBy === 1 ? "" : "s"})`)} upstream/${shellEscape(upstreamBranch)}`;
+    }
+    const merge = await this.exec(mergeCmd, path, 120_000);
+
+    if (!merge.ok) {
+      // Conflict path — list the conflicted files so caller can decide
+      // whether to resolve in shell or hand to the user.
+      const conflicts = await this.exec(
+        `git diff --name-only --diff-filter=U`,
+        path
+      );
+      const conflictPaths = (conflicts.stdout ?? "")
+        .split("\n")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+      // Abort the merge so the working tree is left in a sane state.
+      // The user/agent can re-run after deciding to resolve manually
+      // (in shell) or with a different strategy (-X theirs / -X ours).
+      const abortCmd = strategy === "rebase" ? "git rebase --abort" : "git merge --abort";
+      await this.exec(abortCmd, path);
+      return {
+        ok: false,
+        data: {
+          upstreamUrl,
+          upstreamBranch,
+          localBranch,
+          behindBy,
+          aheadBy,
+          merged: false,
+          pushed: false,
+          conflicts: conflictPaths,
+          aborted: true,
+          stderr: (merge.stderr ?? "").slice(0, 1000),
+          note: conflictPaths.length > 0
+            ? `Merge conflicts in ${conflictPaths.length} file(s); aborted to keep tree clean. Resolve via helm-exec (\`git pull upstream ${upstreamBranch}\` then edit + \`git commit\`) or pull locally.`
+            : `Merge failed without listed conflicts. stderr: ${(merge.stderr ?? "").slice(0, 200)}`
+        },
+        error: `merge produced ${conflictPaths.length} conflict(s)`
+      };
+    }
+
+    // 8. Get the resulting HEAD sha for reporting.
+    const head = await this.exec(`git rev-parse HEAD`, path);
+    const mergeSha = (head.stdout ?? "").trim();
+
+    // 9. Push to Artifacts (origin) using the bearer auth helper. This
+    //    is what makes the merge canonical — the user's local clone
+    //    will pick it up on next pull.
+    let pushed = false;
+    let pushDetail: string | undefined;
+    if (push) {
+      const p = await this.git(`push origin ${shellEscape(localBranch)}`, path, input);
+      pushed = p.ok;
+      pushDetail = p.ok
+        ? `pushed ${localBranch}`
+        : `push failed: ${(p.stderr ?? "").slice(0, 200)}`;
+    }
+
+    return {
+      ok: pushed || !push, // unpushed-merge is ok if push was disabled
+      data: {
+        dryRun: false,
+        upstreamUrl,
+        upstreamBranch,
+        localBranch,
+        behindBy,
+        aheadBy,
+        merged: true,
+        mergeSha,
+        pushed,
+        pushDetail,
+        strategy,
+        note: pushed
+          ? `Merged upstream/${upstreamBranch} (${behindBy} commit${behindBy === 1 ? "" : "s"}) and pushed to Artifacts. Run helm-artifacts-deploy or helm-artifacts-reconcile to roll forward to the live Worker.`
+          : push
+            ? `Merged locally but push failed: ${pushDetail}`
+            : `Merged locally (push:false). Run \`git push origin ${localBranch}\` from the shell to publish.`
       }
     };
   }

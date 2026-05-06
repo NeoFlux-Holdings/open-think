@@ -5,7 +5,7 @@ import { AppError, toAppError } from "./core/errors";
 import { buildSystemPrompt, CONDUCTOR_SESSION_DEFAULT } from "./conductor";
 import { runAnthropicToolStream } from "./anthropic-stream";
 import { runOpenAICompatibleToolStream } from "./openai-stream";
-import type { LoopEvent, ToolLoopConfig } from "./tool-stream-types";
+import { readReasoningEffortFromEnv, type LoopEvent, type ToolLoopConfig } from "./tool-stream-types";
 
 type ToolStreamProvider = "anthropic" | "openrouter" | "openai-compatible" | "cf-ai-gateway";
 
@@ -74,7 +74,11 @@ export async function handleConductorToolStream(
     userContent: body.content,
     model: body.model,
     maxIterations: body.maxIterations,
-    mode: body.mode ?? "selective"
+    mode: body.mode ?? "selective",
+    // Pulled from the MODEL_REASONING_EFFORT plain_text var the deploy
+    // form sets when the user picks a thinking-capable preset (GPT-5.5,
+    // Opus 4.7). Adapter code maps this to the right provider field.
+    reasoningEffort: readReasoningEffortFromEnv(env)
   };
 
   const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
@@ -349,7 +353,8 @@ export async function runToolStreamWithCallback(
     model: input.model,
     maxIterations: input.maxIterations,
     mode: input.mode ?? "selective",
-    abortSignal: abortController.signal
+    abortSignal: abortController.signal,
+    reasoningEffort: readReasoningEffortFromEnv(env)
   };
 
   let finalText = "";

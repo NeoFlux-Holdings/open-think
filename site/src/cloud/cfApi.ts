@@ -72,6 +72,31 @@ export async function verifyToken(
   return call<TokenInfo>(token, "/user/tokens/verify", { method: "GET", ...options });
 }
 
+export interface UserDetails {
+  id: string;
+  email: string;
+  first_name?: string;
+  last_name?: string;
+  username?: string;
+}
+
+/**
+ * `GET /user` — returns the token owner's profile (email, id, name).
+ * Requires the `User Details:Read` scope, which our token-creation URL
+ * already includes. The deploy form uses this to pre-fill the owner-email
+ * field so the user doesn't have to type their address — one less step
+ * before they can hit Deploy.
+ *
+ * Best-effort: callers should treat a non-success result as "no email
+ * available" and fall through to whatever the user types manually.
+ */
+export async function getUserDetails(
+  token: string,
+  options: FetchOptions = {}
+): Promise<CfApiResult<UserDetails>> {
+  return call<UserDetails>(token, "/user", { method: "GET", ...options });
+}
+
 /* ---------- Accounts ---------- */
 
 /**
@@ -221,6 +246,148 @@ export async function ensureD1WithSuffix(
   };
 }
 
+/* ---------- R2 buckets ---------- */
+
+export interface R2Bucket {
+  name: string;
+  creation_date?: string;
+  location?: string;
+}
+
+/**
+ * `POST /accounts/{id}/r2/buckets` — provisions an R2 bucket. The
+ * deployed Worker's `/persist/*` endpoint reads `env.WORKSPACE` (an R2
+ * binding); without a bucket, every persist call 503s with
+ * E_WORKSPACE_BINDING_MISSING.
+ *
+ * Bucket names are global within an account but lowercase + hyphens.
+ * We normalize the input the same way `createAiGateway` does.
+ */
+export async function createR2Bucket(
+  token: string,
+  accountId: string,
+  name: string,
+  options: FetchOptions = {}
+): Promise<CfApiResult<R2Bucket>> {
+  return call<R2Bucket>(token, `/accounts/${accountId}/r2/buckets`, {
+    method: "POST",
+    body: JSON.stringify({
+      name: name.toLowerCase().replace(/[^a-z0-9-]/g, "-").slice(0, 63)
+    }),
+    ...options
+  });
+}
+
+/**
+ * Idempotent R2 bucket creation. Tries `createR2Bucket`; on "already
+ * exists" returns success with `reused: true`. Same dance as
+ * ensureAiGateway / ensureD1Database.
+ */
+export async function ensureR2Bucket(
+  token: string,
+  accountId: string,
+  name: string,
+  options: FetchOptions = {}
+): Promise<CfApiResult<R2Bucket> & { reused?: boolean }> {
+  const created = await createR2Bucket(token, accountId, name, options);
+  if (created.success) return created;
+  const msg = (created.errors?.[0]?.message ?? "").toLowerCase();
+  const code = created.errors?.[0]?.code;
+  const looksLikeAlreadyExists =
+    msg.includes("already exists") ||
+    msg.includes("already_exists") ||
+    msg.includes("name is taken") ||
+    msg.includes("duplicate") ||
+    code === 10004 || // observed CF "bucket already exists"
+    code === 409;
+  if (!looksLikeAlreadyExists) return created;
+  // Bucket name is unique within the account; "already exists" means
+  // the same bucket — reuse silently.
+  const normalized = name.toLowerCase().replace(/[^a-z0-9-]/g, "-").slice(0, 63);
+  return {
+    success: true,
+    result: { name: normalized },
+    reused: true
+  };
+}
+
+/* ---------- AI Gateway ---------- */
+
+export interface AiGateway {
+  id: string;
+  name?: string;
+  account_id?: string;
+}
+
+/**
+ * `POST /accounts/{id}/ai-gateway/gateways` — provision an AI Gateway in
+ * the user's account. The gateway is what gives the deployed Worker
+ * out-of-the-box chat with Workers AI (and 23+ other providers via BYOK)
+ * without the user having to paste any API key.
+ *
+ * The gateway `id` becomes part of the streaming URL the Worker hits:
+ *   https://gateway.ai.cloudflare.com/v1/{account}/{id}/compat/chat/completions
+ */
+export async function createAiGateway(
+  token: string,
+  accountId: string,
+  id: string,
+  options: FetchOptions = {}
+): Promise<CfApiResult<AiGateway>> {
+  return call<AiGateway>(token, `/accounts/${accountId}/ai-gateway/gateways`, {
+    method: "POST",
+    body: JSON.stringify({
+      // The CF API rejects ids with uppercase / underscores — normalize to
+      // lowercase + hyphens just in case the caller passed a raw worker name.
+      id: id.toLowerCase().replace(/[^a-z0-9-]/g, "-").slice(0, 64),
+      // CF's AI Gateway create endpoint requires SIX fields — `id` plus
+      // five booleans/numbers. Omitting any of the numeric ones returns
+      // "Expected number, received nan" (code 7001) because the runtime
+      // can't coerce undefined into a number. Defaults below are CF's
+      // own "no caching, no rate limit, log every request" baseline.
+      // (Source: docs at /api/operations/aig-config-create-gateway.)
+      cache_invalidate_on_update: true,
+      cache_ttl: 0,
+      collect_logs: true,
+      rate_limiting_interval: 0,
+      rate_limiting_limit: 0
+    }),
+    ...options
+  });
+}
+
+/**
+ * Idempotent AI Gateway creation. Tries `createAiGateway`; on a conflict
+ * (gateway with that id already exists in the account), returns success
+ * with `reused: true` — the existing gateway is what we'd have referenced
+ * anyway, no need to fail the deploy. Same shape as `ensureD1Database`.
+ */
+export async function ensureAiGateway(
+  token: string,
+  accountId: string,
+  id: string,
+  options: FetchOptions = {}
+): Promise<CfApiResult<AiGateway> & { reused?: boolean }> {
+  const created = await createAiGateway(token, accountId, id, options);
+  if (created.success) return created;
+  const msg = (created.errors?.[0]?.message ?? "").toLowerCase();
+  const code = created.errors?.[0]?.code;
+  const looksLikeAlreadyExists =
+    msg.includes("already") ||
+    msg.includes("duplicate") ||
+    msg.includes("exists") ||
+    code === 5403 || // CF "ai gateway already exists" code observed in practice
+    code === 409;
+  if (!looksLikeAlreadyExists) return created;
+  // Resource already exists at that id — that's the same end state we want.
+  // We don't need to re-fetch; the id we tried to create IS the id to use.
+  return {
+    success: true,
+    result: { id: id.toLowerCase().replace(/[^a-z0-9-]/g, "-").slice(0, 64) },
+    reused: true
+  };
+}
+
 /* ---------- Migration shape transformation ---------- */
 
 /**
@@ -328,25 +495,145 @@ export async function createAccessApp(
 }
 
 /**
- * Create a default policy on the Access app so a single email is allowed in.
+ * `GET /accounts/{id}/access/apps` — list every Access app on the account
+ * and return the first one whose `destinations[].uri` (or legacy `domain`)
+ * normalizes to the same host as `destinationUri`.
+ *
+ * Used by `ensureAccessApp` to recover when `createAccessApp` fails with
+ * `access.api.error.application_already_exists` — same pattern as
+ * `ensureD1Database` for the D1 case. Without it, a re-deploy after a
+ * partial failure (Access app was created, secrets failed, user retries)
+ * would never get past the create step.
+ *
+ * Match is forgiving: legacy apps stored their target as `domain` rather
+ * than `destinations[]`, and CF's URIs sometimes carry a trailing slash
+ * the caller's host doesn't. We strip scheme + trailing slash both sides.
+ */
+export async function findAccessAppByDestination(
+  token: string,
+  accountId: string,
+  destinationUri: string,
+  options: FetchOptions = {}
+): Promise<CfApiResult<AccessApp | null>> {
+  const list = await call<Array<AccessApp & {
+    domain?: string;
+    destinations?: Array<{ type?: string; uri?: string }>;
+  }>>(token, `/accounts/${accountId}/access/apps?per_page=100`, {
+    method: "GET",
+    ...options
+  });
+  if (!list.success || !Array.isArray(list.result)) {
+    return { success: list.success, errors: list.errors, result: null };
+  }
+  const normalize = (s: string) =>
+    s.toLowerCase().replace(/^https?:\/\//, "").replace(/\/+$/, "");
+  const target = normalize(destinationUri);
+  for (const app of list.result) {
+    if (Array.isArray(app.destinations)) {
+      for (const d of app.destinations) {
+        if (typeof d.uri === "string" && normalize(d.uri) === target) {
+          return { success: true, result: app };
+        }
+      }
+    }
+    if (typeof app.domain === "string" && normalize(app.domain) === target) {
+      return { success: true, result: app };
+    }
+  }
+  return { success: true, result: null };
+}
+
+/**
+ * Idempotent Access-app creation: try to create; if CF returns
+ * `application_already_exists` (or any "already / conflict / duplicate"
+ * shape), look up the existing app whose destinations point at the same
+ * Worker host and reuse its `aud`.
+ *
+ * Why not always look up first? On the happy path (fresh account, no
+ * prior app) the create call is one round-trip; the find call is a
+ * full list. We pay the find only when we have to.
+ *
+ * On reuse, sets `reused: true` so the caller can adjust UI copy
+ * ("Access app reused" vs "Access app live").
+ */
+export async function ensureAccessApp(
+  token: string,
+  accountId: string,
+  input: {
+    name: string;
+    domain: string;
+    sessionDuration?: string;
+  },
+  options: FetchOptions = {}
+): Promise<CfApiResult<AccessApp> & { reused?: boolean }> {
+  const created = await createAccessApp(token, accountId, input, options);
+  if (created.success) return created;
+
+  // Inspect the error. CF's modern Access endpoints return either
+  // `access.api.error.application_already_exists` as the message OR a
+  // generic "already exists" / "duplicate" phrasing depending on which
+  // edge handled the request. Cover all the variants we've seen.
+  const errorMsg = (created.errors?.[0]?.message ?? "").toLowerCase();
+  const errorCode = created.errors?.[0]?.code;
+  const looksLikeAlreadyExists =
+    errorMsg.includes("application_already_exists") ||
+    errorMsg.includes("already exists") ||
+    errorMsg.includes("already_exists") ||
+    errorMsg.includes("duplicate") ||
+    errorMsg.includes("conflict") ||
+    errorCode === 12109 || // historical "app exists" code
+    errorCode === 409;
+  if (!looksLikeAlreadyExists) return created;
+
+  const destinationUri = input.domain.startsWith("http")
+    ? input.domain
+    : `https://${input.domain}`;
+  const found = await findAccessAppByDestination(token, accountId, destinationUri, options);
+  if (found.success && found.result) {
+    return { success: true, result: found.result, reused: true };
+  }
+  // The create said "exists" but our list-by-destination didn't see it.
+  // Most likely cause: a stale app at the same host registered under a
+  // different normalization, OR the token doesn't have read scope on
+  // the apps list. Surface the original create error so the user sees
+  // a CF-shaped recovery message instead of a confusing "we know it
+  // exists but can't find it" loop.
+  return created;
+}
+
+/**
+ * Create the default "allow" policy on an Access app. Accepts either a
+ * single email (legacy path; one-element list) or an array of emails.
  * Without a policy the app exists but rejects everyone.
+ *
+ * Each email becomes its own `include` entry — Cloudflare's policy
+ * shape requires that, not a list of strings inside one entry.
  */
 export async function createAccessPolicy(
   token: string,
   accountId: string,
   appId: string,
-  email: string,
+  emailOrEmails: string | string[],
   options: FetchOptions = {}
 ): Promise<CfApiResult<{ id: string }>> {
+  const emails = (Array.isArray(emailOrEmails) ? emailOrEmails : [emailOrEmails])
+    .map((e) => e.trim())
+    .filter((e) => e.length > 0 && e.includes("@"));
+  if (emails.length === 0) {
+    return {
+      success: false,
+      errors: [{ code: 400, message: "createAccessPolicy: no valid emails supplied" }]
+    };
+  }
   return call<{ id: string }>(
     token,
     `/accounts/${accountId}/access/apps/${appId}/policies`,
     {
       method: "POST",
       body: JSON.stringify({
-        name: "Helm owner",
+        name: emails.length === 1 ? "Helm owner" : `Helm allowlist (${emails.length})`,
         decision: "allow",
-        include: [{ email: { email } }]
+        include: emails.map((email) => ({ email: { email } }))
       }),
       ...options
     }
@@ -545,4 +832,75 @@ export async function putWorkerSecret(
       ...options
     }
   );
+}
+
+/**
+ * Idempotent secret-set: try `putWorkerSecret`; on code 10053 ("Binding
+ * name already in use"), inspect the existing binding via
+ * `getWorkerSettings` and recover gracefully.
+ *
+ * 10053 happens when a NON-secret binding (typically `plain_text` from
+ * `vars`) already occupies that name. The legacy /secrets endpoint can't
+ * overwrite a different binding type, so the PUT fails. But for our
+ * use-case this often means the value is already correct (the deploy
+ * upload pre-set it as plain_text) — in which case we should treat the
+ * 10053 as success instead of breaking the wizard.
+ *
+ * Returns `reused`:
+ *   - "value-match-plain-text" — plain_text binding has the same value
+ *   - "already-secret"         — secret_text binding exists; trust it
+ *   undefined                  — fresh write succeeded
+ *
+ * On real conflicts (different value or unexpected binding type) returns
+ * a non-success result with `recovery` populated.
+ */
+export async function ensureWorkerSecret(
+  token: string,
+  accountId: string,
+  scriptName: string,
+  name: string,
+  text: string,
+  options: FetchOptions = {}
+): Promise<CfApiResult<{ name: string; type: string }> & {
+  reused?: "value-match-plain-text" | "already-secret";
+  recovery?: string;
+}> {
+  const put = await putWorkerSecret(token, accountId, scriptName, name, text, options);
+  if (put.success) return put;
+
+  const errMsg = put.errors?.[0]?.message ?? "";
+  const errCode = put.errors?.[0]?.code;
+  const looksLikeBindingConflict =
+    errCode === 10053 ||
+    /binding name.*already in use/i.test(errMsg) ||
+    /already exists/i.test(errMsg);
+  if (!looksLikeBindingConflict) return put;
+
+  const settings = await getWorkerSettings(token, accountId, scriptName, options);
+  if (!settings.success || !Array.isArray(settings.result?.bindings)) {
+    return {
+      ...put,
+      recovery: `A binding named ${name} already exists on the Worker but we couldn't read settings to inspect it (token may be missing "Workers Scripts:Edit"). Resolve at dash → Workers & Pages → ${scriptName} → Settings → Variables (delete the existing ${name}), then retry.`
+    };
+  }
+  const existing = settings.result!.bindings!.find((b) => b.name === name) as
+    | { name: string; type: string; text?: string }
+    | undefined;
+  if (!existing) return put;
+  if (existing.type === "plain_text" && typeof existing.text === "string") {
+    if (existing.text === text) {
+      return { success: true, result: { name, type: "plain_text" }, reused: "value-match-plain-text" };
+    }
+    return {
+      ...put,
+      recovery: `${name} already exists as a plain_text variable with a different value. Wanted: "${text.slice(0, 80)}${text.length > 80 ? "…" : ""}". Found: "${String(existing.text).slice(0, 80)}". Edit or delete it at dash → Workers & Pages → ${scriptName} → Settings → Variables, then retry.`
+    };
+  }
+  if (existing.type === "secret_text") {
+    return { success: true, result: { name, type: "secret_text" }, reused: "already-secret" };
+  }
+  return {
+    ...put,
+    recovery: `${name} exists as a "${existing.type}" binding, which the secrets endpoint can't overwrite. Delete it at dash → Workers & Pages → ${scriptName} → Settings, then retry.`
+  };
 }

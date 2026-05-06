@@ -11,18 +11,36 @@ function baseConfig() {
 }
 
 describe("CfAiGatewayPlugin", () => {
-  it("requires AI_GATEWAY_ID", async () => {
+  it("initializes without AI_GATEWAY_ID (soft init) but invocations fail with E_CF_GATEWAY_CONFIG", async () => {
+    // Previously throwing at init was a hard fail that bricked the
+    // runtime when ENABLED_PLUGINS listed cf-ai-gateway without the
+    // matching env var. The deploy form's bundle/config skew tolerance
+    // depends on init being soft — broken plugins should fail loudly
+    // at INVOKE time, not at startup.
     const plugin = new CfAiGatewayPlugin();
-    await expect(
-      plugin.initialize({
-        config: baseConfig(),
-        fetch: globalThis.fetch,
-        env: {
-          ENABLED_PLUGINS: "cf-ai-gateway",
-          ALLOWED_HOSTS: "gateway.ai.cloudflare.com"
-        }
-      })
-    ).rejects.toThrowError(/AI_GATEWAY_ID/);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await plugin.initialize({
+      config: baseConfig(),
+      fetch: globalThis.fetch,
+      env: {
+        ENABLED_PLUGINS: "cf-ai-gateway",
+        ALLOWED_HOSTS: "gateway.ai.cloudflare.com"
+      }
+    });
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("AI_GATEWAY_ID not set")
+    );
+    warnSpy.mockRestore();
+    // First chat invocation must fail. The exact error depends on
+    // which env check fires first (compat URL needs both CLOUDFLARE_ACCOUNT_ID
+    // and AI_GATEWAY_ID; the plugin checks CLOUDFLARE_ACCOUNT_ID first).
+    // Either is acceptable — both surface as 400 E_CF_GATEWAY_CONFIG-shaped
+    // errors with actionable copy.
+    const r = await plugin.invoke("chat", {
+      messages: [{ role: "user", content: "hi" }]
+    });
+    expect(r.ok).toBe(false);
+    expect((r.error ?? "")).toMatch(/AI_GATEWAY_ID|CLOUDFLARE_ACCOUNT_ID|E_CF_GATEWAY_CONFIG/i);
   });
 
   it("status reports binding + account presence", async () => {

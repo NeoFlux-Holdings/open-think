@@ -26,7 +26,7 @@ import {
   rotateToken,
   setPaused
 } from "./cloud/deployments";
-import { listStuckDeployments, runUpdatePush } from "./cloud/pushUpdates";
+import { isDeploymentSelfManaged, listStuckDeployments, runUpdatePush } from "./cloud/pushUpdates";
 import {
   bindClaimToDeployment,
   claimSession,
@@ -594,6 +594,88 @@ async function handleCloudDeploy(request: Request, env: Env, url: URL): Promise<
     ? { manifestUrl: env.HELM_BUNDLE_MANIFEST_URL }
     : undefined;
 
+  // Streaming path: when the client sets `Accept: application/x-ndjson`,
+  // we flush each step + every "running…" hint as it lands instead of
+  // holding the whole result for 60-120s. The client renders these as
+  // they arrive so the user sees real progress instead of a frozen UI.
+  const wantsStream = (request.headers.get("accept") ?? "").includes("application/x-ndjson");
+  if (wantsStream) {
+    const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+    const writer = writable.getWriter();
+    const encoder = new TextEncoder();
+    const writeLine = async (obj: unknown): Promise<void> => {
+      try {
+        await writer.write(encoder.encode(JSON.stringify(obj) + "\n"));
+      } catch {
+        /* writer closed (client navigated away) — let runDeploy finish anyway */
+      }
+    };
+    // Run deploy in the background; flush events as they arrive. We
+    // can't `ctx.waitUntil` here without the route having access to
+    // ExecutionContext, so we use Promise chaining and rely on the
+    // Workers runtime keeping the request alive while the stream is open.
+    (async () => {
+      try {
+        const result = await runDeploy(body, {
+          persist: persistInput,
+          directDeploy,
+          onProgress: writeLine
+        });
+        if (result.ok && result.deploymentId && env.DB && env.CLOUD_MASTER_KEY) {
+          const intent = await readVerifiedIntent(request, env.CLOUD_MASTER_KEY);
+          if (intent) {
+            try {
+              await bindClaimToDeployment(env.DB, intent.sid, result.deploymentId);
+            } catch {
+              /* non-fatal */
+            }
+          }
+        }
+        if (persistSkipReason) {
+          result.steps = [
+            ...result.steps,
+            {
+              kind: "render-cli-commands",
+              ok: false,
+              summary: "subscription persistence skipped",
+              error: persistSkipReason
+            }
+          ];
+        }
+        await writeLine({ phase: "final", result });
+      } catch (err) {
+        await writeLine({
+          phase: "final",
+          result: {
+            ok: false,
+            workerName: body.workerName,
+            accountId: body.accountId,
+            steps: [],
+            error: (err as Error).message ?? "deploy threw"
+          }
+        });
+      } finally {
+        try {
+          await writer.close();
+        } catch {
+          /* already closed */
+        }
+      }
+    })();
+    const headers: Record<string, string> = {
+      "content-type": "application/x-ndjson; charset=utf-8",
+      "x-content-type-options": "nosniff",
+      "cache-control": "no-cache, no-transform",
+      // CF buffering hint: streams to the client as bytes arrive instead
+      // of coalescing them.
+      "x-accel-buffering": "no"
+    };
+    return new Response(readable, { status: 200, headers });
+  }
+
+  // Legacy non-streaming path — single JSON response after the entire
+  // deploy completes. Kept for backwards compat with any clients that
+  // don't send Accept: application/x-ndjson.
   const result = await runDeploy(body, { persist: persistInput, directDeploy });
 
   // Bind the claim row to the deployment so re-exchange of the same
@@ -748,6 +830,64 @@ async function handleManageAction(
         return json({ ok: false, error: "Stripe portal unavailable" }, 502);
       }
       return json({ ok: true, url: portal.portal.url });
+    }
+    case "push-now": {
+      // Customer-initiated "push the latest bundle to my Worker now" —
+      // closes the gap between "we shipped a bug fix" and "your hourly
+      // cron picks it up". Runs the same code path as the cron, just
+      // filtered to this one deployment (so a paused deployment is also
+      // pushable on demand — pause is for stopping the cron, not for
+      // gating manual pushes).
+      //
+      // Self-managed gate: when the live Worker has HELM_CUSTOM_DEPLOY,
+      // pushing upstream would clobber the customer's custom code. We
+      // refuse with 409 + selfManaged:true unless the request body has
+      // confirm:true, so the client can show "are you sure?" before
+      // calling again with the override.
+      try {
+        const force = parsedBody && (parsedBody as { confirm?: boolean }).confirm === true;
+        if (!force) {
+          const flagged = await isDeploymentSelfManaged(env, deployment);
+          if (flagged.ok && flagged.selfManaged) {
+            return json(
+              {
+                ok: false,
+                selfManaged: true,
+                error:
+                  "This deployment is self-managed (HELM_CUSTOM_DEPLOY=1). Pushing upstream will overwrite your custom code. Re-call with { confirm: true } to proceed."
+              },
+              409
+            );
+          }
+        }
+        const summary = await runUpdatePush(env, { deploymentId: deployment.id });
+        if (summary.skippedUpToDate === 1 && summary.pushed === 0) {
+          return json({
+            ok: true,
+            alreadyUpToDate: true,
+            manifestSha: summary.manifestSha,
+            message: "Already on the latest bundle — nothing to push."
+          });
+        }
+        if (!summary.ok) {
+          return json(
+            {
+              ok: false,
+              error: summary.error ?? summary.failures[0]?.error ?? "push failed",
+              manifestSha: summary.manifestSha
+            },
+            502
+          );
+        }
+        return json({
+          ok: true,
+          pushed: summary.pushed,
+          manifestSha: summary.manifestSha,
+          message: "Pushed. The Worker should pick it up within ~15 seconds."
+        });
+      } catch (err) {
+        return json({ ok: false, error: (err as Error).message }, 500);
+      }
     }
     case "forget": {
       // Tier 2 b — "Forget my deployment". Customer-initiated GDPR-style
