@@ -3,6 +3,7 @@ import {
   runOpenAICompatibleToolStream,
   parseOpenAISse
 } from "../src/openai-stream";
+import { normalizeCompatModelId } from "../src/conductor-tool-stream";
 import type { LoopEvent } from "../src/tool-stream-types";
 import type { SkillDefinition } from "../src/core/skills";
 
@@ -19,6 +20,33 @@ function sseStream(lines: string[]): ReadableStream<Uint8Array> {
 function chunk(obj: Record<string, unknown>): string {
   return `data: ${JSON.stringify(obj)}\n\n`;
 }
+
+describe("normalizeCompatModelId", () => {
+  it("prepends workers-ai/ to bare @cf/... ids so /compat router recognizes the provider", () => {
+    // CF AI Gateway's compat endpoint requires `provider/model-name`.
+    // `@cf` is the Workers AI namespace prefix, NOT a provider prefix —
+    // the gateway returns "model must be in 'provider/model-name'
+    // format" without this normalization.
+    expect(normalizeCompatModelId("@cf/moonshotai/kimi-k2.6")).toBe("workers-ai/@cf/moonshotai/kimi-k2.6");
+    expect(normalizeCompatModelId("@cf/meta/llama-3.3-70b-instruct-fp8-fast")).toBe(
+      "workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+    );
+  });
+
+  it("passes already-prefixed ids through untouched", () => {
+    // Already conforms to provider/model — don't double-prefix.
+    expect(normalizeCompatModelId("workers-ai/@cf/moonshotai/kimi-k2.6")).toBe(
+      "workers-ai/@cf/moonshotai/kimi-k2.6"
+    );
+    expect(normalizeCompatModelId("openai/gpt-5.5")).toBe("openai/gpt-5.5");
+    expect(normalizeCompatModelId("anthropic/claude-opus-4-7")).toBe("anthropic/claude-opus-4-7");
+    expect(normalizeCompatModelId("moonshotai/kimi-k2.6")).toBe("moonshotai/kimi-k2.6");
+  });
+
+  it("returns undefined for undefined input (callers' defaults still apply)", () => {
+    expect(normalizeCompatModelId(undefined)).toBeUndefined();
+  });
+});
 
 describe("parseOpenAISse", () => {
   it("parses multiple data frames and honors [DONE] sentinel", async () => {

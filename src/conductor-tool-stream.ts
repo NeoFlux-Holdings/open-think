@@ -247,7 +247,12 @@ function createGenerator(
       providerLabel: "openai-compatible"
     });
   }
-  // cf-ai-gateway — compat endpoint speaks OpenAI format, model prefix routes provider
+  // cf-ai-gateway — compat endpoint REQUIRES `provider/model-name` format
+  // ("model must be in 'provider/model-name' format" is the gateway's
+  // own error). Bare `@cf/...` model ids don't have a provider prefix
+  // CF recognizes — `@cf` isn't a known provider — so we auto-prepend
+  // `workers-ai/` here. Non-`@cf/` ids that already match a known
+  // provider format pass through untouched.
   if (!env.AI_GATEWAY_ID || !env.CLOUDFLARE_ACCOUNT_ID) {
     throw new AppError(
       "E_CF_GATEWAY_CONFIG",
@@ -262,11 +267,34 @@ function createGenerator(
   }
   return runOpenAICompatibleToolStream({
     ...config,
+    model: normalizeCompatModelId(config.model),
     baseUrl: gatewayBase,
     apiKey: env.OPENAI_COMPATIBLE_KEY,
     providerLabel: "cf-ai-gateway",
     extraHeaders
   });
+}
+
+/**
+ * CF AI Gateway's `/compat/chat/completions` endpoint requires a
+ * `provider/model-name` model id. Known providers (May 2026):
+ *   workers-ai, anthropic, openai, google-ai-studio, google-vertex-ai,
+ *   amazon-bedrock, azure-openai, groq, cerebras, cohere, deepseek,
+ *   mistral, openrouter, perplexity, xai
+ *
+ * Bare Workers AI ids like `@cf/moonshotai/kimi-k2.6` don't have a
+ * recognized prefix — `@cf` is the Workers AI namespace, not a provider
+ * — so the gateway returns "model must be in 'provider/model-name'
+ * format" and the chat fails. Normalize by prepending `workers-ai/`
+ * when the id starts with `@cf/`. Anything else passes through.
+ *
+ * Returns undefined when the input is undefined (so the caller's
+ * downstream defaults still apply).
+ */
+export function normalizeCompatModelId(model: string | undefined): string | undefined {
+  if (!model) return model;
+  if (model.startsWith("@cf/")) return `workers-ai/${model}`;
+  return model;
 }
 
 async function loadHistory(

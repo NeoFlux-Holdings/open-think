@@ -511,8 +511,14 @@ export class CfAiGatewayPlugin implements AgentPlugin {
     parsed: ChatInput
   ): Promise<{ ok: boolean; status: number; bodyText: string; parsed: unknown }> {
     const url = `${this.compatUrl()}/chat/completions`;
+    // Normalize bare `@cf/...` Workers AI ids → `workers-ai/@cf/...` so
+    // the gateway's `/compat` router recognizes the provider prefix.
+    // Without this, the gateway returns "model must be in
+    // 'provider/model-name' format" and chat fails. See conductor-tool-
+    // stream.ts → normalizeCompatModelId for the streaming-side mirror.
+    const normalizedModel = model.startsWith("@cf/") ? `workers-ai/${model}` : model;
     const body: Record<string, unknown> = {
-      model,
+      model: normalizedModel,
       messages: parsed.messages
     };
     if (parsed.maxTokens !== undefined) body.max_tokens = parsed.maxTokens;
