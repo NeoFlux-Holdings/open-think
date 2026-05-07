@@ -353,21 +353,18 @@ describe("runDeploy · failure modes", () => {
 });
 
 describe("resolveModelPreset", () => {
-  it("kimi-k2.6 without OpenRouter → falls back to Llama 3.3 + warns about CF catalog gap", () => {
-    // CF Workers AI does NOT catalogue @cf/moonshotai/kimi-k2.6, so we
-    // can't honor the preset directly without an OpenRouter key. We
-    // fall back to the always-catalogued Llama 3.3 with a clear warning.
+  it("kimi-k2.6 default → Workers AI gateway when no key + AI Gateway provisioned", () => {
     const r = resolveModelPreset({
       preset: "kimi-k2.6",
       hasOpenRouter: false,
       hasAnthropic: false,
       hasAiGateway: true
     });
-    expect(r.modelId).toBe("workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast");
-    expect(r.warning).toMatch(/Kimi K2\.6 needs an OpenRouter API key/);
+    expect(r.modelId).toBe("workers-ai/@cf/moonshotai/kimi-k2.6");
+    expect(r.warning).toBeUndefined();
   });
 
-  it("kimi-k2.6 with OpenRouter → routes through OR (only place k2.6 actually exists)", () => {
+  it("kimi-k2.6 with OpenRouter → routes through OR for lower latency", () => {
     const r = resolveModelPreset({
       preset: "kimi-k2.6",
       hasOpenRouter: true,
@@ -388,14 +385,14 @@ describe("resolveModelPreset", () => {
     expect(r.warning).toBeUndefined();
   });
 
-  it("gpt-5.5 without OpenRouter → falls back to Llama 3.3 + warns", () => {
+  it("gpt-5.5 without OpenRouter → falls back to Kimi + warns", () => {
     const r = resolveModelPreset({
       preset: "gpt-5.5",
       hasOpenRouter: false,
       hasAnthropic: false,
       hasAiGateway: true
     });
-    expect(r.modelId).toBe("workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast");
+    expect(r.modelId).toBe("workers-ai/@cf/moonshotai/kimi-k2.6");
     expect(r.warning).toMatch(/GPT-5\.5 needs an OpenRouter API key/);
   });
 
@@ -419,14 +416,14 @@ describe("resolveModelPreset", () => {
     expect(r.modelId).toBe("anthropic/claude-opus-4-7");
   });
 
-  it("opus-4.7 with neither key → falls back to Llama 3.3 + warns", () => {
+  it("opus-4.7 with neither key → falls back + warns", () => {
     const r = resolveModelPreset({
       preset: "opus-4.7",
       hasOpenRouter: false,
       hasAnthropic: false,
       hasAiGateway: true
     });
-    expect(r.modelId).toBe("workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast");
+    expect(r.modelId).toBe("workers-ai/@cf/moonshotai/kimi-k2.6");
     expect(r.warning).toMatch(/Anthropic or OpenRouter/);
   });
 
@@ -458,7 +455,7 @@ describe("resolveModelPreset", () => {
       hasAnthropic: false,
       hasAiGateway: true
     });
-    expect(r.modelId).toBe("workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast");
+    expect(r.modelId).toBe("workers-ai/@cf/moonshotai/kimi-k2.6");
     expect(r.warning).toMatch(/no id provided/);
   });
 
@@ -472,13 +469,13 @@ describe("resolveModelPreset", () => {
     expect(r.modelId).toBe("openrouter/anthropic/claude-haiku-4-5");
   });
 
-  it("no preset, no AI Gateway → bare Llama 3.3 model id (last-resort)", () => {
+  it("no preset, no AI Gateway → bare workers-ai model id (last-resort)", () => {
     const r = resolveModelPreset({
       hasOpenRouter: false,
       hasAnthropic: false,
       hasAiGateway: false
     });
-    expect(r.modelId).toBe("@cf/meta/llama-3.3-70b-instruct-fp8-fast");
+    expect(r.modelId).toBe("@cf/moonshotai/kimi-k2.6");
   });
 });
 
@@ -503,10 +500,10 @@ describe("composeWranglerToml · invariants", () => {
     // E_INTERNAL "ALLOWED_HOSTS must include at least one host"
     // on every request.
     expect(t).toMatch(/ALLOWED_HOSTS = "api\.cloudflare\.com,/);
-    // Default chat model: Llama 3.3 70B via Workers AI (zero-key,
-    // always-catalogued); when an OpenRouter key is present, runDeploy
-    // upgrades this to the OR routing path before calling composeWranglerToml.
-    expect(t).toMatch(/MODEL_DEFAULT = "@cf\/meta\/llama-3\.3-70b-instruct-fp8-fast"/);
+    // Default chat model: Kimi K2.6 via Workers AI (zero-key); when an
+    // OpenRouter key is present, runDeploy upgrades this to the OR
+    // routing path before calling composeWranglerToml.
+    expect(t).toMatch(/MODEL_DEFAULT = "@cf\/moonshotai\/kimi-k2\.6"/);
   });
 
   it("honors openRouterDefaultModel override (e.g. pinning kimi)", () => {
