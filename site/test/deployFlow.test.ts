@@ -353,15 +353,29 @@ describe("runDeploy · failure modes", () => {
 });
 
 describe("resolveModelPreset", () => {
-  it("kimi-k2.6 default → Workers AI gateway when no key + AI Gateway provisioned", () => {
+  it("kimi-k2.6 default → bare @cf/... (direct Workers AI binding, no gateway)", () => {
+    // The bare `@cf/...` id routes through env.AI directly; the
+    // `workers-ai/@cf/...` form would route through cf-ai-gateway,
+    // which is the source of code:2019 errors. AI Gateway provisioned
+    // or not, we send the same bare id so chat works out of the box.
     const r = resolveModelPreset({
       preset: "kimi-k2.6",
       hasOpenRouter: false,
       hasAnthropic: false,
       hasAiGateway: true
     });
-    expect(r.modelId).toBe("workers-ai/@cf/moonshotai/kimi-k2.6");
+    expect(r.modelId).toBe("@cf/moonshotai/kimi-k2.6");
     expect(r.warning).toBeUndefined();
+  });
+
+  it("kimi-k2.6 default is the same bare id even without AI Gateway", () => {
+    const r = resolveModelPreset({
+      preset: "kimi-k2.6",
+      hasOpenRouter: false,
+      hasAnthropic: false,
+      hasAiGateway: false
+    });
+    expect(r.modelId).toBe("@cf/moonshotai/kimi-k2.6");
   });
 
   it("kimi-k2.6 with OpenRouter → routes through OR for lower latency", () => {
@@ -385,14 +399,14 @@ describe("resolveModelPreset", () => {
     expect(r.warning).toBeUndefined();
   });
 
-  it("gpt-5.5 without OpenRouter → falls back to Kimi + warns", () => {
+  it("gpt-5.5 without OpenRouter → falls back to bare Kimi + warns", () => {
     const r = resolveModelPreset({
       preset: "gpt-5.5",
       hasOpenRouter: false,
       hasAnthropic: false,
       hasAiGateway: true
     });
-    expect(r.modelId).toBe("workers-ai/@cf/moonshotai/kimi-k2.6");
+    expect(r.modelId).toBe("@cf/moonshotai/kimi-k2.6");
     expect(r.warning).toMatch(/GPT-5\.5 needs an OpenRouter API key/);
   });
 
@@ -416,14 +430,14 @@ describe("resolveModelPreset", () => {
     expect(r.modelId).toBe("anthropic/claude-opus-4-7");
   });
 
-  it("opus-4.7 with neither key → falls back + warns", () => {
+  it("opus-4.7 with neither key → falls back to bare Kimi + warns", () => {
     const r = resolveModelPreset({
       preset: "opus-4.7",
       hasOpenRouter: false,
       hasAnthropic: false,
       hasAiGateway: true
     });
-    expect(r.modelId).toBe("workers-ai/@cf/moonshotai/kimi-k2.6");
+    expect(r.modelId).toBe("@cf/moonshotai/kimi-k2.6");
     expect(r.warning).toMatch(/Anthropic or OpenRouter/);
   });
 
@@ -448,14 +462,14 @@ describe("resolveModelPreset", () => {
     expect(r.modelId).toBe("openrouter/x-ai/grok-4");
   });
 
-  it("custom preset without an id falls back + warns", () => {
+  it("custom preset without an id falls back to bare Kimi + warns", () => {
     const r = resolveModelPreset({
       preset: "custom",
       hasOpenRouter: false,
       hasAnthropic: false,
       hasAiGateway: true
     });
-    expect(r.modelId).toBe("workers-ai/@cf/moonshotai/kimi-k2.6");
+    expect(r.modelId).toBe("@cf/moonshotai/kimi-k2.6");
     expect(r.warning).toMatch(/no id provided/);
   });
 

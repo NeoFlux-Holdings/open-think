@@ -104,7 +104,7 @@ export interface SubscriptionPersistInput {
  * MODEL_DEFAULT id (with provider prefix when routed through OpenRouter).
  *
  * Provider precedence inside the conductor's selectProvider is:
- *   openrouter > anthropic > cf-ai-gateway > openai-compatible
+ *   openrouter > anthropic > workers-ai > cf-ai-gateway > openai-compatible
  *
  * So we shape MODEL_DEFAULT to match whichever credential the user
  * actually pasted. When their preset can't be reached with what they
@@ -113,15 +113,21 @@ export interface SubscriptionPersistInput {
  *
  * Workers AI Kimi K2.6 default: `@cf/moonshotai/kimi-k2.6` IS in CF's
  * catalogue and supports tools. We default to it for the zero-key path
- * because it's the best free-tier chat model on Workers AI.
+ * because it's the best free-tier chat model on Workers AI. We use the
+ * BARE id (no `workers-ai/` prefix) so the request goes direct via the
+ * Workers AI binding (`env.AI`) instead of through cf-ai-gateway. AI
+ * Gateway adds an HTTP hop + occasionally surfaces transient
+ * `code:2019 "Chat completion bad format"` errors that the direct
+ * binding doesn't have. Customers who want gateway-style observability
+ * can prefix the model id manually — the runtime honors both.
  *
  * Examples:
- *   preset=kimi-k2.6,  hasOR=true              → "moonshotai/kimi-k2.6" (OR direct, lower latency)
- *   preset=kimi-k2.6,  hasOR=false, hasAIG=true → "workers-ai/@cf/moonshotai/kimi-k2.6" (free)
- *   preset=opus-4.7,   hasAnth=true             → "claude-opus-4-7" (Anthropic direct)
- *   preset=opus-4.7,   hasOR=true               → "anthropic/claude-opus-4-7" (via OR)
- *   preset=gpt-5.5,    hasOR=true               → "openai/gpt-5.5"
- *   preset=gpt-5.5,    !hasOR                   → fallback to Kimi via gateway + warning
+ *   preset=kimi-k2.6,  hasOR=true   → "moonshotai/kimi-k2.6" (OR direct, lower latency)
+ *   preset=kimi-k2.6,  !hasOR       → "@cf/moonshotai/kimi-k2.6" (Workers AI direct, free)
+ *   preset=opus-4.7,   hasAnth=true → "claude-opus-4-7" (Anthropic direct)
+ *   preset=opus-4.7,   hasOR=true   → "anthropic/claude-opus-4-7" (via OR)
+ *   preset=gpt-5.5,    hasOR=true   → "openai/gpt-5.5"
+ *   preset=gpt-5.5,    !hasOR       → fallback to Kimi direct + warning
  */
 export function resolveModelPreset(input: {
   preset?: "kimi-k2.6" | "gpt-5.5" | "opus-4.7" | "sonnet-4.6" | "custom";
@@ -130,14 +136,19 @@ export function resolveModelPreset(input: {
   legacyOpenRouterModel?: string;
   hasOpenRouter: boolean;
   hasAnthropic: boolean;
+  /**
+   * Kept for back-compat with the deploy form's input shape, but no
+   * longer affects the model id we choose: the bare `@cf/...` id always
+   * wins over the `workers-ai/@cf/...` gateway-routed form. Customers
+   * who want AI Gateway observability can prefix manually.
+   */
   hasAiGateway: boolean;
 }): { modelId: string; warning?: string } {
-  // Workers AI default — Kimi K2.6 is the best free-tier chat model in
-  // CF's catalogue, supports tools, and routes through cf-ai-gateway
-  // when an AI Gateway is provisioned (cleaner observability + caching).
-  const fallbackKimi = input.hasAiGateway
-    ? "workers-ai/@cf/moonshotai/kimi-k2.6"
-    : "@cf/moonshotai/kimi-k2.6";
+  // Workers AI direct via env.AI binding. The `workers-ai/` prefix
+  // would route through cf-ai-gateway, which is an extra HTTP hop AND
+  // the code:2019 source we've been chasing — bypassing AI Gateway
+  // makes chat work out of the box.
+  const fallbackKimi = "@cf/moonshotai/kimi-k2.6";
 
   // Custom branch: trust the user's input verbatim. They picked the
   // advanced path; let them pin whatever id they want.
@@ -1008,11 +1019,20 @@ async function runDirectDeploy(input: DirectDeployInput): Promise<DirectDeployRe
   // below). The legacy fallback chain (openrouter/auto if key, else CF
   // Workers AI) lives there now so the deploy form can also surface a
   // warning step when the user picks a model their key can't reach.
+  // hasAiGateway only gates whether `cf-ai-gateway` joins the plugin
+  // list below — NOT what model id we default to. Since we're now
+  // sending bare `@cf/...` ids that route through the direct Workers
+  // AI binding, the gateway plugin's only job is providing optional
+  // observability for customers who explicitly opt in via a prefixed
+  // model id at runtime.
   const hasAiGateway = !!input.aiGatewayId;
-  const modelDefault = input.modelDefault
-    ?? (hasAiGateway
-      ? "workers-ai/@cf/moonshotai/kimi-k2.6"
-      : "@cf/moonshotai/kimi-k2.6");
+  // Default chat model: bare `@cf/moonshotai/kimi-k2.6` so requests
+  // go through the direct Workers AI binding (env.AI) instead of
+  // through cf-ai-gateway. The gateway path was the source of the
+  // `code:2019 "Chat completion bad format"` errors we hit on
+  // tomtom-claude. Customers who want AI Gateway observability can
+  // prefix the model id manually — the conductor honors both shapes.
+  const modelDefault = input.modelDefault ?? "@cf/moonshotai/kimi-k2.6";
   // ENABLED_PLUGINS must list ONLY plugin ids the published bundle
   // actually contains. The runtime throws E_PLUGIN_UNKNOWN on bootstrap
   // if it sees an enabled id with no registered plugin (older bundles
