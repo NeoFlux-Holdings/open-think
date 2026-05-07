@@ -18,14 +18,31 @@ import {
 } from "./tool-stream-types";
 
 export interface OpenAIStreamConfig extends ToolLoopConfig {
-  /** Base URL ending *without* `/chat/completions`. E.g. `https://api.groq.com/openai/v1`. */
-  baseUrl: string;
+  /**
+   * Base URL ending *without* `/chat/completions`. E.g.
+   * `https://api.groq.com/openai/v1`. Required unless `customInvoke`
+   * is provided (the workers-ai-stream wrapper uses customInvoke to
+   * bypass HTTP entirely).
+   */
+  baseUrl?: string;
   /** Optional bearer token; some compat servers (Ollama) are open. */
   apiKey?: string;
   /** Optional label used in tool-result assistant messages for audit clarity. */
   providerLabel?: string;
   /** Optional extra headers (e.g. cf-aig-authorization for CF AI Gateway BYOK). */
   extraHeaders?: Record<string, string>;
+  /**
+   * Optional custom request invoker. When provided, the per-turn HTTP
+   * fetch is replaced with this callback, which receives the OpenAI-
+   * format request body and returns the streaming SSE body. Used by
+   * `runWorkersAiToolStream` to call `env.AI.run(model, body, {stream:true})`
+   * directly — bypasses cf-ai-gateway's `/compat` URL (the source of
+   * `code:2019 "Chat completion bad format"` for `@cf/...` models).
+   */
+  customInvoke?: (body: Record<string, unknown>) => Promise<
+    | { ok: true; stream: ReadableStream<Uint8Array> }
+    | { ok: false; status?: number; error: string }
+  >;
 }
 
 interface ToolCallAccumulator {
@@ -38,8 +55,8 @@ interface ToolCallAccumulator {
 export async function* runOpenAICompatibleToolStream(
   config: OpenAIStreamConfig
 ): AsyncGenerator<LoopEvent, void, unknown> {
-  if (!config.baseUrl) {
-    yield { kind: "error", message: "baseUrl is required", code: "E_OAI_URL_MISSING" };
+  if (!config.baseUrl && !config.customInvoke) {
+    yield { kind: "error", message: "baseUrl or customInvoke is required", code: "E_OAI_URL_MISSING" };
     return;
   }
 
@@ -66,7 +83,8 @@ export async function* runOpenAICompatibleToolStream(
 
   let finalText = "";
   let heldActions = false;
-  const url = `${config.baseUrl.replace(/\/$/, "")}/chat/completions`;
+  const url = config.baseUrl ? `${config.baseUrl.replace(/\/$/, "")}/chat/completions` : "";
+  const providerLabel = config.providerLabel ?? "OpenAI-compatible";
 
   for (let turn = 1; turn <= maxIter; turn += 1) {
     if (config.abortSignal?.aborted) {
@@ -97,28 +115,45 @@ export async function* runOpenAICompatibleToolStream(
       body.reasoning_effort = config.reasoningEffort;
     }
 
-    const headers: Record<string, string> = {
-      "content-type": "application/json",
-      accept: "text/event-stream",
-      ...(config.extraHeaders ?? {})
-    };
-    if (config.apiKey) headers.Authorization = `Bearer ${config.apiKey}`;
-
-    const response = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      signal: config.abortSignal
-    });
-
-    if (!response.ok || !response.body) {
-      const text = await response.text().catch(() => "");
-      yield {
-        kind: "error",
-        message: `OpenAI-compatible ${response.status}: ${text.slice(0, 300)}`,
-        code: "E_OAI_HTTP"
+    // Stream source — either a custom invoker (workers-ai native binding)
+    // or a plain HTTP POST to an OpenAI-compatible endpoint.
+    let streamBody: ReadableStream<Uint8Array>;
+    if (config.customInvoke) {
+      const invoked = await config.customInvoke(body);
+      if (!invoked.ok) {
+        yield {
+          kind: "error",
+          message: `${providerLabel}${invoked.status ? ` ${invoked.status}` : ""}: ${invoked.error.slice(0, 300)}`,
+          code: "E_OAI_HTTP"
+        };
+        return;
+      }
+      streamBody = invoked.stream;
+    } else {
+      const headers: Record<string, string> = {
+        "content-type": "application/json",
+        accept: "text/event-stream",
+        ...(config.extraHeaders ?? {})
       };
-      return;
+      if (config.apiKey) headers.Authorization = `Bearer ${config.apiKey}`;
+
+      const response = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+        signal: config.abortSignal
+      });
+
+      if (!response.ok || !response.body) {
+        const text = await response.text().catch(() => "");
+        yield {
+          kind: "error",
+          message: `${providerLabel} ${response.status}: ${text.slice(0, 300)}`,
+          code: "E_OAI_HTTP"
+        };
+        return;
+      }
+      streamBody = response.body;
     }
 
     let textIndex = -1; // -1 = no text block started yet this turn
@@ -126,7 +161,7 @@ export async function* runOpenAICompatibleToolStream(
     const toolAccs = new Map<number, ToolCallAccumulator>();
     let finishReason: string | null = null;
 
-    for await (const chunk of parseOpenAISse(response.body)) {
+    for await (const chunk of parseOpenAISse(streamBody)) {
       if (config.abortSignal?.aborted) {
         yield { kind: "loop-done", reason: "cancelled", finalText };
         return;

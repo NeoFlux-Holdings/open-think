@@ -5,9 +5,15 @@ import { AppError, toAppError } from "./core/errors";
 import { buildSystemPrompt, CONDUCTOR_SESSION_DEFAULT } from "./conductor";
 import { runAnthropicToolStream } from "./anthropic-stream";
 import { runOpenAICompatibleToolStream } from "./openai-stream";
+import { runWorkersAiToolStream } from "./workers-ai-stream";
 import { readReasoningEffortFromEnv, type LoopEvent, type ToolLoopConfig } from "./tool-stream-types";
 
-type ToolStreamProvider = "anthropic" | "openrouter" | "openai-compatible" | "cf-ai-gateway";
+type ToolStreamProvider =
+  | "anthropic"
+  | "openrouter"
+  | "openai-compatible"
+  | "cf-ai-gateway"
+  | "workers-ai";
 
 interface ToolStreamInput {
   sessionName?: string;
@@ -170,11 +176,17 @@ function selectProvider(
   // model per prompt without the user thinking about model selection.
   if (enabled.has("openrouter") && env.OPENROUTER_API_KEY) return "openrouter";
   if (enabled.has("anthropic") && env.ANTHROPIC_API_KEY) return "anthropic";
+  // workers-ai (native env.AI.run, no HTTP/AI Gateway hop) — preferred
+  // over cf-ai-gateway for any deployment that has the binding because
+  // (a) it's the free path, (b) it bypasses the `/compat` URL that
+  // can't route `@cf/...` model ids and returns code:2019, (c) lower
+  // latency by skipping the gateway HTTP roundtrip.
+  if (enabled.has("workers-ai") && env.AI) return "workers-ai";
   if (enabled.has("cf-ai-gateway") && env.AI_GATEWAY_ID && env.CLOUDFLARE_ACCOUNT_ID) return "cf-ai-gateway";
   if (enabled.has("openai-compatible") && env.OPENAI_COMPATIBLE_URL) return "openai-compatible";
   throw new AppError(
     "E_NO_STREAMING_PROVIDER",
-    "stream-tools requires one of: openrouter (OPENROUTER_API_KEY), anthropic (ANTHROPIC_API_KEY), cf-ai-gateway (AI_GATEWAY_ID + CLOUDFLARE_ACCOUNT_ID), or openai-compatible (OPENAI_COMPATIBLE_URL).",
+    "stream-tools requires one of: openrouter (OPENROUTER_API_KEY), anthropic (ANTHROPIC_API_KEY), workers-ai (env.AI binding), cf-ai-gateway (AI_GATEWAY_ID + CLOUDFLARE_ACCOUNT_ID), or openai-compatible (OPENAI_COMPATIBLE_URL).",
     400
   );
 }
@@ -186,6 +198,16 @@ function createGenerator(
 ): AsyncGenerator<LoopEvent, void, unknown> {
   if (provider === "anthropic") {
     return runAnthropicToolStream(config);
+  }
+  if (provider === "workers-ai") {
+    if (!env.AI) {
+      throw new AppError(
+        "E_WORKERS_AI_BINDING",
+        "workers-ai streaming requires the [ai] binding in wrangler.toml",
+        400
+      );
+    }
+    return runWorkersAiToolStream(config);
   }
   if (provider === "openrouter") {
     if (!env.OPENROUTER_API_KEY) {
