@@ -27,6 +27,7 @@ import { runLockdown } from "../setup-access";
 import { listSecretStatus } from "../setup-secrets";
 import { HELM_DOCS } from "./helmDocs";
 import { resolveShellSession } from "./helmShellSession";
+import { execInSandbox } from "../sandbox";
 
 interface InvokeInput {
   accountId?: string;
@@ -120,36 +121,32 @@ export class HelmSetupPlugin implements AgentPlugin {
       if (!o.cmd || typeof o.cmd !== "string") {
         return { ok: false, error: "input.cmd (string) required" };
       }
-      if (!env.SHELL_CONTAINER) {
-        return {
-          ok: false,
-          error: "SHELL_CONTAINER binding missing. Redeploy with the v0.8+ wrangler.toml."
-        };
-      }
-      // CRITICAL: default session name matches the user's browser shell
+      // CRITICAL: default session id matches the user's browser shell
       // session — derived from env.AGENT_OWNER_EMAIL via the same FNV-1a
       // hash that /shell/ws uses. So files the user `git clone`s in the
       // browser tab are visible to helm-exec, and vice versa.
-      const sessionName = resolveShellSession(env, o.session);
-      const id = env.SHELL_CONTAINER.idFromName(sessionName);
-      const stub = env.SHELL_CONTAINER.get(id);
-      const resp = await stub.fetch(
-        new Request("https://shell-do/exec", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            cmd: o.cmd,
-            cwd: o.cwd,
-            timeoutMs: o.timeoutMs,
-            stdin: o.stdin
-          })
-        })
-      );
-      const data = (await resp.json().catch(() => ({}))) as Record<string, unknown>;
-      if (!resp.ok) {
-        return { ok: false, error: `helm-exec failed (${resp.status})`, data };
+      const sessionId = resolveShellSession(env, o.session);
+      // NOTE: stdin pass-through is dropped here — Sandbox SDK's exec()
+      // doesn't accept a stdin string in v0.10. Callers that need to
+      // pipe stdin should write a file first and `cmd < /tmp/in`.
+      const r = await execInSandbox(env, o.cmd, {
+        cwd: o.cwd,
+        timeoutMs: o.timeoutMs,
+        sessionId
+      });
+      if (!r.ok && r.code === -1) {
+        return { ok: false, error: r.stderr ?? "exec failed" };
       }
-      return { ok: true, data: { ...data, session: sessionName } };
+      return {
+        ok: true,
+        data: {
+          stdout: r.stdout,
+          stderr: r.stderr,
+          code: r.code,
+          durationMs: r.durationMs,
+          session: sessionId
+        }
+      };
     }
 
     if (action === "deploy") {

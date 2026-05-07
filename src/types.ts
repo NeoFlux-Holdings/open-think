@@ -1,3 +1,5 @@
+import type { Sandbox as SandboxDO } from "@cloudflare/sandbox";
+
 /**
  * Cloudflare Artifacts binding — public-beta API surface (May 2026).
  *
@@ -268,13 +270,14 @@ export interface Env {
   /** WebSocket-backed chat session DO. One instance per session name. */
   CHAT_SESSIONS?: DurableObjectNamespace;
   /**
-   * Cloudflare Container DO that hosts the Helm Shell — a bash session
-   * accessible from /app#/shell (browser xterm.js) or scripts/open-think-shell.mjs (CLI).
-   * Each session name resolves to its own container instance with ephemeral disk.
+   * Cloudflare Sandbox SDK Durable Object — `@cloudflare/sandbox` 0.10+.
+   * Hosts the Helm Shell (interactive PTY at /shell/ws, one-shot exec at
+   * /shell/exec). Replaces the previous custom Container/PTY bridge
+   * (ShellContainerDO + ShellRegistryDO + docker/shell/server.mjs).
+   * Each session id resolves to its own bash environment with persistent
+   * filesystem, mounted buckets, code-interpreter contexts.
    */
-  SHELL_CONTAINER?: DurableObjectNamespace;
-  /** Singleton registry tracking active shell sessions for /shell/list. */
-  SHELL_REGISTRY?: DurableObjectNamespace;
+  Sandbox?: DurableObjectNamespace<SandboxDO>;
   /** Singleton DO that brokers the CLI device-code login flow. */
   CLI_AUTH?: DurableObjectNamespace;
   /** OpenRouter API key (optional). When set, OR is the default provider. */
@@ -288,6 +291,8 @@ export interface Env {
   /** Optional title for OpenRouter attribution headers. */
   OPENROUTER_X_TITLE?: string;
   BROWSER?: Fetcher;
+  /** Legacy CF Sandbox Worker (Tier-4 service binding, optional). Distinct from
+   *  `Sandbox` above which is the new SDK Durable Object. */
   SANDBOX?: Fetcher;
   WORKSPACE?: R2Bucket;
   /* --- PA bindings --- */

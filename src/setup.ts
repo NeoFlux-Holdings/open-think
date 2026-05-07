@@ -161,18 +161,18 @@ export function collectStatus(env: Env, runtime: RuntimeIntrospection | AgentRun
       docs: "docs/HELM.md#streaming-sse-over-a-codex-app-server-websocket"
     },
     {
-      id: "shell-container",
-      label: "Helm Shell container (bash @ /app#/shell + npm run shell)",
+      id: "shell-sandbox",
+      label: "Helm Shell sandbox (bash @ /app#/shell + npm run shell)",
       group: "runtime",
       enabled: true,
-      configured: Boolean(env.SHELL_CONTAINER),
-      required: ["SHELL_CONTAINER DO binding", "[[containers]] block in wrangler.toml"],
-      missing: env.SHELL_CONTAINER
+      configured: Boolean(env.Sandbox),
+      required: ["Sandbox DO binding", "[[containers]] block in wrangler.toml"],
+      missing: env.Sandbox
         ? []
-        : ["SHELL_CONTAINER DO binding (run wrangler deploy with v0.8.0+)"],
+        : ["Sandbox DO binding (run wrangler deploy with v0.13+, or re-run /deploy/cloud)"],
       hint:
-        "Auto-provisioned by the shipped wrangler.toml. First request wakes a fresh container in ~10s.",
-      docs: "docs/WORKER_VS_CONTAINER.md"
+        "Auto-provisioned by the shipped wrangler.toml. Powered by Cloudflare Sandbox SDK — first request wakes a fresh sandbox in ~5s.",
+      docs: "https://developers.cloudflare.com/sandbox/"
     },
     {
       id: "shell-helm-repl",

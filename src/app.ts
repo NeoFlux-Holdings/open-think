@@ -2809,17 +2809,21 @@ async function mountShell() {
       : \`\${proto}//\${location.host}/shell/ws\`;
   })();
 
+  // Sandbox SDK protocol (replaces the old custom 'i'/'o'/'r' frames):
+  //   - Binary frames flow both ways: client → UTF-8 keystrokes,
+  //     server → raw terminal output (ANSI escapes intact)
+  //   - Resize is a JSON text frame: { "type": "resize", "cols": N, "rows": N }
+  //   - No app-level ping/pong opcodes; the Sandbox runtime keeps the
+  //     WebSocket alive on its end. We still send a tiny heartbeat below
+  //     so CF's edge (which closes idle WS after ~100s) doesn't drop us.
   function sendResize() {
     if (!ws || ws.readyState !== 1) return;
-    const cols = term.cols;
-    const rows = term.rows;
-    ws.send('r' + JSON.stringify({ cols, rows }));
+    ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
   }
 
-  // Cold-start progress: first request to a sleeping container takes 5–10s
+  // Cold-start progress: first request to a sleeping sandbox takes 3–8s
   // for image pull + cmd start. We show a stage-by-stage message so the user
-  // doesn't think it's hung. Cleared as soon as the bridge sends 'm' (motd)
-  // or any 'o' (stdout) frame.
+  // doesn't think it's hung. Cleared as soon as the sandbox sends ANY frame.
   let coldStartTimer = 0;
   let coldStartStage = 0;
   let connectStartedAt = 0;
@@ -2829,9 +2833,9 @@ async function mountShell() {
     const elapsed = Math.floor((Date.now() - connectStartedAt) / 1000);
     coldStartStage += 1;
     let line = '';
-    if (coldStartStage === 1) line = \`\\x1b[36m· still booting (\${elapsed}s) — first wake on a cold container takes ~10s while CF pulls the image\\x1b[0m\`;
-    else if (coldStartStage === 2) line = \`\\x1b[36m· still booting (\${elapsed}s) — initializing PTY + bridge\\x1b[0m\`;
-    else if (coldStartStage === 3) line = \`\\x1b[33m· still booting (\${elapsed}s) — taking longer than usual; check container logs in CF dashboard if this persists\\x1b[0m\`;
+    if (coldStartStage === 1) line = \`\\x1b[36m· still booting (\${elapsed}s) — Sandbox is spinning up a fresh container\\x1b[0m\`;
+    else if (coldStartStage === 2) line = \`\\x1b[36m· still booting (\${elapsed}s) — initializing PTY + bash\\x1b[0m\`;
+    else if (coldStartStage === 3) line = \`\\x1b[33m· still booting (\${elapsed}s) — taking longer than usual; check the dashboard if this persists\\x1b[0m\`;
     else line = \`\\x1b[31m· no response after \${elapsed}s — try Reconnect, or check the deploy.\\x1b[0m\`;
     term.writeln(line);
     if (coldStartStage < 5) coldStartTimer = setTimeout(tickColdStart, 5000);
@@ -2839,7 +2843,7 @@ async function mountShell() {
 
   function connect() {
     setState('connecting');
-    term.writeln('\\x1b[36m· connecting to helm-shell container…\\x1b[0m');
+    term.writeln('\\x1b[36m· connecting to helm-shell sandbox…\\x1b[0m');
     connectStartedAt = Date.now();
     coldStartStage = 0;
     receivedFirstByte = false;
@@ -2852,50 +2856,29 @@ async function mountShell() {
     ws.onopen = () => {
       setState('live');
       sendResize();
-      // Heartbeat — Cloudflare's edge will close idle WSs after ~100s.
+      // Idle heartbeat. Sandbox SDK doesn't define an app-level ping
+      // protocol, but CF's edge closes idle WS after ~100s. A null-byte
+      // keystroke is invisible to bash + keeps the path warm.
       clearInterval(pingTimer);
       pingTimer = setInterval(() => {
-        if (ws && ws.readyState === 1) ws.send('p');
+        if (ws && ws.readyState === 1) ws.send('\\x00');
       }, 30000);
     };
 
     ws.onmessage = (ev) => {
       const data = ev.data;
-      const markFirstByte = () => {
-        if (receivedFirstByte) return;
+      if (!receivedFirstByte) {
         receivedFirstByte = true;
         clearTimeout(coldStartTimer);
         const ms = Date.now() - connectStartedAt;
-        if (ms > 3000) term.writeln(\`\\x1b[36m· container ready (\${(ms / 1000).toFixed(1)}s)\\x1b[0m\`);
-      };
+        if (ms > 3000) term.writeln(\`\\x1b[36m· sandbox ready (\${(ms / 1000).toFixed(1)}s)\\x1b[0m\`);
+      }
+      // Sandbox writes raw terminal output as either binary (Uint8Array)
+      // or text. We hand the bytes straight to xterm — no opcode parsing.
       if (typeof data === 'string') {
-        if (data.length < 1) return;
-        const op = data[0];
-        const payload = data.slice(1);
-        if (op === 'o' || op === 'm' || op === 'E') {
-          markFirstByte();
-          term.write(payload);
-          if (op === 'E') term.writeln('\\x1b[31m[bridge error]\\x1b[0m');
-          return;
-        }
-        if (op === 'e') {
-          term.writeln('\\x1b[33m· pty exited\\x1b[0m');
-          setState('idle');
-          return;
-        }
-        if (op === 'P') return; // pong
+        term.write(data);
       } else if (data instanceof ArrayBuffer) {
-        // Binary frame — first byte opcode, rest payload.
-        const arr = new Uint8Array(data);
-        if (arr.length < 1) return;
-        const op = String.fromCharCode(arr[0]);
-        const payload = arr.slice(1);
-        const dec = new TextDecoder('utf-8', { fatal: false });
-        if (op === 'o' || op === 'm' || op === 'E') {
-          markFirstByte();
-          term.write(dec.decode(payload));
-          return;
-        }
+        term.write(new Uint8Array(data));
       }
     };
 
@@ -2916,10 +2899,10 @@ async function mountShell() {
     };
   }
 
-  // Pipe local input → ws ('i' opcode + UTF-8 bytes).
+  // Pipe local input → ws as raw UTF-8 (no opcode prefix).
   term.onData((data) => {
     if (!ws || ws.readyState !== 1) return;
-    ws.send('i' + data);
+    ws.send(data);
   });
 
   // Resize on window resize + refit.

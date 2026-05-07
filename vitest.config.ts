@@ -15,7 +15,12 @@ export default defineConfig({
   resolve: {
     alias: {
       "cloudflare:email": fileURLToPath(new URL("./test/stubs/cloudflare-email.ts", import.meta.url)),
-      "cloudflare:workers": fileURLToPath(new URL("./test/stubs/cloudflare-workers.ts", import.meta.url))
+      "cloudflare:workers": fileURLToPath(new URL("./test/stubs/cloudflare-workers.ts", import.meta.url)),
+      // @cloudflare/sandbox transitively imports @cloudflare/containers
+      // whose extension-less ESM exports don't resolve in plain Node. We
+      // stub it for tests; the real package only matters in the Worker
+      // runtime where wrangler injects its own resolver.
+      "@cloudflare/sandbox": fileURLToPath(new URL("./test/stubs/cloudflare-sandbox.ts", import.meta.url))
     }
   },
   test: {

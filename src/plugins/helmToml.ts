@@ -35,6 +35,7 @@ import type { AgentPlugin, PluginContext, PluginResult } from "../core/plugin";
 import type { Env } from "../types";
 import { AppError } from "../core/errors";
 import { resolveShellSession } from "./helmShellSession";
+import { execInSandbox } from "../sandbox";
 
 interface ExecResult {
   ok: boolean;
@@ -87,26 +88,12 @@ export class HelmTomlPlugin implements AgentPlugin {
   ): Promise<ExecResult> {
     if (!this.ctx) throw new AppError("E_NOT_INIT", "plugin not initialized", 500);
     const env = this.ctx.env as Env;
-    if (!env.SHELL_CONTAINER) {
-      return { ok: false, stderr: "SHELL_CONTAINER binding missing — redeploy with v0.8+", code: -1 };
-    }
     // Default session matches the user's browser shell — derived from
     // env.AGENT_OWNER_EMAIL via the same FNV-1a hash /shell/ws uses.
     // So when the user `git clone`s in their browser tab, helm-toml-*
     // sees the files (same /workspace).
-    const sessionName = resolveShellSession(env, sessionOverride);
-    const stub = env.SHELL_CONTAINER.get(env.SHELL_CONTAINER.idFromName(sessionName));
-    const resp = await stub.fetch(
-      new Request("https://shell-do/exec", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ cmd, cwd, timeoutMs })
-      })
-    );
-    if (!resp.ok) {
-      return { ok: false, stderr: `exec proxy failed (${resp.status})`, code: -1 };
-    }
-    return (await resp.json()) as ExecResult;
+    const sessionId = resolveShellSession(env, sessionOverride);
+    return execInSandbox(env, cmd, { cwd, timeoutMs, sessionId });
   }
 
   /**

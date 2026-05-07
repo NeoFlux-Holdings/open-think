@@ -111,13 +111,23 @@ export interface SubscriptionPersistInput {
  * provided, we fall back to a working alternative + return a `warning`
  * the caller surfaces in the deploy log.
  *
+ * IMPORTANT — Workers AI catalog reality (May 2026):
+ *   Cloudflare Workers AI does NOT ship `@cf/moonshotai/kimi-k2.6`. The
+ *   actual catalogued moonshot model id varies (sometimes k2.5, sometimes
+ *   not at all). Sending a non-existent id returns CF Gateway code 2019
+ *   "Chat completion bad format" which broke chat on tomtom-claude.
+ *   The Workers AI fallback now points at a model we know is in every
+ *   account's catalog: `@cf/meta/llama-3.3-70b-instruct-fp8-fast`.
+ *   The "kimi-k2.6" preset still works as advertised when an OpenRouter
+ *   key is pasted (OpenRouter mirrors Moonshot's own API).
+ *
  * Examples:
- *   preset=kimi-k2.6,  hasOR=true              → "moonshotai/kimi-k2.6" (OR direct, lower latency)
- *   preset=kimi-k2.6,  hasOR=false, hasAIG=true → "workers-ai/@cf/moonshotai/kimi-k2.6" (free)
+ *   preset=kimi-k2.6,  hasOR=true              → "moonshotai/kimi-k2.6" (OR direct)
+ *   preset=kimi-k2.6,  hasOR=false, hasAIG=true → "workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast" + warning
  *   preset=opus-4.7,   hasAnth=true             → "claude-opus-4-7" (Anthropic direct)
  *   preset=opus-4.7,   hasOR=true               → "anthropic/claude-opus-4-7" (via OR)
  *   preset=gpt-5.5,    hasOR=true               → "openai/gpt-5.5"
- *   preset=gpt-5.5,    !hasOR                   → fallback to Kimi via gateway + warning
+ *   preset=gpt-5.5,    !hasOR                   → fallback to Llama via gateway + warning
  */
 export function resolveModelPreset(input: {
   preset?: "kimi-k2.6" | "gpt-5.5" | "opus-4.7" | "sonnet-4.6" | "custom";
@@ -128,9 +138,11 @@ export function resolveModelPreset(input: {
   hasAnthropic: boolean;
   hasAiGateway: boolean;
 }): { modelId: string; warning?: string } {
-  const fallbackKimi = input.hasAiGateway
-    ? "workers-ai/@cf/moonshotai/kimi-k2.6"
-    : "@cf/moonshotai/kimi-k2.6";
+  // Workers AI's reliable always-in-catalog default. We used to point at
+  // Kimi K2.6 here but CF doesn't ship that id; see the docblock above.
+  const workersAiFallback = input.hasAiGateway
+    ? "workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+    : "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 
   // Custom branch: trust the user's input verbatim. They picked the
   // advanced path; let them pin whatever id they want.
@@ -139,34 +151,38 @@ export function resolveModelPreset(input: {
       return { modelId: input.customModelId.trim() };
     }
     return {
-      modelId: fallbackKimi,
-      warning: "Custom model selected but no id provided — falling back to Kimi K2.6 via Workers AI."
+      modelId: workersAiFallback,
+      warning: "Custom model selected but no id provided — falling back to Llama 3.3 70B via Workers AI."
     };
   }
 
   // No preset specified: respect the legacy openRouterDefaultModel
   // field first (older clients that hadn't migrated to presets), then
-  // fall through to Kimi.
+  // fall through to Llama 3.3 (the reliable Workers AI default).
   if (input.preset === undefined) {
     if (input.legacyOpenRouterModel && input.hasOpenRouter) {
       return { modelId: input.legacyOpenRouterModel };
     }
     if (input.hasOpenRouter) return { modelId: "moonshotai/kimi-k2.6" };
-    return { modelId: fallbackKimi };
+    return { modelId: workersAiFallback };
   }
 
-  // Kimi K2.6: prefer OR direct (lower latency, better caching) when a
-  // key is pasted; otherwise the free CF Workers AI path.
+  // Kimi K2.6: prefer OR direct (the only place k2.6 actually exists);
+  // otherwise warn that we're falling back since CF Workers AI doesn't
+  // catalogue this model.
   if (input.preset === "kimi-k2.6") {
     if (input.hasOpenRouter) return { modelId: "moonshotai/kimi-k2.6" };
-    return { modelId: fallbackKimi };
+    return {
+      modelId: workersAiFallback,
+      warning: "Kimi K2.6 needs an OpenRouter API key (Cloudflare Workers AI doesn't catalogue this exact id, which surfaces as code 2019 'Chat completion bad format'). Falling back to Llama 3.3 70B via Workers AI — paste an OpenRouter key + re-deploy to switch."
+    };
   }
 
   if (input.preset === "gpt-5.5") {
     if (input.hasOpenRouter) return { modelId: "openai/gpt-5.5" };
     return {
-      modelId: fallbackKimi,
-      warning: "GPT-5.5 needs an OpenRouter API key (we don't ship a direct-OpenAI provider yet). Falling back to Kimi K2.6 via Workers AI for now — paste an OpenRouter key + re-deploy to switch."
+      modelId: workersAiFallback,
+      warning: "GPT-5.5 needs an OpenRouter API key (we don't ship a direct-OpenAI provider yet). Falling back to Llama 3.3 70B via Workers AI for now — paste an OpenRouter key + re-deploy to switch."
     };
   }
 
@@ -174,8 +190,8 @@ export function resolveModelPreset(input: {
     if (input.hasAnthropic) return { modelId: "claude-opus-4-7" };
     if (input.hasOpenRouter) return { modelId: "anthropic/claude-opus-4-7" };
     return {
-      modelId: fallbackKimi,
-      warning: "Claude Opus 4.7 needs an Anthropic or OpenRouter API key. Falling back to Kimi K2.6 via Workers AI."
+      modelId: workersAiFallback,
+      warning: "Claude Opus 4.7 needs an Anthropic or OpenRouter API key. Falling back to Llama 3.3 70B via Workers AI."
     };
   }
 
@@ -183,8 +199,8 @@ export function resolveModelPreset(input: {
     if (input.hasAnthropic) return { modelId: "claude-sonnet-4-6" };
     if (input.hasOpenRouter) return { modelId: "anthropic/claude-sonnet-4-6" };
     return {
-      modelId: fallbackKimi,
-      warning: "Claude Sonnet 4.6 needs an Anthropic or OpenRouter API key. Falling back to Kimi K2.6 via Workers AI."
+      modelId: workersAiFallback,
+      warning: "Claude Sonnet 4.6 needs an Anthropic or OpenRouter API key. Falling back to Llama 3.3 70B via Workers AI."
     };
   }
 
@@ -192,7 +208,7 @@ export function resolveModelPreset(input: {
   if (input.legacyOpenRouterModel && input.hasOpenRouter) {
     return { modelId: input.legacyOpenRouterModel };
   }
-  return { modelId: fallbackKimi };
+  return { modelId: workersAiFallback };
 }
 
 function step(
@@ -1002,10 +1018,13 @@ async function runDirectDeploy(input: DirectDeployInput): Promise<DirectDeployRe
   // Workers AI) lives there now so the deploy form can also surface a
   // warning step when the user picks a model their key can't reach.
   const hasAiGateway = !!input.aiGatewayId;
+  // Same Workers AI fallback as resolveModelPreset — Llama 3.3 70B is
+  // catalogued in every CF account; @cf/moonshotai/kimi-k2.6 is not and
+  // returns code 2019.
   const modelDefault = input.modelDefault
     ?? (hasAiGateway
-      ? "workers-ai/@cf/moonshotai/kimi-k2.6"
-      : "@cf/moonshotai/kimi-k2.6");
+      ? "workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+      : "@cf/meta/llama-3.3-70b-instruct-fp8-fast");
   // ENABLED_PLUGINS must list ONLY plugin ids the published bundle
   // actually contains. The runtime throws E_PLUGIN_UNKNOWN on bootstrap
   // if it sees an enabled id with no registered plugin (older bundles
@@ -1080,10 +1099,10 @@ async function runDirectDeploy(input: DirectDeployInput): Promise<DirectDeployRe
     vars.AI_GATEWAY_ID = input.aiGatewayId;
     vars.CLOUDFLARE_ACCOUNT_ID = input.accountId;
   }
-  // Helm Shell + helm REPL bindings. The ShellContainerDO forwards these
-  // into the container as env vars. With them set, the in-shell `helm`
-  // command can call back into the Worker with bearer auth, and (if a
-  // bucket exists) rclone-mounts /persist for cross-session files.
+  // Helm Shell + helm REPL bindings. The Sandbox DO forwards these into
+  // the sandbox container as env vars. With them set, the in-shell
+  // `helm` command can call back into the Worker with bearer auth, and
+  // (if a bucket exists) rclone-mounts /persist for cross-session files.
   //
   //   HELM_WORKER_HOST  — public hostname; the container uses this for
   //                       its callback URL. Public info, plain_text.
@@ -1330,11 +1349,14 @@ export function composeWranglerToml(input: WranglerComposeInput): string {
   // (cf-* skills, helm-setup-deploy, helm-artifacts-* etc.). That needs
   // ENABLED_PLUGINS to include the full self-admin stack and ALLOWED_HOSTS
   // to be non-empty (or the Worker errors on every request).
-  // Default to Kimi K2.6 (free via Workers AI) for the local-fallback
-  // wrangler.toml. Users with an OpenRouter key can pin a specific model
-  // by editing this line — the runtime resolves provider precedence
-  // independently of the model id format.
-  const modelDefault = input.openRouterDefaultModel ?? "@cf/moonshotai/kimi-k2.6";
+  // Default to Llama 3.3 70B FP8 Fast (free via Workers AI, always
+  // catalogued in every CF account) for the local-fallback wrangler.toml.
+  // We avoided @cf/moonshotai/kimi-k2.6 here because CF doesn't publish
+  // that exact id and the runtime gets back AI Gateway code 2019. Users
+  // with an OpenRouter key can pin moonshotai/kimi-k2.6 (or any other
+  // model) by editing this line — the runtime resolves provider
+  // precedence independently of the model id format.
+  const modelDefault = input.openRouterDefaultModel ?? "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
   lines.push(`MODEL_DEFAULT = "${modelDefault}"`);
   lines.push(
     // Keep in sync with the runtime defaults in deployFlow runDirectDeploy.

@@ -1,106 +1,16 @@
-# Helm Shell — Cloudflare-Container-hosted bash, fronted by a Node WS↔PTY
-# bridge. Two-stage build keeps the final image small (~150 MB) by leaving
-# the C++ toolchain in the builder.
+# Helm Sandbox image — extends Cloudflare's official sandbox base.
 #
-# Persistence: when R2_* env vars are set, /persist is rclone-mounted to
-# the configured R2 bucket. /workspace stays ephemeral (fast, disposable).
-# Helper scripts ship in PATH:
-#   helm-save  — tar+gzip /workspace into /persist/sessions/<id>/
-#   helm-load  — restore the latest snapshot
-#   helm-fetch — pull a file from the user's Files tab into /workspace
-#   helm-clone — mint an Artifacts token + clone the canonical repo
-#   helm       — send a prompt to the Worker's conductor and stream the
-#                response back (uses HELM_INTERNAL_TOKEN auth)
+# The Sandbox SDK ships a turnkey Linux environment (bash, git, curl,
+# python, node, ffmpeg, etc.) plus the PTY/exec/file-watch protocol the
+# Worker-side @cloudflare/sandbox SDK speaks to. Versioning is pinned
+# so a new SDK release doesn't change container behavior under us.
+#
+# `wrangler deploy` builds + pushes this from CF's remote builder; no
+# local Docker daemon required. To customize (e.g. install extra tools,
+# bake in helm REPL helpers like `helm fetch`/`helm save`), add RUN
+# layers BELOW this line. Keep the FROM pinned.
+FROM docker.io/cloudflare/sandbox:0.10.0
 
-# ---- builder: compile node-pty + native deps ---------------------------
-FROM node:22-alpine AS builder
-RUN apk add --no-cache python3 make g++ build-base
-WORKDIR /opt/shell
-COPY package.json package-lock.json* ./
-RUN npm install --omit=dev --no-audit --no-fund
-
-# ---- runtime ----------------------------------------------------------
-FROM node:22-alpine
-
-# System tools every Helm operator wants. `fuse` + `rclone` enable the
-# /persist mount; `tar`/`gzip` are for helm-save snapshots; `jq`/`curl`
-# back the `helm` REPL.
-RUN apk add --no-cache \
-    bash \
-    git \
-    curl \
-    jq \
-    less \
-    vim \
-    htop \
-    tmux \
-    ncurses \
-    openssh-client \
-    python3 \
-    py3-pip \
-    ca-certificates \
-    fuse \
-    rclone \
-    tar \
-    gzip \
-    sudo \
-    tini \
-    github-cli \
-    && rm -rf /var/cache/apk/*
-
-# `wrangler` is a Node CLI; install globally so it's in PATH for the
-# helm user. We put it in /opt/wrangler so it survives the user-switch.
-# `--ignore-scripts` skips post-install hooks we don't need (Cloudflare's
-# notification banner) and trims a few hundred ms off the build.
-RUN npm install --prefix /opt/wrangler --omit=dev --no-audit --no-fund \
-      --ignore-scripts wrangler@latest \
-    && ln -s /opt/wrangler/node_modules/.bin/wrangler /usr/local/bin/wrangler \
-    && npm cache clean --force
-
-# Allow non-root user to use FUSE (needed for rclone mount inside the
-# helm user's session). `user_allow_other` is intentionally NOT set so
-# the mount is private to the helm user.
-RUN echo "user_allow_other" > /etc/fuse.conf
-
-# Non-root user. uid 1100 is arbitrary; just away from the Alpine defaults.
-RUN addgroup -g 1100 helm \
-    && adduser -D -u 1100 -G helm -s /bin/bash -h /workspace helm \
-    && mkdir -p /workspace /persist /opt/shell \
-    && chown -R helm:helm /workspace /persist /opt/shell
-
-# Bring the prebuilt node-pty over from the builder. Saves ~250 MB and
-# ~30 s by not recompiling at runtime.
-COPY --from=builder /opt/shell/node_modules /opt/shell/node_modules
-COPY package.json server.mjs motd.txt /opt/shell/
-
-# Helper scripts. We copy as root so they end up 0755 owned by root —
-# users can run but not modify.
-COPY entrypoint.sh /usr/local/bin/entrypoint
-COPY helm-save /usr/local/bin/helm-save
-COPY helm-load /usr/local/bin/helm-load
-COPY helm-fetch /usr/local/bin/helm-fetch
-COPY helm-clone /usr/local/bin/helm-clone
-COPY helm /usr/local/bin/helm
-RUN chmod +x /usr/local/bin/entrypoint \
-    /usr/local/bin/helm-save \
-    /usr/local/bin/helm-load \
-    /usr/local/bin/helm-fetch \
-    /usr/local/bin/helm-clone \
-    /usr/local/bin/helm \
-    && chown -R helm:helm /opt/shell
-
-ENV NODE_ENV=production \
-    SHELL=/bin/bash \
-    LANG=C.UTF-8 \
-    TERM=xterm-256color \
-    HELM_SHELL_PORT=7681 \
-    PATH=/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin
-
-EXPOSE 7681
-USER helm
-WORKDIR /workspace
-
-# `tini` reaps zombies (interactive shells fork heavily) and forwards
-# signals so SIGTERM from the CF scheduler shuts the bridge down cleanly.
-ENTRYPOINT ["/sbin/tini", "--"]
-CMD ["/usr/local/bin/entrypoint"]
+# Sandbox's HTTP/PTY bridge listens on 8080. Documenting it for clarity;
+# CF doesn't enforce EXPOSE but it's standard Docker convention.
+EXPOSE 8080

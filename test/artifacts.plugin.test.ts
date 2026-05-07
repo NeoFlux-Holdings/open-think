@@ -1,4 +1,36 @@
 import { describe, expect, it, vi } from "vitest";
+
+// Mock execInSandbox before importing anything that uses it. The
+// artifacts plugin's exec() goes through this helper; we inject a
+// per-test handler via the global below so each test can specify
+// what `git`, `cat`, etc. should return without spinning up a real
+// Sandbox container.
+let __sandboxExecHandler: ((cmd: string, options?: { cwd?: string }) => {
+  ok?: boolean;
+  stdout?: string;
+  stderr?: string;
+  code?: number;
+}) | null = null;
+vi.mock("../src/sandbox", () => ({
+  execInSandbox: async (
+    _env: unknown,
+    cmd: string,
+    options: { cwd?: string; timeoutMs?: number; sessionId?: string } = {}
+  ) => {
+    if (!__sandboxExecHandler) {
+      return { ok: true, stdout: "", stderr: "", code: 0, durationMs: 1 };
+    }
+    const r = __sandboxExecHandler(cmd, options);
+    return {
+      ok: r.ok ?? true,
+      stdout: r.stdout ?? "",
+      stderr: r.stderr ?? "",
+      code: r.code ?? 0,
+      durationMs: 1
+    };
+  }
+}));
+
 import { HelmArtifactsPlugin } from "../src/plugins/artifacts";
 
 function baseConfig() {
@@ -30,29 +62,21 @@ function envOk(extra: Record<string, unknown> = {}) {
 }
 
 /**
- * Single shared shell-mock so `env.SHELL_CONTAINER.get(...).fetch` always
- * routes through the same dispatch table. The DO API needs a fresh stub
- * per `get()` call, but the underlying fetch impl is shared.
+ * Register a per-test handler for sandbox exec calls. Under the new
+ * Sandbox SDK there's no DurableObjectNamespace to mock; the artifacts
+ * plugin calls `execInSandbox()` which we hijack via vi.mock at the
+ * top of this file. This helper just stores the handler so the mock
+ * impl can dispatch to it on each call.
+ *
+ * Side effect only — no return value. Tests no longer need to set
+ * `SHELL_CONTAINER:` (or `Sandbox:`) on the env they pass into
+ * `plugin.initialize()`; the mock short-circuits before any binding
+ * lookup happens.
  */
-function mockShellContainer(handler: (cmd: string) => { stdout?: string; stderr?: string; ok?: boolean; code?: number }) {
-  const fetchMock = vi.fn(async (request: Request) => {
-    const body = (await request.json()) as { cmd: string; cwd?: string };
-    const r = handler(body.cmd);
-    return new Response(
-      JSON.stringify({
-        ok: r.ok ?? true,
-        stdout: r.stdout ?? "",
-        stderr: r.stderr ?? "",
-        code: r.code ?? 0,
-        durationMs: 1
-      }),
-      { headers: { "content-type": "application/json" } }
-    );
-  });
-  return {
-    idFromName: () => ({ toString: () => "id" }),
-    get: () => ({ fetch: fetchMock as unknown as typeof globalThis.fetch })
-  };
+function mockShellContainer(
+  handler: (cmd: string) => { stdout?: string; stderr?: string; ok?: boolean; code?: number }
+): void {
+  __sandboxExecHandler = handler;
 }
 
 describe("HelmArtifactsPlugin", () => {
@@ -261,7 +285,7 @@ describe("HelmArtifactsPlugin", () => {
       throw new Error("unexpected: " + url);
     });
 
-    const shell = mockShellContainer((cmd) => {
+    mockShellContainer((cmd) => {
       if (cmd.includes("[ -d '/workspace/tomtom/.git' ]")) return { stdout: "CLONED" };
       if (cmd.startsWith("git remote set-url origin")) return { stdout: "" };
       if (/git -c http\.extraHeader.*pull --ff-only/.test(cmd)) return { stdout: "Already up to date." };
@@ -273,10 +297,7 @@ describe("HelmArtifactsPlugin", () => {
     await plugin.initialize({
       config: baseConfig(),
       fetch: fetchMock as unknown as typeof globalThis.fetch,
-      env: {
-        ...env,
-        SHELL_CONTAINER: shell as unknown as DurableObjectNamespace
-      } as unknown as Parameters<HelmArtifactsPlugin["initialize"]>[0]["env"]
+      env: env as unknown as Parameters<HelmArtifactsPlugin["initialize"]>[0]["env"]
     });
     const r = await plugin.invoke("sync-toml", { scriptName: "tomtom" });
     expect(r.ok).toBe(true);
@@ -315,7 +336,7 @@ describe("HelmArtifactsPlugin", () => {
     });
 
     const writes: string[] = [];
-    const shell = mockShellContainer((cmd) => {
+    mockShellContainer((cmd) => {
       if (cmd.includes("[ -d '/workspace/tomtom/.git' ]")) return { stdout: "CLONED" };
       if (cmd.startsWith("git remote set-url origin")) return { stdout: "" };
       if (/git -c http\.extraHeader.*pull --ff-only/.test(cmd)) return { stdout: "Already up to date." };
@@ -338,10 +359,7 @@ describe("HelmArtifactsPlugin", () => {
     await plugin.initialize({
       config: baseConfig(),
       fetch: fetchMock as unknown as typeof globalThis.fetch,
-      env: {
-        ...env,
-        SHELL_CONTAINER: shell as unknown as DurableObjectNamespace
-      } as unknown as Parameters<HelmArtifactsPlugin["initialize"]>[0]["env"]
+      env: env as unknown as Parameters<HelmArtifactsPlugin["initialize"]>[0]["env"]
     });
     const r = await plugin.invoke("sync-toml", { apply: true, scriptName: "tomtom" });
     expect(r.ok).toBe(true);
@@ -398,7 +416,7 @@ describe("HelmArtifactsPlugin", () => {
         throw new Error("unexpected: " + url);
       });
 
-      const shell = mockShellContainer((cmd) => {
+      mockShellContainer((cmd) => {
         if (cmd.includes("[ -d '/workspace/tomtom/.git' ]")) return { stdout: "CLONED" };
         if (cmd.startsWith("git remote set-url origin")) return { stdout: "" };
         if (/git -c http\.extraHeader.*pull --ff-only/.test(cmd)) return { stdout: "Already up to date." };
@@ -410,10 +428,7 @@ describe("HelmArtifactsPlugin", () => {
       await plugin.initialize({
         config: baseConfig(),
         fetch: fetchMock as unknown as typeof globalThis.fetch,
-        env: {
-          ...env,
-          SHELL_CONTAINER: shell as unknown as DurableObjectNamespace
-        } as unknown as Parameters<HelmArtifactsPlugin["initialize"]>[0]["env"]
+        env: env as unknown as Parameters<HelmArtifactsPlugin["initialize"]>[0]["env"]
       });
       const r = await plugin.invoke("reconcile", { scriptName: "tomtom" });
       expect(r.ok).toBe(true);
@@ -453,7 +468,7 @@ describe("HelmArtifactsPlugin", () => {
       });
 
       const writes: string[] = [];
-      const shell = mockShellContainer((cmd) => {
+      mockShellContainer((cmd) => {
         if (cmd.includes("[ -d '/workspace/tomtom/.git' ]")) return { stdout: "CLONED" };
         if (cmd.startsWith("git remote set-url origin")) return { stdout: "" };
         if (/git -c http\.extraHeader.*pull --ff-only/.test(cmd)) return { stdout: "Already up to date." };
@@ -476,10 +491,7 @@ describe("HelmArtifactsPlugin", () => {
       await plugin.initialize({
         config: baseConfig(),
         fetch: fetchMock as unknown as typeof globalThis.fetch,
-        env: {
-          ...env,
-          SHELL_CONTAINER: shell as unknown as DurableObjectNamespace
-        } as unknown as Parameters<HelmArtifactsPlugin["initialize"]>[0]["env"]
+        env: env as unknown as Parameters<HelmArtifactsPlugin["initialize"]>[0]["env"]
       });
       // skipDeploy:true so we only exercise the worker→artifacts branch.
       const r = await plugin.invoke("reconcile", { scriptName: "tomtom", skipDeploy: true });
@@ -516,7 +528,7 @@ describe("HelmArtifactsPlugin", () => {
         }
         throw new Error("unexpected: " + url);
       });
-      const shell = mockShellContainer((cmd) => {
+      mockShellContainer((cmd) => {
         if (cmd.includes("[ -d '/workspace/tomtom/.git' ]")) return { stdout: "CLONED" };
         if (cmd.startsWith("git remote set-url origin")) return { stdout: "" };
         if (/git -c http\.extraHeader.*pull --ff-only/.test(cmd)) return { stdout: "Already up to date." };
@@ -530,10 +542,7 @@ describe("HelmArtifactsPlugin", () => {
       await plugin.initialize({
         config: baseConfig(),
         fetch: fetchMock as unknown as typeof globalThis.fetch,
-        env: {
-          ...env,
-          SHELL_CONTAINER: shell as unknown as DurableObjectNamespace
-        } as unknown as Parameters<HelmArtifactsPlugin["initialize"]>[0]["env"]
+        env: env as unknown as Parameters<HelmArtifactsPlugin["initialize"]>[0]["env"]
       });
       const r = await plugin.invoke("deploy", { scriptName: "tomtom" });
       expect(r.ok).toBe(true);
@@ -555,7 +564,7 @@ describe("HelmArtifactsPlugin", () => {
         if (url.endsWith("/secrets")) secretCalls += 1;
         return jsonResponse({ success: true });
       });
-      const shell = mockShellContainer((cmd) => {
+      mockShellContainer((cmd) => {
         if (cmd.includes("[ -d '/workspace/tomtom/.git' ]")) return { stdout: "CLONED" };
         if (cmd.startsWith("git remote set-url origin")) return { stdout: "" };
         if (/pull --ff-only/.test(cmd)) return { stdout: "Already up to date." };
@@ -566,10 +575,7 @@ describe("HelmArtifactsPlugin", () => {
       await plugin.initialize({
         config: baseConfig(),
         fetch: fetchMock as unknown as typeof globalThis.fetch,
-        env: {
-          ...env,
-          SHELL_CONTAINER: shell as unknown as DurableObjectNamespace
-        } as unknown as Parameters<HelmArtifactsPlugin["initialize"]>[0]["env"]
+        env: env as unknown as Parameters<HelmArtifactsPlugin["initialize"]>[0]["env"]
       });
       const r = await plugin.invoke("deploy", {
         scriptName: "tomtom",
@@ -583,7 +589,7 @@ describe("HelmArtifactsPlugin", () => {
   describe("pull-upstream", () => {
     it("dry-run reports behindBy/aheadBy without merging", async () => {
       const env = envOk({ ARTIFACTS_TOKEN: "art_v1_pretoken?expires=99999999999" });
-      const shell = mockShellContainer((cmd) => {
+      mockShellContainer((cmd) => {
         if (cmd.includes("[ -d '/workspace/tomtom/.git' ]")) return { stdout: "CLONED" };
         if (cmd.startsWith("git remote set-url origin")) return { stdout: "" };
         if (/pull --ff-only/.test(cmd)) return { stdout: "Already up to date." };
@@ -597,10 +603,7 @@ describe("HelmArtifactsPlugin", () => {
       await plugin.initialize({
         config: baseConfig(),
         fetch: globalThis.fetch,
-        env: {
-          ...env,
-          SHELL_CONTAINER: shell as unknown as DurableObjectNamespace
-        } as unknown as Parameters<HelmArtifactsPlugin["initialize"]>[0]["env"]
+        env: env as unknown as Parameters<HelmArtifactsPlugin["initialize"]>[0]["env"]
       });
       const r = await plugin.invoke("pull-upstream", { apply: false });
       expect(r.ok).toBe(true);
@@ -619,7 +622,7 @@ describe("HelmArtifactsPlugin", () => {
     it("clean merge pushes to Artifacts and reports success", async () => {
       const env = envOk({ ARTIFACTS_TOKEN: "art_v1_pretoken?expires=99999999999" });
       const allCmds: string[] = [];
-      const shell = mockShellContainer((cmd) => {
+      mockShellContainer((cmd) => {
         allCmds.push(cmd);
         if (cmd.includes("[ -d '/workspace/tomtom/.git' ]")) return { stdout: "CLONED" };
         if (cmd.startsWith("git remote set-url origin")) return { stdout: "" };
@@ -640,10 +643,7 @@ describe("HelmArtifactsPlugin", () => {
       await plugin.initialize({
         config: baseConfig(),
         fetch: globalThis.fetch,
-        env: {
-          ...env,
-          SHELL_CONTAINER: shell as unknown as DurableObjectNamespace
-        } as unknown as Parameters<HelmArtifactsPlugin["initialize"]>[0]["env"]
+        env: env as unknown as Parameters<HelmArtifactsPlugin["initialize"]>[0]["env"]
       });
       const r = await plugin.invoke("pull-upstream", {});
       // allCmds is captured for ad-hoc debugging during development
@@ -666,7 +666,7 @@ describe("HelmArtifactsPlugin", () => {
     it("up-to-date short-circuits without checkout/merge/push", async () => {
       const env = envOk({ ARTIFACTS_TOKEN: "art_v1_pretoken?expires=99999999999" });
       let mergeAttempts = 0;
-      const shell = mockShellContainer((cmd) => {
+      mockShellContainer((cmd) => {
         if (cmd.includes("[ -d '/workspace/tomtom/.git' ]")) return { stdout: "CLONED" };
         if (cmd.startsWith("git remote set-url origin")) return { stdout: "" };
         if (/pull --ff-only/.test(cmd)) return { stdout: "Already up to date." };
@@ -684,10 +684,7 @@ describe("HelmArtifactsPlugin", () => {
       await plugin.initialize({
         config: baseConfig(),
         fetch: globalThis.fetch,
-        env: {
-          ...env,
-          SHELL_CONTAINER: shell as unknown as DurableObjectNamespace
-        } as unknown as Parameters<HelmArtifactsPlugin["initialize"]>[0]["env"]
+        env: env as unknown as Parameters<HelmArtifactsPlugin["initialize"]>[0]["env"]
       });
       const r = await plugin.invoke("pull-upstream", {});
       expect(r.ok).toBe(true);
@@ -701,7 +698,7 @@ describe("HelmArtifactsPlugin", () => {
       const env = envOk({ ARTIFACTS_TOKEN: "art_v1_pretoken?expires=99999999999" });
       let abortCalls = 0;
       const allCmds: string[] = [];
-      const shell = mockShellContainer((cmd) => {
+      mockShellContainer((cmd) => {
         allCmds.push(cmd);
         if (cmd.includes("[ -d '/workspace/tomtom/.git' ]")) return { stdout: "CLONED" };
         if (cmd.startsWith("git remote set-url origin")) return { stdout: "" };
@@ -732,10 +729,7 @@ describe("HelmArtifactsPlugin", () => {
       await plugin.initialize({
         config: baseConfig(),
         fetch: globalThis.fetch,
-        env: {
-          ...env,
-          SHELL_CONTAINER: shell as unknown as DurableObjectNamespace
-        } as unknown as Parameters<HelmArtifactsPlugin["initialize"]>[0]["env"]
+        env: env as unknown as Parameters<HelmArtifactsPlugin["initialize"]>[0]["env"]
       });
       const r = await plugin.invoke("pull-upstream", {});
       void allCmds; // captured for ad-hoc debug; intentionally unused.

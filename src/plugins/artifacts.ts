@@ -66,6 +66,7 @@ import {
   parseTomlBindings
 } from "./helmToml";
 import { resolveShellSession } from "./helmShellSession";
+import { execInSandbox } from "../sandbox";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -356,26 +357,8 @@ export class HelmArtifactsPlugin implements AgentPlugin {
     timeoutMs = 60_000
   ): Promise<ExecResult> {
     const env = this.env();
-    if (!env.SHELL_CONTAINER) {
-      return {
-        ok: false,
-        stderr: "SHELL_CONTAINER binding missing — redeploy with v0.8+",
-        code: -1
-      };
-    }
-    const sessionName = resolveShellSession(env);
-    const stub = env.SHELL_CONTAINER.get(env.SHELL_CONTAINER.idFromName(sessionName));
-    const resp = await stub.fetch(
-      new Request("https://shell-do/exec", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ cmd, cwd, timeoutMs })
-      })
-    );
-    if (!resp.ok) {
-      return { ok: false, stderr: `exec proxy failed (${resp.status})`, code: -1 };
-    }
-    return (await resp.json()) as ExecResult;
+    const sessionId = resolveShellSession(env);
+    return execInSandbox(env, cmd, { cwd, timeoutMs, sessionId });
   }
 
   /**

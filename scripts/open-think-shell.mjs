@@ -1,28 +1,41 @@
 #!/usr/bin/env node
 /**
- * Helm Shell CLI — terminal client for /shell/ws.
+ * Helm Shell CLI — DEPRECATED in v0.13.
  *
- * Two auth paths:
- *   1. Device-code login (default, recommended for humans)
- *      First run prints a URL + short code; you open it in a browser
- *      (Cloudflare Access gates the page so it knows who you are),
- *      click "Approve". CLI polls and saves the bearer to
- *      ~/.config/open-think/auth-<host>.json. Subsequent runs use it.
- *   2. Service-token / raw JWT (for ops + CI)
- *      Pass --service-token-id/--service-token-secret OR --cf-access-jwt.
+ * This CLI was built for the old custom Container/PTY bridge
+ * (docker/shell/server.mjs) which used a 1-byte-opcode framing
+ * protocol. As of v0.13 the Worker's /shell/ws endpoint delegates
+ * to Cloudflare Sandbox SDK's `session.terminal()` which speaks a
+ * different protocol:
  *
- * Usage:
- *   npm run shell -- --host helm.your-domain.workers.dev
- *   npm run shell -- --host localhost:8787 --insecure          # local dev
- *   npm run shell -- --host helm.example --logout               # forget cached bearer
- *   npm run shell -- --host helm.example --print-token          # show stored bearer
+ *   - Binary frames flow both ways (raw UTF-8 keystrokes ↔ raw
+ *     terminal output, no opcode prefix).
+ *   - Resize is JSON: `{ "type": "resize", "cols": N, "rows": N }`.
  *
- * Frame protocol (1-byte opcode + payload):
- *   client → server: i + bytes (stdin), r + JSON (resize), p (ping), S + name (signal)
- *   server → client: o + bytes (stdout), e + msg (exit), P (pong), m + bytes (motd), E + bytes (error)
+ * The CLI hasn't been ported. Use the in-browser terminal at
+ * /app#/shell instead — same xterm.js experience, no auth dance.
  *
- * See docker/shell/server.mjs for the bridge implementation.
+ * If you need a CLI badly enough to port this, the work is roughly:
+ *   1. Drop the 'i'/'o'/'r'/etc. opcode framing — send raw bytes.
+ *   2. Send resize as JSON text frames.
+ *   3. The device-code auth + bearer storage below still works.
+ *
+ * Original docs (left for reference):
+ *   - Two auth paths: device-code OR service-token / raw JWT.
+ *   - Old frame protocol:
+ *       client → server: i+bytes, r+JSON, p, S+name
+ *       server → client: o+bytes, e+msg, P, m+bytes, E+bytes
  */
+console.error(
+  "[open-think-shell] DEPRECATED in v0.13.\n" +
+  "  The /shell/ws endpoint now uses Cloudflare Sandbox SDK's terminal\n" +
+  "  protocol (raw binary + JSON resize) instead of the custom 'i'/'o'\n" +
+  "  framing this CLI speaks. Use the in-browser terminal at\n" +
+  "  /app#/shell instead.\n\n" +
+  "  See PR notes for porting guidance if you need this CLI back."
+);
+process.exit(2);
+/* eslint-disable */ /* original implementation kept below for reference */
 import { WebSocket } from "ws";
 import { argv, env, exit, stdin, stdout, stderr } from "node:process";
 import { parseArgs } from "node:util";

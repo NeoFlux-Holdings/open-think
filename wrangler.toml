@@ -118,20 +118,18 @@ class_name = "StreamHubDO"
 name = "CHAT_SESSIONS"
 class_name = "ChatSessionDO"
 
-# Helm Shell — Cloudflare-Container-backed bash session. One container
-# per session name; sleeps after 15m idle. Browser tab uses xterm.js;
-# CLI uses scripts/open-think-shell.mjs. Image built from docker/shell/.
+# Helm Shell — Cloudflare Sandbox SDK. Replaces the previous custom
+# Container/PTY bridge with Cloudflare's GA "agents have computers"
+# product. The Sandbox class is re-exported from `@cloudflare/sandbox`;
+# our Worker code routes /shell/ws to `session.terminal(request)` and
+# the SDK handles the WebSocket↔PTY plumbing entirely.
+#
+# The container image (./docker/shell/Dockerfile) is a one-line
+# `FROM cloudflare/sandbox:0.10.0` — `wrangler deploy` builds + pushes
+# it from CF's remote builder; no local Docker daemon required.
 [[durable_objects.bindings]]
-name = "SHELL_CONTAINER"
-class_name = "ShellContainerDO"
-
-# Singleton registry tracking active Helm Shell sessions. Lets /shell/list
-# return "who has a container alive right now" without enumerating the
-# whole DO namespace (CF doesn't support that). Always addressed via
-# idFromName("global").
-[[durable_objects.bindings]]
-name = "SHELL_REGISTRY"
-class_name = "ShellRegistryDO"
+name = "Sandbox"
+class_name = "Sandbox"
 
 # Singleton broker for the CLI device-code login flow. Tracks pending
 # (deviceCode, userCode) pairs + minted bearer tokens for the
@@ -142,15 +140,20 @@ name = "CLI_AUTH"
 class_name = "CliAuthDO"
 
 [[containers]]
-class_name = "ShellContainerDO"
+class_name = "Sandbox"
 image = "./docker/shell/Dockerfile"
-max_instances = 5
-# `basic` = 1/4 vCPU, 1 GiB RAM, 4 GB disk. Plenty for an interactive
-# bash session + git/curl/jq workloads. Bump to standard-1 if users
-# start running heavier toolchains (compile, ffmpeg, etc.).
-instance_type = "basic"
-name = "helm-shell"
+max_instances = 10
+# `lite` matches CF Sandbox's default + sandbox-sdk minimal example.
+# Bump to `standard-1` later if heavier workloads (compile, ffmpeg,
+# Playwright) become common.
+instance_type = "lite"
+name = "helm-sandbox"
 
+# Migration ladder. v1-v3 stay (AgentSessionDO + StreamHubDO + ChatSessionDO
+# are unchanged). v4-v6 from the old Container-shell era are GONE — fresh
+# installs deploy v1-v4 only. Existing deploys with v6 in their state
+# need a manual `wrangler deploy --delete-class ShellContainerDO,ShellRegistryDO`
+# (or a clean redeploy of a fresh-named Worker) before this lands.
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["AgentSessionDO"]
@@ -165,15 +168,7 @@ new_classes = ["ChatSessionDO"]
 
 [[migrations]]
 tag = "v4"
-new_sqlite_classes = ["ShellContainerDO"]
-
-[[migrations]]
-tag = "v5"
-new_sqlite_classes = ["ShellRegistryDO"]
-
-[[migrations]]
-tag = "v6"
-new_sqlite_classes = ["CliAuthDO"]
+new_sqlite_classes = ["Sandbox", "CliAuthDO"]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # OPTIONAL: PA stack bindings

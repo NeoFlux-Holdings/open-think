@@ -18,6 +18,7 @@ import {
 } from "./conductor-stream";
 import { handleConductorToolStream } from "./conductor-tool-stream";
 import { listMcpRollbackSupport } from "./rollback";
+import { getSandbox } from "@cloudflare/sandbox";
 import type { ConductorInput } from "./conductor";
 import { startDeviceCode, pollDeviceCode } from "./oauth/codexOauth";
 import { collectStatus, generateSnippet, guidedStart } from "./setup";
@@ -43,8 +44,12 @@ import type { Env, InvokeRequest } from "./types";
 export { AgentSessionDO } from "./durable/agentSession";
 export { StreamHubDO } from "./durable/streamHub";
 export { ChatSessionDO } from "./durable/chatSession";
-export { ShellContainerDO } from "./durable/shellContainer";
-export { ShellRegistryDO } from "./durable/shellRegistry";
+// Cloudflare Sandbox SDK exports its own Durable Object class. The
+// re-export here is what makes `class_name = "Sandbox"` in wrangler.toml
+// resolve. Replaces the previous ShellContainerDO + ShellRegistryDO
+// pair (Container-backed bash bridge + session registry) with CF's GA
+// "agents have computers" runtime — see /shell/ws below.
+export { Sandbox } from "@cloudflare/sandbox";
 export { CliAuthDO } from "./durable/cliAuth";
 export { MorningBriefingWorkflow } from "./workflows/morningBriefing";
 
@@ -120,6 +125,40 @@ function parseSkillInvokeRequest(payload: unknown): { input?: unknown } {
 
   const candidate = payload as Record<string, unknown>;
   return { input: candidate.input };
+}
+
+/**
+ * Resolve the per-user Sandbox session id for /shell/* requests.
+ *
+ * Priority:
+ *   1. `bodySession` — explicit override from POST /shell/exec body
+ *   2. `?session=` query param OR the trailing path segment
+ *      (`/shell/ws/<session>`)
+ *   3. FNV-1a hash of the authenticated email → "u-<8 hex>" — gives
+ *      each user a stable but DO-name-safe id that doesn't leak the
+ *      raw email through the Sandbox SDK's internal storage paths.
+ *
+ * The auth gate above /shell already verifies the caller, so this
+ * id is for namespacing not security.
+ */
+function resolveShellSessionId(
+  url: URL,
+  authEmail: string | undefined,
+  bodySession?: string
+): string {
+  if (bodySession && bodySession.trim()) return bodySession.trim();
+  const fromPath = url.pathname.startsWith("/shell/ws")
+    ? url.pathname.slice("/shell/ws".length).replace(/^\//, "")
+    : "";
+  const explicit = decodeURIComponent(fromPath || url.searchParams.get("session") || "");
+  if (explicit) return explicit;
+  const email = (authEmail ?? "anon").toLowerCase();
+  let h = 0x811c9dc5;
+  for (let i = 0; i < email.length; i++) {
+    h ^= email.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return `u-${h.toString(16).padStart(8, "0")}`;
 }
 
 async function proxyToSession(
@@ -384,20 +423,29 @@ async function handler(request: Request, env: Env, requestId: string, startedAt:
     return stub.fetch(forward);
   }
 
-  // Helm Shell — Cloudflare Container hosting bash, fronted by a tiny
-  // Node WebSocket↔PTY bridge (docker/shell/server.mjs). Browser uses
-  // xterm.js at /app#/shell; CLI uses scripts/open-think-shell.mjs.
-  // The container's `defaultPort` (7681) is fixed by the bridge and
-  // proxied transparently — we just hand the upgrade to the SDK and
-  // it routes WebSocket frames bidirectionally.
+  // Helm Shell — Cloudflare Sandbox SDK.
+  //
+  //   /shell/ws[/<session>]  WebSocket → interactive PTY (xterm.js compatible)
+  //   POST /shell/exec       one-shot command runner (helm-exec skill calls this)
+  //
+  // The Sandbox SDK does ALL the heavy lifting: PTY spawn, stdin/stdout
+  // framing, resize control, idle-shutdown, snapshots, file-system. We
+  // route the upgrade Request straight into `session.terminal(request)`
+  // and the SDK returns a Response with the WebSocket pair already
+  // wired to a bash session inside the container.
+  //
+  // Sessions are isolated per-email via an FNV-1a hash of the
+  // authenticated user's email — the auth gate above already enforces
+  // who can hit /shell at all, so the hash is for namespacing not
+  // security.
   if (url.pathname === "/shell/ws" || url.pathname.startsWith("/shell/ws/")) {
-    if (!env.SHELL_CONTAINER) {
+    if (!env.Sandbox) {
       return json(
         {
           ok: false,
           error:
-            "SHELL_CONTAINER binding missing. Add the [[containers]] block + [[durable_objects.bindings]] for ShellContainerDO from wrangler.toml and redeploy.",
-          code: "E_SHELL_CONTAINER_MISSING"
+            "Sandbox binding missing. Add the [[containers]] + [[durable_objects.bindings]] block for the Sandbox class from wrangler.toml (the deploy form does this automatically) and redeploy.",
+          code: "E_SANDBOX_BINDING_MISSING"
         },
         503,
         requestId
@@ -407,143 +455,70 @@ async function handler(request: Request, env: Env, requestId: string, startedAt:
     if (upgrade !== "websocket") {
       return new Response("expected websocket upgrade", { status: 426 });
     }
-    const fromPath = url.pathname.slice("/shell/ws".length).replace(/^\//, "");
-    const explicit = decodeURIComponent(fromPath || url.searchParams.get("session") || "");
-    // No explicit session → derive from authenticated email so each user
-    // gets their own isolated container. We keep the prefix "u-" so it's
-    // visually distinguishable from operator-named sessions and we hash
-    // rather than embed the raw email (case-folding + DO-name-safety).
-    let sessionName = explicit;
-    if (!sessionName) {
-      const email = (auth?.email ?? "anon").toLowerCase();
-      // FNV-1a 32-bit — small, deterministic, no crypto cost. Collision
-      // risk is fine here because the auth gate already isolates users.
-      let h = 0x811c9dc5;
-      for (let i = 0; i < email.length; i++) {
-        h ^= email.charCodeAt(i);
-        h = Math.imul(h, 0x01000193) >>> 0;
-      }
-      sessionName = `u-${h.toString(16).padStart(8, "0")}`;
+    const sessionId = resolveShellSessionId(url, auth?.email);
+    try {
+      const sandbox = getSandbox(env.Sandbox, "helm-shell");
+      const session = await sandbox.getSession(sessionId);
+      return await session.terminal(request);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return json(
+        { ok: false, error: `Sandbox terminal failed: ${msg}`, code: "E_SANDBOX_TERMINAL" },
+        500,
+        requestId
+      );
     }
-    const id = env.SHELL_CONTAINER.idFromName(sessionName);
-    const stub = env.SHELL_CONTAINER.get(id);
-    // Best-effort: register this session in the registry so the
-    // Sessions panel can list it. Don't await failure; the shell
-    // upgrade is the user-facing path and registry hiccups shouldn't
-    // block it.
-    if (env.SHELL_REGISTRY) {
-      const registry = env.SHELL_REGISTRY.get(env.SHELL_REGISTRY.idFromName("global"));
-      registry
-        .fetch(
-          new Request("https://reg/touch", {
-            method: "POST",
-            body: JSON.stringify({
-              session: sessionName,
-              email: auth?.email ?? "anon",
-              delta: 1
-            })
-          })
-        )
-        .catch(() => {});
-    }
-    // Container DO's fetch hands the request straight to the container's
-    // HTTP server (port 7681). The bridge accepts ANY path on upgrade.
-    const forward = new Request(
-      `https://shell-do/ws?session=${encodeURIComponent(sessionName)}`,
-      request
-    );
-    return stub.fetch(forward);
   }
 
-  // POST /shell/exec — one-shot bash command runner inside a per-user
-  // shell container. Same auth gate as the rest of /shell — the
-  // internal bearer or a CF Access JWT.
-  //
-  // Body: { cmd, cwd?, timeoutMs?, stdin?, session? }
-  // Returns: { ok, stdout, stderr, code, signal, durationMs, truncated, timedOut }
-  //
-  // The agent's helm-exec skill is the primary caller — lets the
-  // conductor run `git clone`, `sed`, `wrangler deploy`, etc. without
-  // a persistent terminal. Output is capped at 256 KB so a runaway
-  // process doesn't dump megabytes of logs into the agent's context.
+  // POST /shell/exec — one-shot bash command via Sandbox's exec API.
+  // Replaces the old container-bridge /exec endpoint. Helm-exec skill
+  // is the primary caller. Body: { cmd, cwd?, timeoutMs?, session? }.
   if (request.method === "POST" && url.pathname === "/shell/exec") {
-    if (!env.SHELL_CONTAINER) {
-      return json({ ok: false, error: "SHELL_CONTAINER binding missing" }, 503, requestId);
+    if (!env.Sandbox) {
+      return json({ ok: false, error: "Sandbox binding missing" }, 503, requestId);
     }
     const body = (await request.json().catch(() => ({}))) as {
       cmd?: string;
       cwd?: string;
       timeoutMs?: number;
-      stdin?: string;
       session?: string;
     };
     if (!body.cmd) {
       return json({ ok: false, error: "body.cmd required" }, 400, requestId);
     }
-    const explicit = body.session?.trim() ?? "";
-    let sessionName = explicit;
-    if (!sessionName) {
-      const email = (auth?.email ?? "anon").toLowerCase();
-      let h = 0x811c9dc5;
-      for (let i = 0; i < email.length; i++) {
-        h ^= email.charCodeAt(i);
-        h = Math.imul(h, 0x01000193) >>> 0;
-      }
-      sessionName = `u-${h.toString(16).padStart(8, "0")}`;
-    }
-    const id = env.SHELL_CONTAINER.idFromName(sessionName);
-    const stub = env.SHELL_CONTAINER.get(id);
-    // Forward to the bridge's /exec endpoint inside the container.
-    const forward = new Request("https://shell-do/exec", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        cmd: body.cmd,
+    const sessionId = resolveShellSessionId(url, auth?.email, body.session);
+    try {
+      const sandbox = getSandbox(env.Sandbox, "helm-shell");
+      const session = await sandbox.getSession(sessionId);
+      const result = await session.exec(body.cmd, {
         cwd: body.cwd,
-        timeoutMs: body.timeoutMs,
-        stdin: body.stdin
-      })
-    });
-    const r = await stub.fetch(forward);
-    return new Response(r.body, { status: r.status, headers: r.headers });
-  }
-
-  // GET /shell/list — return the registry's view of active/recent
-  // sessions for the authenticated user. Operators can pass `?all=1`
-  // to see everyone's sessions (gated by the same auth — anyone with
-  // /app access can see; tighten with CF_ACCESS_ALLOWED_EMAILS).
-  if (request.method === "GET" && url.pathname === "/shell/list") {
-    if (!env.SHELL_REGISTRY) {
+        timeout: body.timeoutMs
+      });
+      return json({
+        ok: result.success,
+        data: {
+          stdout: result.stdout,
+          stderr: result.stderr,
+          exitCode: result.exitCode,
+          durationMs: result.duration
+        }
+      }, 200, requestId);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
       return json(
-        { ok: true, data: { sessions: [], note: "SHELL_REGISTRY binding missing" } },
-        200,
+        { ok: false, error: `Sandbox exec failed: ${msg}`, code: "E_SANDBOX_EXEC" },
+        500,
         requestId
       );
     }
-    const registry = env.SHELL_REGISTRY.get(env.SHELL_REGISTRY.idFromName("global"));
-    const showAll = url.searchParams.get("all") === "1";
-    const filter = showAll ? "" : `?email=${encodeURIComponent((auth?.email ?? "").toLowerCase())}`;
-    const r = await registry.fetch(new Request(`https://reg/list${filter}`));
-    return new Response(r.body, { status: r.status, headers: r.headers });
   }
 
-  // POST /shell/forget — drop a session from the registry. Doesn't
-  // touch the underlying container DO (which sleeps on its own); just
-  // removes it from the user-visible list.
-  if (request.method === "POST" && url.pathname === "/shell/forget") {
-    if (!env.SHELL_REGISTRY) {
-      return json({ ok: false, error: "registry not bound" }, 503, requestId);
-    }
-    const body = (await request.json().catch(() => ({}))) as { session?: string };
-    const registry = env.SHELL_REGISTRY.get(env.SHELL_REGISTRY.idFromName("global"));
-    const r = await registry.fetch(
-      new Request("https://reg/forget", {
-        method: "POST",
-        body: JSON.stringify(body)
-      })
-    );
-    return new Response(r.body, { status: r.status, headers: r.headers });
-  }
+  // GET /shell/list and POST /shell/forget — DROPPED in the Sandbox
+  // migration. The custom registry DO that backed these is gone; the
+  // Sandbox SDK manages session lifecycle internally (idle-shutdown,
+  // snapshots, etc.). The /app#/shell tab no longer surfaces a
+  // sessions panel — each user gets a single hashed session id and
+  // the container sleeps on its own.
 
   if (request.method === "POST" && url.pathname === "/conductor/stream-tools") {
     return await handleConductorToolStream(request, env, runtime, skills);

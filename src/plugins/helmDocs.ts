@@ -113,8 +113,10 @@ Default binding NAMES our runtime knows about:
   AGENT_SESSIONS    DO namespace (auto-provisioned)
   STREAM_HUBS       DO namespace (auto-provisioned)
   CHAT_SESSIONS     DO namespace (auto-provisioned)
-  SHELL_CONTAINER   Container DO (auto-provisioned)
-  SHELL_REGISTRY    Singleton DO (auto-provisioned)
+  Sandbox           Cloudflare Sandbox DO (auto-provisioned, replaces
+                    the legacy SHELL_CONTAINER + SHELL_REGISTRY pair —
+                    image cloudflare/sandbox:0.10.0, no cross-account
+                    image push required)
   CLI_AUTH          Singleton DO (auto-provisioned)
 `.trim(),
 
