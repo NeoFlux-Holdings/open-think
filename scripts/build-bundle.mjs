@@ -173,8 +173,67 @@ const tomlMigrations = parseTomlArrayTables(wranglerToml, "migrations").map((m) 
   return out;
 });
 
+/**
+ * Extract [[containers]] blocks from wrangler.toml and resolve each block's
+ * `image` field into something CF's Workers Scripts API can pull on its own.
+ *
+ * Wrangler-local convention: `image = "./docker/shell/Dockerfile"`. Wrangler
+ * builds the Dockerfile and pushes the resulting image to the customer's
+ * account registry before the Worker upload. We can't build Dockerfiles
+ * from a Worker, so we resolve the path: read the Dockerfile, parse the
+ * `FROM` line, and emit the upstream registry reference (e.g.
+ * `docker.io/cloudflare/sandbox:0.10.0`). CF's API accepts public registry
+ * paths directly — no per-account image push required.
+ *
+ * Customizations (RUN/COPY/etc) below the FROM are dropped here. Customers
+ * who need extra layers should run `wrangler deploy` locally with their own
+ * fork of the Dockerfile; the cron path will then preserve their image
+ * binding via mergeBindings (containers metadata is left intact when the
+ * customer's existing script already has it).
+ */
+function resolveContainerImage(imageField) {
+  if (!imageField || typeof imageField !== "string") return imageField;
+  // Already a registry reference (no path separator, has a tag) → use as-is.
+  if (!imageField.includes("/") || /^[a-z0-9.-]+\.[a-z]{2,}\//i.test(imageField)) {
+    return imageField;
+  }
+  // Treat as a local Dockerfile path relative to the repo root.
+  const dockerfilePath = resolve(root, imageField.replace(/^\.\//, ""));
+  let dockerfileSrc;
+  try {
+    dockerfileSrc = readFileSync(dockerfilePath, "utf8");
+  } catch (err) {
+    console.warn(`[bundle] containers: cannot read Dockerfile at ${dockerfilePath} (${err.message}); falling back to raw image field`);
+    return imageField;
+  }
+  // Match the first non-commented FROM line. Strip a leading `--platform=...`
+  // flag and any AS clause.
+  const fromMatch = /^\s*FROM\s+(?:--[^\s]+\s+)*([^\s]+)(?:\s+AS\s+\S+)?\s*$/im.exec(dockerfileSrc);
+  if (!fromMatch) {
+    console.warn(`[bundle] containers: no FROM line in ${dockerfilePath}; using raw image field`);
+    return imageField;
+  }
+  return fromMatch[1];
+}
+
+const tomlContainers = parseTomlArrayTables(wranglerToml, "containers").map((c) => {
+  const out = {};
+  if (c.class_name) out.class_name = c.class_name;
+  // Resolved image — see resolveContainerImage. Customer's CF account pulls
+  // this directly from the upstream registry on first DO instantiation.
+  if (c.image) out.image = resolveContainerImage(c.image);
+  if (c.instance_type) out.instance_type = c.instance_type;
+  if (typeof c.max_instances === "number") out.max_instances = c.max_instances;
+  if (c.name) out.name = c.name;
+  return out;
+});
+
 console.log(`[bundle] DO bindings from wrangler.toml: ${doBindings.length}`);
 console.log(`[bundle] migrations from wrangler.toml: ${tomlMigrations.length}`);
+console.log(`[bundle] containers   from wrangler.toml: ${tomlContainers.length}`);
+for (const c of tomlContainers) {
+  console.log(`[bundle]   container: class=${c.class_name} image=${c.image}`);
+}
 
 /* ---------------- 3.5. extract the plugin id list ---------------- */
 // Scan src/plugins/*.ts for `readonly id = "..."` declarations so the
@@ -231,7 +290,15 @@ const manifest = {
     // Every migration from wrangler.toml. CF API expects the full ladder
     // — `flattenMigrationsForCfApi` collapses to `{ new_tag, new_classes,
     // new_sqlite_classes }` at upload time.
-    migrations: tomlMigrations
+    migrations: tomlMigrations,
+    // Containers tied to DO classes. Each entry binds a class_name (must
+    // match a [[durable_objects.bindings]] class above) to a container
+    // image CF will pull on first instantiation. Resolved at build time
+    // from wrangler.toml's [[containers]] blocks — local Dockerfile
+    // paths are flattened to their FROM image reference so customer
+    // accounts pull directly from the upstream registry without needing
+    // a local Docker daemon or per-account image push.
+    containers: tomlContainers
   }
 };
 
@@ -251,6 +318,7 @@ console.log(`[bundle] ✓ manifest.json  version=${version}`);
 console.log(`[bundle]   moduleUrl   = ${moduleUrl}`);
 console.log(`[bundle]   bindings    = ${manifest.metadata.bindings.length}`);
 console.log(`[bundle]   migrations  = ${manifest.metadata.migrations?.length ?? 0}`);
+console.log(`[bundle]   containers  = ${manifest.metadata.containers?.length ?? 0}`);
 console.log(`[bundle]   plugins     = ${manifest.plugins.length} (${manifest.plugins.slice(0, 4).join(",")}${manifest.plugins.length > 4 ? ", …" : ""})`);
 console.log("");
 console.log("[bundle] release artifacts ready under " + out);

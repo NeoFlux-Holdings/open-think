@@ -1141,6 +1141,15 @@ async function runDirectDeploy(input: DirectDeployInput): Promise<DirectDeployRe
     manifest.metadata.migrations as Array<Record<string, unknown>> | undefined
   );
   if (flatMigrations) metadata.migrations = flatMigrations;
+  // Container metadata — ties DO classes (Sandbox, etc.) to their
+  // container images so CF can materialize the DOs on first call. Without
+  // this, env.Sandbox is bound but instantiation fails with "no container
+  // associated with class". The image is a public registry ref resolved
+  // by build-bundle.mjs from the canonical wrangler.toml's [[containers]]
+  // blocks; we forward it verbatim so customer accounts pull directly.
+  if (manifest.metadata.containers && manifest.metadata.containers.length > 0) {
+    metadata.containers = manifest.metadata.containers;
+  }
 
   await announce("upload-worker", `Uploading Worker bundle to Cloudflare (${(bytes.byteLength / 1024 / 1024).toFixed(1)} MB)…`);
   let upload = await uploadWorkerScript(
@@ -1370,6 +1379,29 @@ export function composeWranglerToml(input: WranglerComposeInput): string {
   lines.push(`name = "STREAM_HUBS"`);
   lines.push(`class_name = "StreamHubDO"`);
   lines.push("");
+  lines.push("[[durable_objects.bindings]]");
+  lines.push(`name = "CHAT_SESSIONS"`);
+  lines.push(`class_name = "ChatSessionDO"`);
+  lines.push("");
+  // Sandbox DO + container — required for /shell/ws and helm-exec.
+  // Image is the public CF-hosted sandbox base; customer accounts pull
+  // it from docker.io/cloudflare on first instantiation. No local
+  // Docker daemon required for `wrangler deploy`.
+  lines.push("[[durable_objects.bindings]]");
+  lines.push(`name = "Sandbox"`);
+  lines.push(`class_name = "Sandbox"`);
+  lines.push("");
+  lines.push("[[durable_objects.bindings]]");
+  lines.push(`name = "CLI_AUTH"`);
+  lines.push(`class_name = "CliAuthDO"`);
+  lines.push("");
+  lines.push("[[containers]]");
+  lines.push(`class_name = "Sandbox"`);
+  lines.push(`image = "docker.io/cloudflare/sandbox:0.10.0"`);
+  lines.push(`max_instances = 10`);
+  lines.push(`instance_type = "lite"`);
+  lines.push(`name = "helm-sandbox"`);
+  lines.push("");
   lines.push("[[migrations]]");
   lines.push(`tag = "v1"`);
   lines.push(`new_sqlite_classes = ["AgentSessionDO"]`);
@@ -1377,6 +1409,14 @@ export function composeWranglerToml(input: WranglerComposeInput): string {
   lines.push("[[migrations]]");
   lines.push(`tag = "v2"`);
   lines.push(`new_classes = ["StreamHubDO"]`);
+  lines.push("");
+  lines.push("[[migrations]]");
+  lines.push(`tag = "v3"`);
+  lines.push(`new_classes = ["ChatSessionDO"]`);
+  lines.push("");
+  lines.push("[[migrations]]");
+  lines.push(`tag = "v4"`);
+  lines.push(`new_sqlite_classes = ["Sandbox", "CliAuthDO"]`);
   if (input.d1) {
     lines.push("");
     lines.push("[[d1_databases]]");

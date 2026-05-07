@@ -351,6 +351,66 @@ describe("runUpdatePush", () => {
     expect(logs.some((l) => l === "b:push-success")).toBe(true);
   });
 
+  it("forwards manifest.metadata.containers to the upload (Sandbox image binding)", async () => {
+    // Without this passthrough, customer Workers get the Sandbox DO
+    // binding but no container image, and /shell/ws fails at instantiation
+    // with "no container associated with class". Test by snapshotting the
+    // metadata sent to the Workers Scripts API.
+    const a = await makeRow("a", false, "oldsha");
+    const { db } = fakeDb([a]);
+    const manifestWithContainers = {
+      ...SAMPLE_MANIFEST,
+      metadata: {
+        ...SAMPLE_MANIFEST.metadata,
+        containers: [
+          {
+            class_name: "Sandbox",
+            image: "docker.io/cloudflare/sandbox:0.10.0",
+            instance_type: "lite",
+            max_instances: 10,
+            name: "helm-sandbox"
+          }
+        ]
+      }
+    };
+    let uploadedMetadata: Record<string, unknown> | null = null;
+    const fetchImpl = (async (input: RequestInfo, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url === MANIFEST_URL) return new Response(JSON.stringify(manifestWithContainers), { status: 200 });
+      if (url === MODULE_URL) return new Response(new ArrayBuffer(1024), { status: 200 });
+      if (url.endsWith("/settings")) {
+        return new Response(
+          JSON.stringify({ success: true, result: { bindings: [] } }),
+          { status: 200 }
+        );
+      }
+      if (url.match(/\/workers\/scripts\/[^/]+$/)) {
+        // Capture the metadata blob from the multipart body.
+        const body = init?.body as FormData;
+        const meta = body.get("metadata");
+        const text = meta instanceof Blob ? await meta.text() : String(meta);
+        uploadedMetadata = JSON.parse(text);
+        return new Response(JSON.stringify({ success: true, result: { id: "a" } }), { status: 200 });
+      }
+      return new Response("not found", { status: 404 });
+    }) as unknown as typeof fetch;
+    const r = await runUpdatePush(
+      { DB: db, CLOUD_MASTER_KEY: MASTER, HELM_BUNDLE_MANIFEST_URL: MANIFEST_URL },
+      { fetchImpl }
+    );
+    expect(r.ok).toBe(true);
+    expect(uploadedMetadata).not.toBeNull();
+    const containers = (uploadedMetadata as { containers?: unknown[] }).containers;
+    expect(containers).toBeDefined();
+    expect(containers).toHaveLength(1);
+    expect(containers![0]).toMatchObject({
+      class_name: "Sandbox",
+      image: "docker.io/cloudflare/sandbox:0.10.0",
+      instance_type: "lite",
+      max_instances: 10
+    });
+  });
+
   it("single-deployment branch reports already-up-to-date without uploading", async () => {
     const a = await makeRow("a", false, "newsha123");
     const { db } = fakeDb([a]);

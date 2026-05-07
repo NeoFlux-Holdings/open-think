@@ -503,6 +503,10 @@ async function pushOne(input: PushOneInput): Promise<PushOneResult> {
   const flatMigrations = flattenMigrationsForCfApi(
     manifest.metadata.migrations as Array<Record<string, unknown>> | undefined
   );
+  // Spread `...manifest.metadata` first so `containers` (image refs for
+  // DO classes like Sandbox) and `compatibility_*` flow through as-is.
+  // Bindings get the customer's existing values merged on top
+  // (D1 IDs, secret values) so the cron doesn't clobber them.
   const metadata: Record<string, unknown> = {
     ...manifest.metadata,
     bindings: mergedBindings

@@ -29,6 +29,17 @@ export interface BundleMetadata {
   bindings: Array<Record<string, unknown>>;
   /** Migrations for new DO classes / sqlite classes. */
   migrations?: Array<Record<string, unknown>>;
+  /**
+   * Container definitions tied to DO classes. Each entry binds a
+   * `class_name` (matching one of the bindings above) to a container
+   * `image` reference CF will pull on first DO instantiation. The
+   * image field is a public registry path (e.g.
+   * `docker.io/cloudflare/sandbox:0.10.0`) — build-bundle.mjs resolves
+   * local Dockerfile paths from wrangler.toml's `[[containers]]`
+   * blocks into upstream registry refs so customer accounts pull
+   * directly without needing a local `wrangler containers push`.
+   */
+  containers?: Array<Record<string, unknown>>;
 }
 
 export interface BundleManifest {

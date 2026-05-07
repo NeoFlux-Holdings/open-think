@@ -506,6 +506,29 @@ describe("composeWranglerToml · invariants", () => {
     expect(t).toMatch(/MODEL_DEFAULT = "@cf\/moonshotai\/kimi-k2\.6"/);
   });
 
+  it("emits the Sandbox DO binding + [[containers]] block + v4 migration", () => {
+    // Customers running `wrangler deploy` from this snippet need the
+    // Sandbox DO + container image registered for /shell/ws and helm-exec
+    // to work. The v4 migration is what registers the Sandbox + CliAuthDO
+    // sqlite classes; without it CF rejects the deploy.
+    const t = composeWranglerToml({
+      workerName: "helm",
+      accountId: "acc-1",
+      d1: null,
+      access: null
+    });
+    // Sandbox DO binding
+    expect(t).toMatch(/\[\[durable_objects\.bindings\]\][\s\S]*?name = "Sandbox"[\s\S]*?class_name = "Sandbox"/);
+    // CliAuthDO binding
+    expect(t).toMatch(/name = "CLI_AUTH"[\s\S]*?class_name = "CliAuthDO"/);
+    // Container image — public CF-hosted base
+    expect(t).toMatch(/\[\[containers\]\]/);
+    expect(t).toMatch(/image = "docker\.io\/cloudflare\/sandbox:0\.10\.0"/);
+    expect(t).toMatch(/class_name = "Sandbox"/);
+    // Migration ladder ends at v4 with the sqlite classes
+    expect(t).toMatch(/tag = "v4"[\s\S]*?new_sqlite_classes = \["Sandbox", "CliAuthDO"\]/);
+  });
+
   it("honors openRouterDefaultModel override (e.g. pinning kimi)", () => {
     const t = composeWranglerToml({
       workerName: "helm",
