@@ -17,6 +17,7 @@ import {
   handleConductorStreamState
 } from "./conductor-stream";
 import { handleConductorToolStream } from "./conductor-tool-stream";
+import { handleChatSessionsApi } from "./chatSessionsApi";
 import { listMcpRollbackSupport } from "./rollback";
 import { getSandbox } from "@cloudflare/sandbox";
 import type { ConductorInput } from "./conductor";
@@ -519,6 +520,14 @@ async function handler(request: Request, env: Env, requestId: string, startedAt:
   // snapshots, etc.). The /app#/shell tab no longer surfaces a
   // sessions panel — each user gets a single hashed session id and
   // the container sleeps on its own.
+
+  // Chat-sessions + chat-projects index. Returns null when the URL
+  // doesn't match any of its routes so we keep going through the
+  // normal dispatch chain. Scoped per-user via auth.email.
+  if (auth) {
+    const chatRouted = await handleChatSessionsApi(request, url, env, { email: auth.email });
+    if (chatRouted) return chatRouted;
+  }
 
   if (request.method === "POST" && url.pathname === "/conductor/stream-tools") {
     return await handleConductorToolStream(request, env, runtime, skills);

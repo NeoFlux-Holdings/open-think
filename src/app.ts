@@ -238,18 +238,152 @@ h1.section-title {
 .stat.accent .value { color: var(--accent); }
 .stat .footnote { font-size: 11px; color: var(--muted); margin-top: 8px; font-family: 'JetBrains Mono', monospace; }
 
-/* -------- conductor panel -------- */
-.conductor {
+/* -------- conductor layout (rail + chat) -------- */
+.conductor-layout {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: 0;
   border: 1px solid var(--rule);
   background: var(--paper);
+  min-height: 600px;
+}
+@media (max-width: 900px) {
+  .conductor-layout { grid-template-columns: 1fr; }
+  .conductor-rail { display: none; }
+}
+.conductor-rail {
+  border-right: 1px solid var(--rule);
+  background: color-mix(in srgb, var(--paper) 96%, var(--rule) 4%);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.rail-toolbar {
+  padding: 12px;
+  border-bottom: 1px solid var(--rule);
+  display: flex;
+  gap: 6px;
+  position: sticky;
+  top: 0;
+  background: inherit;
+  z-index: 1;
+}
+.rail-new-chat {
+  flex: 1;
+  font-family: inherit;
+  font-size: 13px;
+  padding: 8px 12px;
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  color: var(--ink);
+  cursor: pointer;
+  letter-spacing: 0.02em;
+}
+.rail-new-chat:hover { background: color-mix(in srgb, var(--paper) 90%, var(--ink) 10%); }
+.rail-new-project {
+  font-family: inherit;
+  font-size: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--rule);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.rail-new-project:hover { color: var(--ink); border-color: var(--ink); }
+.rail-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 0;
+}
+.rail-empty {
+  padding: 16px;
+  color: var(--muted);
+}
+.rail-section-header {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+  padding: 12px 14px 4px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.rail-section-header.is-project { cursor: pointer; }
+.rail-section-header .rail-caret { font-size: 9px; transition: transform 120ms ease; }
+.rail-section-header.is-collapsed .rail-caret { transform: rotate(-90deg); }
+.rail-session-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  cursor: pointer;
+  border-left: 2px solid transparent;
+  font-size: 13px;
+  line-height: 1.35;
   position: relative;
 }
-.conductor::before {
-  content: "";
+.rail-session-row:hover {
+  background: color-mix(in srgb, var(--paper) 88%, var(--ink) 12%);
+}
+.rail-session-row.is-active {
+  border-left-color: var(--accent, #f6821f);
+  background: color-mix(in srgb, var(--paper) 85%, var(--ink) 15%);
+}
+.rail-session-title {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--ink);
+}
+.rail-session-row.is-untitled .rail-session-title { color: var(--muted); font-style: italic; }
+.rail-session-actions {
+  display: none;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 14px;
+  color: var(--muted);
+  padding: 0 4px;
+  cursor: pointer;
+}
+.rail-session-row:hover .rail-session-actions { display: inline; }
+.rail-session-actions:hover { color: var(--ink); }
+.rail-actions-menu {
   position: absolute;
-  inset: 3px;
+  right: 12px;
+  top: 100%;
+  background: var(--paper);
   border: 1px solid var(--rule);
-  pointer-events: none;
+  z-index: 10;
+  min-width: 160px;
+  font-size: 13px;
+}
+.rail-actions-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 12px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+  color: var(--ink);
+}
+.rail-actions-menu button:hover { background: color-mix(in srgb, var(--paper) 88%, var(--ink) 12%); }
+.rail-actions-menu button.is-danger { color: #c43d3d; }
+.rail-project-collapsed .rail-session-row { display: none; }
+
+/* -------- conductor panel -------- */
+/* Border now lives on .conductor-layout (the parent grid). The inset
+ * .conductor::before pseudoborder is dropped — it conflicted with the
+ * rail's right border and made the chat panel feel boxed-in. */
+.conductor {
+  border: none;
+  background: var(--paper);
+  position: relative;
+  display: flex;
+  flex-direction: column;
 }
 /* ---------- Conductor / chat surface ---------- */
 .conductor-header {
@@ -1673,7 +1807,18 @@ input[type="text"]:focus, select:focus, textarea:focus { border-bottom-color: va
   </section>
   <div class="ascii-rule">· · · ────────  ✦  ──────── · · ·</div>
   <section class="reveal d2">
-    <div id="conductor-full" class="conductor"></div>
+    <div class="conductor-layout">
+      <aside class="conductor-rail" id="conductor-rail" aria-label="Chats and projects">
+        <div class="rail-toolbar">
+          <button type="button" class="rail-new-chat" id="rail-new-chat">＋ New chat</button>
+          <button type="button" class="rail-new-project" id="rail-new-project" title="New project" aria-label="New project">＋ Project</button>
+        </div>
+        <div class="rail-scroll" id="rail-scroll">
+          <div class="rail-empty mono small" id="rail-empty">Loading…</div>
+        </div>
+      </aside>
+      <div id="conductor-full" class="conductor"></div>
+    </div>
   </section>
 </template>
 
@@ -2350,14 +2495,35 @@ async function renderOverview() {
 function renderConductor() {
   const tpl = $('#tpl-conductor').content.cloneNode(true);
   $('#view').appendChild(tpl);
-  // ?session=... in the hash overrides state.conductorSession so
-  // "Ask Helm to set me up" can deep-link into a primed session.
-  const session = currentRouteQuery().get('session');
-  if (session) {
-    state.conductorSession = session;
+  // URL → session-id resolution. Three params honored, in priority order:
+  //   ?c=<id>      — chat session id (canonical, refresh-safe)
+  //   ?session=... — legacy alias kept for back-compat with deep-links
+  //   (none)       — pull last-active from localStorage, or generate
+  //
+  // The session id MUST end up in the URL so a refresh always rehydrates
+  // the same chat. We push to history (replaceState) when assigning a
+  // freshly-generated id so the user can copy-paste their URL.
+  const q = currentRouteQuery();
+  const explicit = q.get('c') || q.get('session');
+  let sessionId = explicit;
+  if (!sessionId) {
+    try { sessionId = localStorage.getItem('helm-last-session') || null; } catch {}
+  }
+  if (!sessionId) {
+    sessionId = 's_' + Math.random().toString(36).slice(2, 12) + Math.random().toString(36).slice(2, 8);
+  }
+  if (!explicit) {
+    // Replace history entry so refresh keeps the session id.
+    const next = '#/conductor?c=' + encodeURIComponent(sessionId);
+    history.replaceState(null, '', next);
+  }
+  if (sessionId !== state.conductorSession) {
+    state.conductorSession = sessionId;
     state.conductorHistory = [];
   }
+  try { localStorage.setItem('helm-last-session', sessionId); } catch {}
   mountConductor($('#conductor-full'), false);
+  mountConductorRail($('#conductor-rail'));
 }
 
 /* ---------------- cli-auth (device-code approval) ---------------- */
@@ -3031,6 +3197,385 @@ async function mountShell() {
   term.focus();
 }
 
+/**
+ * Render the left rail: project headers, session rows, new-chat /
+ * new-project buttons, row-action menus.
+ *
+ * Data flow: load sessions + projects in parallel. Group sessions by
+ * project (assigned ones under their project header, untagged under
+ * recency buckets). Highlight the active session (state.conductorSession).
+ *
+ * Switching sessions: click a row → push history(#/conductor?c=<id>)
+ * → re-render the conductor view (calling route()).
+ */
+async function mountConductorRail(host) {
+  if (!host) return;
+  const scroll = host.querySelector('#rail-scroll');
+  const empty = host.querySelector('#rail-empty');
+  const newChatBtn = host.querySelector('#rail-new-chat');
+  const newProjectBtn = host.querySelector('#rail-new-project');
+
+  newChatBtn.addEventListener('click', () => {
+    // Generate a fresh id, navigate to it. The route() handler will
+    // call renderConductor which initializes the new session.
+    const id = 's_' + Math.random().toString(36).slice(2, 12) + Math.random().toString(36).slice(2, 8);
+    location.hash = '#/conductor?c=' + encodeURIComponent(id);
+  });
+
+  newProjectBtn.addEventListener('click', async () => {
+    const name = prompt('Project name?');
+    if (!name || !name.trim()) return;
+    try {
+      await jPost('/api/chat-projects', { name: name.trim() });
+      await loadAndRender();
+    } catch (err) {
+      alert('Could not create project: ' + (err && err.message || 'unknown'));
+    }
+  });
+
+  async function loadAndRender() {
+    let sessions = [];
+    let projects = [];
+    try {
+      const [sr, pr] = await Promise.all([
+        j('/api/chat-sessions'),
+        j('/api/chat-projects')
+      ]);
+      sessions = sr.data?.data?.sessions ?? [];
+      projects = pr.data?.data?.projects ?? [];
+    } catch (err) {
+      empty.textContent = 'Could not load sessions: ' + (err && err.message || 'fetch failed');
+      return;
+    }
+    renderRail(scroll, sessions, projects, state.conductorSession, {
+      onSwitch: (id) => {
+        location.hash = '#/conductor?c=' + encodeURIComponent(id);
+      },
+      onMutate: loadAndRender
+    });
+  }
+
+  // Expose so the chat-stream loop-done handler can refresh the rail
+  // after each turn — the new touch updates last_message_at + may have
+  // seeded the title, both of which the rail should reflect.
+  window.refreshConductorRail = loadAndRender;
+  await loadAndRender();
+}
+
+/**
+ * Bucket sessions and render the scroll area. Sessions assigned to a
+ * project go under the project header; unassigned go into recency
+ * buckets (Today / Yesterday / This week / Older). Active session gets
+ * a highlight.
+ */
+function renderRail(scrollEl, sessions, projects, activeId, handlers) {
+  scrollEl.innerHTML = '';
+  if (sessions.length === 0 && projects.length === 0) {
+    const e = document.createElement('div');
+    e.className = 'rail-empty mono small';
+    e.textContent = 'No chats yet. Start one above.';
+    scrollEl.appendChild(e);
+    return;
+  }
+
+  const byProject = new Map();
+  for (const p of projects) byProject.set(p.id, { project: p, sessions: [] });
+  const untagged = [];
+  for (const s of sessions) {
+    if (s.projectId && byProject.has(s.projectId)) {
+      byProject.get(s.projectId).sessions.push(s);
+    } else {
+      untagged.push(s);
+    }
+  }
+
+  // Render each project section (collapsible). Empty projects still
+  // render so user can drop sessions into them.
+  for (const { project, sessions: projSessions } of byProject.values()) {
+    const header = document.createElement('div');
+    header.className = 'rail-section-header is-project';
+    header.dataset.projectId = project.id;
+    header.innerHTML = '<span class="rail-caret">▾</span><span style="flex:1;padding-left:6px">' +
+      escapeHtml(project.name) +
+      '</span><span class="rail-session-actions" data-action="project-menu">⋯</span>';
+    header.addEventListener('click', (e) => {
+      if (e.target.dataset.action === 'project-menu') {
+        e.stopPropagation();
+        showProjectMenu(header, project, handlers);
+        return;
+      }
+      header.classList.toggle('is-collapsed');
+      const wrap = header.nextElementSibling;
+      if (wrap) wrap.classList.toggle('rail-project-collapsed', header.classList.contains('is-collapsed'));
+    });
+    scrollEl.appendChild(header);
+
+    const wrap = document.createElement('div');
+    wrap.className = 'rail-project-wrap';
+    if (projSessions.length === 0) {
+      const e = document.createElement('div');
+      e.className = 'rail-empty small';
+      e.style.padding = '4px 14px';
+      e.textContent = 'no chats — move one in';
+      wrap.appendChild(e);
+    }
+    for (const s of projSessions) {
+      wrap.appendChild(buildSessionRow(s, projects, activeId, handlers));
+    }
+    scrollEl.appendChild(wrap);
+  }
+
+  // Untagged sessions, grouped by recency.
+  if (untagged.length > 0) {
+    const buckets = bucketByRecency(untagged);
+    for (const [label, items] of buckets) {
+      if (items.length === 0) continue;
+      const header = document.createElement('div');
+      header.className = 'rail-section-header';
+      header.textContent = label;
+      scrollEl.appendChild(header);
+      for (const s of items) {
+        scrollEl.appendChild(buildSessionRow(s, projects, activeId, handlers));
+      }
+    }
+  }
+}
+
+/**
+ * Group sessions into Today / Yesterday / This week / Older. Returns
+ * an ordered array of [label, sessions[]] pairs so render order is
+ * stable (Today first, Older last).
+ */
+function bucketByRecency(sessions) {
+  const now = Date.now();
+  const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0);
+  const startOfYesterday = new Date(startOfToday); startOfYesterday.setDate(startOfYesterday.getDate() - 1);
+  const startOfWeek = new Date(startOfToday); startOfWeek.setDate(startOfWeek.getDate() - 7);
+  const today = [], yesterday = [], thisWeek = [], older = [];
+  for (const s of sessions) {
+    const t = s.lastMessageAt;
+    if (t >= startOfToday.getTime()) today.push(s);
+    else if (t >= startOfYesterday.getTime()) yesterday.push(s);
+    else if (t >= startOfWeek.getTime()) thisWeek.push(s);
+    else older.push(s);
+  }
+  void now;
+  return [
+    ['TODAY', today],
+    ['YESTERDAY', yesterday],
+    ['THIS WEEK', thisWeek],
+    ['OLDER', older]
+  ];
+}
+
+function buildSessionRow(session, projects, activeId, handlers) {
+  const row = document.createElement('div');
+  row.className = 'rail-session-row';
+  if (!session.title) row.classList.add('is-untitled');
+  if (session.id === activeId) row.classList.add('is-active');
+  row.dataset.sessionId = session.id;
+
+  const title = document.createElement('span');
+  title.className = 'rail-session-title';
+  title.textContent = session.title || '(untitled chat)';
+  row.appendChild(title);
+
+  const actions = document.createElement('span');
+  actions.className = 'rail-session-actions';
+  actions.textContent = '⋯';
+  actions.title = 'More';
+  row.appendChild(actions);
+
+  row.addEventListener('click', (e) => {
+    if (e.target === actions) {
+      e.stopPropagation();
+      showSessionMenu(row, session, projects, handlers);
+      return;
+    }
+    handlers.onSwitch(session.id);
+  });
+
+  return row;
+}
+
+/**
+ * Per-row dropdown — rename / move-to-project / archive / delete.
+ * Closes on next click anywhere or on Escape.
+ */
+function showSessionMenu(rowEl, session, projects, handlers) {
+  document.querySelectorAll('.rail-actions-menu').forEach((m) => m.remove());
+  const menu = document.createElement('div');
+  menu.className = 'rail-actions-menu';
+  const renameBtn = document.createElement('button');
+  renameBtn.textContent = 'Rename…';
+  renameBtn.addEventListener('click', async () => {
+    menu.remove();
+    const next = prompt('New title', session.title || '');
+    if (next === null) return;
+    try {
+      await jPatch('/api/chat-sessions/' + encodeURIComponent(session.id), { title: next });
+      await handlers.onMutate();
+    } catch (err) { alert('Rename failed: ' + (err && err.message || 'unknown')); }
+  });
+  menu.appendChild(renameBtn);
+
+  // Move to project — one button per project + "remove from project".
+  if (projects && projects.length > 0) {
+    const sep = document.createElement('div');
+    sep.style.cssText = 'border-top: 1px solid var(--rule); margin: 4px 0;';
+    menu.appendChild(sep);
+    for (const p of projects) {
+      const b = document.createElement('button');
+      const isCurrent = session.projectId === p.id;
+      b.textContent = (isCurrent ? '✓ ' : '   ') + 'Move to ' + p.name;
+      b.addEventListener('click', async () => {
+        menu.remove();
+        try {
+          await jPatch('/api/chat-sessions/' + encodeURIComponent(session.id), { projectId: p.id });
+          await handlers.onMutate();
+        } catch (err) { alert('Move failed: ' + (err && err.message || 'unknown')); }
+      });
+      menu.appendChild(b);
+    }
+    if (session.projectId) {
+      const b = document.createElement('button');
+      b.textContent = 'Remove from project';
+      b.addEventListener('click', async () => {
+        menu.remove();
+        try {
+          await jPatch('/api/chat-sessions/' + encodeURIComponent(session.id), { projectId: null });
+          await handlers.onMutate();
+        } catch (err) { alert('Move failed: ' + (err && err.message || 'unknown')); }
+      });
+      menu.appendChild(b);
+    }
+  }
+
+  const sep = document.createElement('div');
+  sep.style.cssText = 'border-top: 1px solid var(--rule); margin: 4px 0;';
+  menu.appendChild(sep);
+
+  const archiveBtn = document.createElement('button');
+  archiveBtn.textContent = session.archivedAt ? 'Unarchive' : 'Archive';
+  archiveBtn.addEventListener('click', async () => {
+    menu.remove();
+    try {
+      await jPatch('/api/chat-sessions/' + encodeURIComponent(session.id), { archived: !session.archivedAt });
+      await handlers.onMutate();
+    } catch (err) { alert('Archive failed: ' + (err && err.message || 'unknown')); }
+  });
+  menu.appendChild(archiveBtn);
+
+  const deleteBtn = document.createElement('button');
+  deleteBtn.className = 'is-danger';
+  deleteBtn.textContent = 'Delete (irreversible)';
+  deleteBtn.addEventListener('click', async () => {
+    menu.remove();
+    if (!confirm('Delete this chat permanently? Messages stay in the agent\\'s storage but the chat list will lose it.')) return;
+    try {
+      await jDelete('/api/chat-sessions/' + encodeURIComponent(session.id));
+      await handlers.onMutate();
+    } catch (err) { alert('Delete failed: ' + (err && err.message || 'unknown')); }
+  });
+  menu.appendChild(deleteBtn);
+
+  rowEl.appendChild(menu);
+
+  setTimeout(() => {
+    const close = (e) => {
+      if (!menu.contains(e.target)) {
+        menu.remove();
+        document.removeEventListener('click', close);
+      }
+    };
+    document.addEventListener('click', close);
+  }, 0);
+}
+
+function showProjectMenu(headerEl, project, handlers) {
+  document.querySelectorAll('.rail-actions-menu').forEach((m) => m.remove());
+  const menu = document.createElement('div');
+  menu.className = 'rail-actions-menu';
+  const renameBtn = document.createElement('button');
+  renameBtn.textContent = 'Rename project…';
+  renameBtn.addEventListener('click', async () => {
+    menu.remove();
+    const next = prompt('Project name', project.name);
+    if (next === null || !next.trim()) return;
+    try {
+      await jPatch('/api/chat-projects/' + encodeURIComponent(project.id), { name: next.trim() });
+      await handlers.onMutate();
+    } catch (err) { alert('Rename failed: ' + (err && err.message || 'unknown')); }
+  });
+  menu.appendChild(renameBtn);
+
+  const deleteBtn = document.createElement('button');
+  deleteBtn.className = 'is-danger';
+  deleteBtn.textContent = 'Delete project';
+  deleteBtn.addEventListener('click', async () => {
+    menu.remove();
+    if (!confirm('Delete project "' + project.name + '"? Chats in it will move to Untagged.')) return;
+    try {
+      await jDelete('/api/chat-projects/' + encodeURIComponent(project.id));
+      await handlers.onMutate();
+    } catch (err) { alert('Delete failed: ' + (err && err.message || 'unknown')); }
+  });
+  menu.appendChild(deleteBtn);
+
+  headerEl.appendChild(menu);
+
+  setTimeout(() => {
+    const close = (e) => {
+      if (!menu.contains(e.target)) {
+        menu.remove();
+        document.removeEventListener('click', close);
+      }
+    };
+    document.addEventListener('click', close);
+  }, 0);
+}
+
+// Tiny fetch helpers — used by the rail. The existing j() covers GETs;
+// these add POST/PATCH/DELETE in the same response shape.
+async function jPost(url, body) {
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body || {})
+  });
+  const text = await r.text();
+  let data; try { data = JSON.parse(text); } catch { data = text; }
+  if (!r.ok || (data && data.ok === false)) throw new Error((data && data.error) || ('HTTP ' + r.status));
+  return data;
+}
+async function jPatch(url, body) {
+  const r = await fetch(url, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body || {})
+  });
+  const text = await r.text();
+  let data; try { data = JSON.parse(text); } catch { data = text; }
+  if (!r.ok || (data && data.ok === false)) throw new Error((data && data.error) || ('HTTP ' + r.status));
+  return data;
+}
+async function jDelete(url) {
+  const r = await fetch(url, { method: 'DELETE' });
+  const text = await r.text();
+  let data; try { data = JSON.parse(text); } catch { data = text; }
+  if (!r.ok || (data && data.ok === false)) throw new Error((data && data.error) || ('HTTP ' + r.status));
+  return data;
+}
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function mountConductor(host, compact) {
   // Read persisted mode preference; default to "execute".
   const savedMode = (typeof localStorage !== 'undefined' && localStorage.getItem('helm-chat-mode')) || 'execute';
@@ -3485,6 +4030,10 @@ function makeChatStream(sessionName, body, opts) {
   let reconnectDelay = 1000;
   let reconnectTimer = null;
   let closed = false;
+  // Tracks the last user-message payload so the loop-done handler can
+  // POST /touch with firstUserMessage and seed an auto-title for
+  // brand-new sessions.
+  let lastUserMessage = '';
 
   // Streaming state for execute mode — one in-progress assistant bubble
   // accumulates text-delta + tool-use events and finalizes on loop-done.
@@ -3684,6 +4233,26 @@ function makeChatStream(sessionName, body, opts) {
           if (streamTextEl) streamTextEl.textContent = streamText;
         }
         finishStreaming();
+        // Touch the chat-sessions index so the left rail's "Today"
+        // bucket reflects the new activity, and seed an auto-title
+        // from the first user message if one isn't set yet. Fire and
+        // forget — UI shouldn't block on the metadata write, and any
+        // failure (e.g. DB binding missing) just means the rail is
+        // stale until next refresh.
+        if (sessionName && lastUserMessage) {
+          fetch('/api/chat-sessions/' + encodeURIComponent(sessionName) + '/touch', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ firstUserMessage: lastUserMessage })
+          }).then(() => {
+            // If the rail is currently mounted, refresh it so titles
+            // / recency / counts catch up. The rail's loadAndRender
+            // is exposed via window for this hook.
+            if (typeof window.refreshConductorRail === 'function') {
+              window.refreshConductorRail();
+            }
+          }).catch(() => undefined);
+        }
         return;
       case 'assistant-message':
         // For non-streaming (plan) mode, this is the whole reply.
@@ -3695,10 +4264,18 @@ function makeChatStream(sessionName, body, opts) {
         }
         return;
       case 'halted':
+        // User clicked stop. The DO already aborted its
+        // activeAbortController and broadcast halted. We finalize
+        // the in-progress bubble with a halted marker AND drop the UI
+        // out of streaming state so the send button flips back from
+        // stop-square to send-arrow. Without this setStreaming(false)
+        // the user can't start a fresh turn until they refresh the
+        // page — the original cause of "I couldn't stop it" reports.
         if (streamEl) {
           streamEl.classList.add('is-halted');
           finishStreaming();
         }
+        setStreaming(false);
         return;
       case 'error':
         if (streamEl) finishStreaming();
@@ -3717,6 +4294,10 @@ function makeChatStream(sessionName, body, opts) {
 
   return {
     send(payload) {
+      // Capture the content for the /touch hook on loop-done.
+      if (payload && typeof payload.content === 'string') {
+        lastUserMessage = payload.content;
+      }
       const frame = JSON.stringify({ kind: 'user-message', ...payload });
       setStreaming(true);
       if (ws && ws.readyState === WebSocket.OPEN) {
