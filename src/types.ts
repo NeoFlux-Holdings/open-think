@@ -155,6 +155,14 @@ export interface Env {
   /** Default branch on the upstream remote for pull-upstream. Default "main". */
   HELM_UPSTREAM_BRANCH?: string;
   /**
+   * Workers AI model used for generating chat session titles. Runs
+   * on the first turn through `env.AI.run`, so it must be a `@cf/...`
+   * model in CF's catalogue. Default `@cf/meta/llama-3.1-8b-instruct-fast`
+   * — small, free, fast. Set empty to disable LLM titling (the slice
+   * fallback in chatSessionsApi.ts still applies).
+   */
+  HELM_AUTOTITLE_MODEL?: string;
+  /**
    * GitHub PAT for helm-github (FALLBACK path — Cloudflare Artifacts is the
    * canonical source-of-truth now; see ARTIFACTS_* below). Fine-grained
    * tokens with repo: contents + pull-requests scopes are sufficient.

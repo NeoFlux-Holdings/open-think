@@ -4235,15 +4235,24 @@ function makeChatStream(sessionName, body, opts) {
         finishStreaming();
         // Touch the chat-sessions index so the left rail's "Today"
         // bucket reflects the new activity, and seed an auto-title
-        // from the first user message if one isn't set yet. Fire and
-        // forget — UI shouldn't block on the metadata write, and any
-        // failure (e.g. DB binding missing) just means the rail is
-        // stale until next refresh.
+        // from the first user→assistant exchange if one isn't set
+        // yet. Fire and forget — UI shouldn't block on the metadata
+        // write, and any failure (e.g. DB binding missing) just means
+        // the rail is stale until next refresh.
+        //
+        // We pass firstAssistantText (the streamed final reply) so the
+        // server can ask its title model to summarize the actual
+        // conversation, not just the user's prompt. The /touch endpoint
+        // still falls back to a slice of firstUserMessage when the
+        // LLM is unavailable.
         if (sessionName && lastUserMessage) {
           fetch('/api/chat-sessions/' + encodeURIComponent(sessionName) + '/touch', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ firstUserMessage: lastUserMessage })
+            body: JSON.stringify({
+              firstUserMessage: lastUserMessage,
+              firstAssistantText: (event.finalText || streamText || '').slice(0, 2000)
+            })
           }).then(() => {
             // If the rail is currently mounted, refresh it so titles
             // / recency / counts catch up. The rail's loadAndRender

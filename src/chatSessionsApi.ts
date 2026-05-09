@@ -14,6 +14,7 @@
  */
 
 import { ChatSessionStore, newId } from "./chatSessions";
+import { generateChatTitle } from "./autoTitle";
 import type { Env } from "./types";
 
 interface AuthCtx {
@@ -99,25 +100,34 @@ export async function handleChatSessionsApi(
   // POST /api/chat-sessions/:id/touch — recency bump + auto-title.
   // Called by the SPA's chat loop after each `loop-done` so the left
   // rail's "Today" bucket always reflects the latest activity. The
-  // body can include `firstUserMessage` to seed a title when the
-  // session doesn't have one yet — currently first-60-chars; LLM
-  // titling is a follow-up.
+  // body can include `firstUserMessage` + `firstAssistantText` to seed
+  // a title when the session doesn't have one yet:
+  //   1. Try LLM auto-title via env.AI.run (small Workers AI model).
+  //   2. Fall back to a 60-char slice of the user message if the LLM
+  //      isn't available, errors, or returns junk.
+  // Either way the touch returns synchronously with the final title
+  // baked in — the LLM call costs ~500-2000ms but runs after the
+  // chat already finished, so users don't wait.
   const touchMatch = /^\/api\/chat-sessions\/([^/]+)\/touch$/.exec(path);
   if (touchMatch) {
     if (method !== "POST") return badRequest(`unsupported method ${method}`);
     const id = decodeURIComponent(touchMatch[1]);
     const body = (await safeJson(request)) as
-      | { firstUserMessage?: string }
+      | { firstUserMessage?: string; firstAssistantText?: string }
       | null;
     // Idempotent ensure — first message in a brand-new session also
     // creates the row, so the SPA doesn't have to call POST first.
     const existing = await store.ensureSession({ id, userEmail: auth.email });
     await store.touchSession(id, auth.email);
-    // Auto-title: only when missing. Slice the first user message to
-    // a reasonable length, strip newlines, and trim to a word boundary.
+    // Auto-title: only when missing. Try LLM first; fall back to slice.
     let title: string | null = existing.title;
     if (!title && body?.firstUserMessage) {
-      title = autoTitleFromMessage(body.firstUserMessage);
+      const llmTitle = await generateChatTitle(
+        env,
+        body.firstUserMessage,
+        body.firstAssistantText ?? ""
+      );
+      title = llmTitle || autoTitleFromMessage(body.firstUserMessage);
       if (title) {
         await store.updateSession(id, auth.email, { title });
       }
